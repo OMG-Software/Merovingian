@@ -710,3 +710,5 @@
 * [0829 - The built-in LiveKit token service issues tokens only to users this server finds joined](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md)
 * [0830 - Every call to LiveKit goes to the configured address with a token of its own](0830-every-call-to-livekit-goes-to-the-configured-address-with-a-token-of-its-own.md)
 * [0831 - A federated LiveKit token request is judged by main and answered subscribe-only](0831-a-federated-livekit-token-request-is-judged-by-main-and-answered-subscribe-only.md)
+* [0832 - A delegated delayed leave is restarted while LiveKit shows the participant, and sent once it does not](0832-a-delegated-delayed-leave-is-restarted-while-livekit-shows-the-participant-and-sent-once-it-does-not.md)
+* [0833 - The LiveKit webhook is served on the client listener and trusted only to prompt a check](0833-the-livekit-webhook-is-served-on-the-client-listener-and-trusted-only-to-prompt-a-check.md)

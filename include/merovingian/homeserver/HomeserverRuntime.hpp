@@ -28,6 +28,7 @@
 #include "merovingian/homeserver/CrossSigningResetApprovals.hpp"
 #include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
+#include "merovingian/homeserver/LiveKitDelegationProgress.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/MediaUploadNotifier.hpp"
@@ -292,6 +293,17 @@ struct HomeserverRuntime final
     // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
     // before the thread is stopped.
     std::function<void()> delayed_events_wake{};
+    // Wakes the "livekit-delegations" job (ADR-0832) when a delegation is stored or a webhook brings a check forward.
+    // Set by the process entry point once that thread exists; null in tests, which call run_livekit_delegations
+    // directly. Called with runtime.mutex held, so it must not block or wait for runtime.mutex on another thread
+    // (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown before the thread is stopped.
+    std::function<void()> livekit_delegations_wake{};
+    // What the "livekit-delegations" job knows of each stored delegation, by delay ID (ADR-0832). In memory only: after
+    // a restart each starts again as never seen and due now. Guarded by `mutex`.
+    std::map<std::string, LiveKitDelegationProgress, std::less<>> livekit_delegation_progress{};
+    // The `id`s of the last `livekit_webhook_seen_ids` authenticated LiveKit webhook events, oldest first, so a replay
+    // inside a token's lifetime prompts nothing (ADR-0833). In memory only. Guarded by `mutex`.
+    std::deque<std::string> livekit_webhook_seen_ids{};
     // Users whose profile change has rooms left to reach, with the index in database.rooms to
     // resume from (F-11, ADR-0353). No token and no event body: the job sends as the user and reads
     // the profile when it sends. In memory only: a restart leaves those rooms for the next profile

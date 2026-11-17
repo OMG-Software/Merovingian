@@ -20,6 +20,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LiveKitNames.hpp"
+#include "merovingian/homeserver/LiveKitRequestFields.hpp"
 #include "merovingian/homeserver/LiveKitRoomService.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -54,73 +55,6 @@ namespace
     // The budget for the one call to LiveKit a token costs, before the operator's `remote_timeout` clamps it.
     constexpr auto livekit_call_deadline_seconds = std::uint32_t{10U};
 
-    [[nodiscard]] auto refusal(std::uint16_t const status, std::string errcode, std::string reason) -> OperationResult
-    {
-        auto result = OperationResult{};
-        result.ok = false;
-        result.status = status;
-        result.errcode = std::move(errcode);
-        result.reason = std::move(reason);
-        return result;
-    }
-
-    [[nodiscard]] auto member_of(canonicaljson::Object const& object, std::string_view const key)
-        -> canonicaljson::Value const*
-    {
-        for (auto const& member : object)
-        {
-            if (member.key == key && member.value != nullptr)
-            {
-                return member.value.get();
-            }
-        }
-        return nullptr;
-    }
-
-    // A required string member of at most `max_bytes` bytes, at least one, valid for JSON, copied into `out`. A missing
-    // member is `M_MISSING_PARAM`, anything else wrong `M_INVALID_PARAM`; neither echoes the value.
-    [[nodiscard]] auto read_required_string(canonicaljson::Object const& object, std::string_view const key,
-                                            std::size_t const max_bytes, std::string& out)
-        -> std::optional<OperationResult>
-    {
-        auto const* value = member_of(object, key);
-        if (value == nullptr)
-        {
-            return refusal(400U, "M_MISSING_PARAM", std::string{key} + " is required");
-        }
-        auto const* text = std::get_if<std::string>(&value->storage());
-        if (text == nullptr || text->empty() || text->size() > max_bytes ||
-            !canonicaljson::string_is_valid_for_json(*text))
-        {
-            return refusal(400U, "M_INVALID_PARAM", std::string{key} + " is not valid");
-        }
-        out = *text;
-        return std::nullopt;
-    }
-
-    // The required members. `room_id` is held to the shape of a room ID; it is only ever looked up exactly.
-    [[nodiscard]] auto read_required_members(canonicaljson::Object const& object, LiveKitTokenRequest& request)
-        -> std::optional<OperationResult>
-    {
-        if (auto refused = read_required_string(object, "url", max_livekit_url_bytes, request.url))
-        {
-            return refused;
-        }
-        if (auto refused = read_required_string(object, "room_id", max_livekit_room_id_bytes, request.room_id))
-        {
-            return refused;
-        }
-        if (!request.room_id.starts_with('!'))
-        {
-            return refusal(400U, "M_INVALID_PARAM", "room_id is not valid");
-        }
-        if (auto refused = read_required_string(object, "slot_id", max_livekit_slot_id_bytes, request.slot_id))
-        {
-            return refused;
-        }
-        return read_required_string(object, "member_id", max_livekit_member_id_bytes, request.member_id);
-    }
-
     [[nodiscard]] auto now_seconds() -> std::int64_t
     {
         return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -149,19 +83,19 @@ auto parse_client_livekit_token_request(std::string_view const body) -> LiveKitT
     auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
     if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
     {
-        return refusal(400U, "M_BAD_JSON", "the body must be a JSON object");
+        return livekit_refusal(400U, "M_BAD_JSON", "the body must be a JSON object");
     }
     auto request = LiveKitTokenRequest{};
-    if (auto refused = read_required_members(*object, request))
+    if (auto refused = read_livekit_call_members(*object, request))
     {
         return std::move(*refused);
     }
-    if (auto const* server_name = member_of(*object, "server_name"); server_name != nullptr)
+    if (auto const* server_name = livekit_member_of(*object, "server_name"); server_name != nullptr)
     {
         auto const* text = std::get_if<std::string>(&server_name->storage());
         if (text == nullptr || !auth::server_name_is_valid(*text))
         {
-            return refusal(400U, "M_INVALID_PARAM", "server_name is not valid");
+            return livekit_refusal(400U, "M_INVALID_PARAM", "server_name is not valid");
         }
         request.server_name = *text;
     }
@@ -229,7 +163,8 @@ namespace
 
     [[nodiscard]] auto client_outbound_refusal(ClientServerRuntime& rt) -> OperationResult
     {
-        auto limited = refusal(429U, "M_LIMIT_EXCEEDED", "too many concurrent outbound requests, retry shortly");
+        auto limited =
+            livekit_refusal(429U, "M_LIMIT_EXCEEDED", "too many concurrent outbound requests, retry shortly");
         limited.retry_after_ms = rt.homeserver.client_outbound_proxy_policy.retry_after_ms;
         return limited;
     }
@@ -281,11 +216,11 @@ namespace
         if (room == nullptr || !room->members.has_member_of_server(request.server_name))
         {
             log_refusal("livekit.relay.refused", user_id, request.room_id, "server not in room");
-            return refusal(403U, "M_FORBIDDEN", "That server is not in this room.");
+            return livekit_refusal(403U, "M_FORBIDDEN", "That server is not in this room.");
         }
         if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
         {
-            return refusal(502U, "M_UNKNOWN", "this server cannot make outbound requests");
+            return livekit_refusal(502U, "M_UNKNOWN", "this server cannot make outbound requests");
         }
         auto const slot =
             admit_client_outbound_proxy(rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()));
@@ -298,7 +233,7 @@ namespace
         auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
         if (!signing_key.has_value())
         {
-            return refusal(500U, "M_UNKNOWN", "this server cannot sign federation requests");
+            return livekit_refusal(500U, "M_UNKNOWN", "this server cannot sign federation requests");
         }
         // The MSC4195 federation body: the client's, with `server_name` dropped and the requesting user added.
         auto members = canonicaljson::Object{};
@@ -310,7 +245,7 @@ namespace
         auto const body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(members)});
         if (body.error != canonicaljson::CanonicalJsonError::none)
         {
-            return refusal(500U, "M_UNKNOWN", "the request to the other server cannot be written");
+            return livekit_refusal(500U, "M_UNKNOWN", "the request to the other server cannot be written");
         }
         auto const transaction =
             federation::make_outbound_transaction(request.server_name, "POST", federation_livekit_token_path,
@@ -332,27 +267,27 @@ namespace
             if (answer.remote_status == 403U && answer.remote_errcode == "M_FORBIDDEN")
             {
                 log_refusal("livekit.relay.refused", user_id, request.room_id, "the other server refused");
-                return refusal(403U, "M_FORBIDDEN", "The other server refused to issue a token.");
+                return livekit_refusal(403U, "M_FORBIDDEN", "The other server refused to issue a token.");
             }
             if (answer.remote_status == 400U && answer.remote_errcode == "M_INVALID_PARAM")
             {
                 log_refusal("livekit.relay.refused", user_id, request.room_id, "the other server found it invalid");
-                return refusal(400U, "M_INVALID_PARAM", "The other server found the request invalid.");
+                return livekit_refusal(400U, "M_INVALID_PARAM", "The other server found the request invalid.");
             }
             log_refusal("livekit.relay.failed", user_id, request.room_id,
                         answer.remote_answered ? "status " + std::to_string(answer.remote_status) : "unreachable",
                         observability::LogEventSeverity::warning);
-            return refusal(502U, "M_UNKNOWN", "The other server could not issue a token.");
+            return livekit_refusal(502U, "M_UNKNOWN", "The other server could not issue a token.");
         }
         auto const parsed = canonicaljson::parse_json(answer.body);
         auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        auto const* jwt_value = object == nullptr ? nullptr : member_of(*object, "jwt");
+        auto const* jwt_value = object == nullptr ? nullptr : livekit_member_of(*object, "jwt");
         auto const* jwt = jwt_value == nullptr ? nullptr : std::get_if<std::string>(&jwt_value->storage());
         if (parsed.error != canonicaljson::ParseError::none || jwt == nullptr || !relayed_jwt_is_well_formed(*jwt))
         {
             log_refusal("livekit.relay.failed", user_id, request.room_id, "malformed answer",
                         observability::LogEventSeverity::warning);
-            return refusal(502U, "M_UNKNOWN", "The other server could not issue a token.");
+            return livekit_refusal(502U, "M_UNKNOWN", "The other server could not issue a token.");
         }
         observability::log_diagnostic(log_module, "livekit.relay.issued",
                                       {
@@ -372,28 +307,28 @@ namespace
         auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
         {
-            return refusal(400U, "M_BAD_JSON", "the body must be a JSON object");
+            return livekit_refusal(400U, "M_BAD_JSON", "the body must be a JSON object");
         }
         auto request = LiveKitTokenRequest{};
-        if (auto refused = read_required_members(*object, request))
+        if (auto refused = read_livekit_call_members(*object, request))
         {
             return std::move(*refused);
         }
-        if (auto refused = read_required_string(*object, "user_id", max_livekit_user_id_bytes, request.user_id))
+        if (auto refused = read_livekit_string(*object, "user_id", max_livekit_user_id_bytes, request.user_id))
         {
             return std::move(*refused);
         }
         if (!auth::user_id_is_valid_federated(request.user_id))
         {
-            return refusal(400U, "M_INVALID_PARAM", "user_id is not valid");
+            return livekit_refusal(400U, "M_INVALID_PARAM", "user_id is not valid");
         }
         // MSC4195 omits `server_name` here, since it is the receiving server's own. One that names another is refused.
-        if (auto const* server_name = member_of(*object, "server_name"); server_name != nullptr)
+        if (auto const* server_name = livekit_member_of(*object, "server_name"); server_name != nullptr)
         {
             auto const* text = std::get_if<std::string>(&server_name->storage());
             if (text == nullptr || *text != our_server)
             {
-                return refusal(400U, "M_INVALID_PARAM", "server_name is not this server");
+                return livekit_refusal(400U, "M_INVALID_PARAM", "server_name is not this server");
             }
         }
         return request;
@@ -407,7 +342,7 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
     auto const& service = rt.homeserver.config.server().rtc.token_service;
     if (service.url.empty())
     {
-        return refusal(404U, "M_UNRECOGNIZED", "no LiveKit token service is configured");
+        return livekit_refusal(404U, "M_UNRECOGNIZED", "no LiveKit token service is configured");
     }
     auto parsed = parse_client_livekit_token_request(req.body);
     if (auto* refused = std::get_if<OperationResult>(&parsed); refused != nullptr)
@@ -421,7 +356,7 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
     // and never fetched. Another server's `url` is that server's to judge.
     if (!remote && request.url != service.url)
     {
-        return refusal(400U, "M_INVALID_PARAM", "url is not this server's SFU");
+        return livekit_refusal(400U, "M_INVALID_PARAM", "url is not this server's SFU");
     }
     // Joined by this server's own current state: the membership row moves with every accepted member event, in the
     // same transaction. An unknown room and a room the user is not joined to are the same answer.
@@ -430,7 +365,7 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
     if (membership == nullptr || membership->membership != "join")
     {
         log_refusal("livekit.token.refused", user_id, request.room_id, "not joined");
-        return refusal(403U, "M_FORBIDDEN", "You are not joined to this room.");
+        return livekit_refusal(403U, "M_FORBIDDEN", "You are not joined to this room.");
     }
     if (remote)
     {
@@ -440,12 +375,12 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
     auto const identity = livekit_participant_identity(user_id, request.member_id);
     if (!room_name.has_value() || !identity.has_value())
     {
-        return refusal(400U, "M_INVALID_PARAM", "the room or member cannot be named");
+        return livekit_refusal(400U, "M_INVALID_PARAM", "the room or member cannot be named");
     }
     auto signed_token = sign_for(service, *identity, *room_name, true, user_id, request.room_id);
     if (!signed_token.has_value())
     {
-        return refusal(500U, "M_UNKNOWN", "LiveKit tokens are unavailable");
+        return livekit_refusal(500U, "M_UNKNOWN", "LiveKit tokens are unavailable");
     }
 
     // MSC4195: the room is created before a publishing token is issued, so an SFU that does not create rooms on
@@ -453,7 +388,7 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
     // runtime.mutex released around the call only.
     if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
     {
-        return refusal(502U, "M_UNKNOWN", "this server cannot make outbound requests");
+        return livekit_refusal(502U, "M_UNKNOWN", "this server cannot make outbound requests");
     }
     auto const slot =
         admit_client_outbound_proxy(rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()));
@@ -476,7 +411,7 @@ auto issue_client_livekit_token(ClientServerRuntime& rt, LocalHttpRequest const&
                     created.ok ? "status " + std::to_string(created.response.status)
                                : std::string{http::outbound_error_name(created.error)},
                     observability::LogEventSeverity::warning);
-        return refusal(502U, "M_UNKNOWN", "the SFU could not be reached");
+        return livekit_refusal(502U, "M_UNKNOWN", "the SFU could not be reached");
     }
     observability::log_diagnostic(log_module, "livekit.token.issued",
                                   {
@@ -493,7 +428,7 @@ auto issue_federation_livekit_token(HomeserverRuntime& runtime, std::string_view
     auto const& service = runtime.config.server().rtc.token_service;
     if (service.url.empty())
     {
-        return refusal(404U, "M_UNRECOGNIZED", "no LiveKit token service is configured");
+        return livekit_refusal(404U, "M_UNRECOGNIZED", "no LiveKit token service is configured");
     }
     auto const& our_server = runtime.config.server().server_name;
     auto parsed = parse_federation_request(body, our_server);
@@ -508,7 +443,7 @@ auto issue_federation_livekit_token(HomeserverRuntime& runtime, std::string_view
     // this server's own current state (ADR-0831).
     auto const forbidden = [&](std::string_view const reason) {
         log_refusal("livekit.federation.refused", request.user_id, request.room_id, reason);
-        return refusal(403U, "M_FORBIDDEN", "No token can be issued for this user in this room.");
+        return livekit_refusal(403U, "M_FORBIDDEN", "No token can be issued for this user in this room.");
     };
     if (!room_state_is_current(store, request.room_id, our_server))
     {
@@ -524,20 +459,20 @@ auto issue_federation_livekit_token(HomeserverRuntime& runtime, std::string_view
     }
     if (request.url != service.url)
     {
-        return refusal(400U, "M_INVALID_PARAM", "url is not this server's SFU");
+        return livekit_refusal(400U, "M_INVALID_PARAM", "url is not this server's SFU");
     }
     auto const room_name = livekit_room_name(request.room_id, request.slot_id);
     auto const identity = livekit_participant_identity(request.user_id, request.member_id);
     if (!room_name.has_value() || !identity.has_value())
     {
-        return refusal(400U, "M_INVALID_PARAM", "the room or member cannot be named");
+        return livekit_refusal(400U, "M_INVALID_PARAM", "the room or member cannot be named");
     }
     // A user of another server subscribes only (MSC4195 lets a server restrict publishing for them; ADR-0831): no
     // `canPublish`, `canPublishData`, and no CreateRoom call made on another server's behalf.
     auto signed_token = sign_for(service, *identity, *room_name, false, request.user_id, request.room_id);
     if (!signed_token.has_value())
     {
-        return refusal(500U, "M_UNKNOWN", "LiveKit tokens are unavailable");
+        return livekit_refusal(500U, "M_UNKNOWN", "LiveKit tokens are unavailable");
     }
     observability::log_diagnostic(log_module, "livekit.federation.issued",
                                   {

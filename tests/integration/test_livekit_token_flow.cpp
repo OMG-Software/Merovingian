@@ -7,6 +7,7 @@
 #include "../support/ConsoleLogCapture.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
+#include "../support/LiveKitTestSupport.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TempDirectory.hpp"
@@ -49,15 +50,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
-#include <random>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -69,211 +66,7 @@ namespace
 
 namespace hs = merovingian::homeserver;
 using namespace merovingian::tests;
-
-constexpr auto sfu_url = std::string_view{"wss://sfu.example.org"};
-constexpr auto api_url = std::string_view{"https://sfu-api.example.org"};
-constexpr auto api_key = std::string_view{"APIkey_test"};
-// 32 bytes, the minimum the signers accept.
-constexpr auto api_secret = std::string_view{"0123456789abcdef0123456789abcdef"};
-constexpr auto stable_path = std::string_view{"/_matrix/client/v1/rtc/livekit/get_token"};
-constexpr auto unstable_path = std::string_view{"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token"};
-constexpr auto password = std::string_view{"CorrectHorse7!"};
-
-[[nodiscard]] auto secret_bytes(std::string_view const text) -> std::vector<std::uint8_t>
-{
-    return {text.begin(), text.end()};
-}
-
-class SecretFile final
-{
-public:
-    explicit SecretFile(std::string_view const contents)
-        : m_directory{temporary_directory() / ("merovingian-livekit-" + std::to_string(std::random_device{}()))}
-    {
-        std::filesystem::create_directories(m_directory);
-        std::filesystem::permissions(m_directory, std::filesystem::perms::owner_all);
-        m_path = m_directory / "livekit_secret";
-        auto stream = std::ofstream{m_path, std::ios::binary};
-        stream << contents;
-        stream.close();
-        std::filesystem::permissions(m_path, std::filesystem::perms::owner_read);
-    }
-    ~SecretFile()
-    {
-        auto ignored = std::error_code{};
-        std::filesystem::remove_all(m_directory, ignored);
-    }
-    SecretFile(SecretFile const&) = delete;
-    auto operator=(SecretFile const&) -> SecretFile& = delete;
-    SecretFile(SecretFile&&) = delete;
-    auto operator=(SecretFile&&) -> SecretFile& = delete;
-
-    [[nodiscard]] auto path() const -> std::string
-    {
-        return m_path.string();
-    }
-
-private:
-    std::filesystem::path m_directory;
-    std::filesystem::path m_path;
-};
-
-// The configuration with the built-in service on when `secret_path` is set, off when it is empty.
-[[nodiscard]] auto livekit_config(std::string const& secret_path) -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = shared_master_key_file();
-    enable_token_registration(security);
-    auto server = merovingian::config::ServerConfig{};
-    if (!secret_path.empty())
-    {
-        server.rtc.token_service.url = std::string{sfu_url};
-        server.rtc.token_service.api_url = std::string{api_url};
-        server.rtc.token_service.api_key = std::string{api_key};
-        server.rtc.token_service.api_secret_file = secret_path;
-        server.rtc.token_service.token_lifetime_seconds = 600U;
-    }
-    return {
-        std::move(server),   merovingian::config::ListenersConfig{},        in_memory_database_config(),
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
-    };
-}
-
-struct Answer final
-{
-    std::uint16_t status{};
-    std::string body{};
-};
-
-[[nodiscard]] auto request(hs::ClientServerRuntime& runtime, std::string method, std::string target, std::string token,
-                           std::string body) -> Answer
-{
-    auto const result = hs::handle_client_server_request(
-        runtime, {std::move(method), std::move(target), std::move(token), std::move(body)});
-    return {result.response.status, result.response.body};
-}
-
-[[nodiscard]] auto errcode_of(Answer const& answer) -> std::string
-{
-    auto const body = parse_object(answer.body);
-    auto const* errcode = string_member(body, "errcode");
-    return errcode == nullptr ? std::string{} : *errcode;
-}
-
-[[nodiscard]] auto login(hs::ClientServerRuntime& runtime, std::string const& localpart) -> std::string
-{
-    REQUIRE(
-        request(runtime, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, std::string{password}))
-            .status == 200U);
-    auto const response =
-        request(runtime, "POST", "/_matrix/client/v3/login", {},
-                R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + localpart +
-                    R"(:example.org"},"password":")" + std::string{password} + R"(","device_id":"D1"})");
-    REQUIRE(response.status == 200U);
-    auto const body = parse_object(response.body);
-    auto const* token = string_member(body, "access_token");
-    REQUIRE(token != nullptr);
-    return *token;
-}
-
-[[nodiscard]] auto token_body(std::string_view const room_id, std::string_view const url = sfu_url,
-                              std::string_view const member_id = "DEVICEID_member") -> std::string
-{
-    return R"({"url":")" + std::string{url} + R"(","room_id":")" + std::string{room_id} +
-           R"(","slot_id":"m.call#room","member_id":")" + std::string{member_id} + R"(","server_name":"example.org"})";
-}
-
-// LiveKit, as far as the room service goes: records each request and answers with `status`, or fails the call.
-struct MockLiveKit final
-{
-    std::vector<merovingian::http::OutboundRequest> requests{};
-    std::uint16_t status{200U};
-    bool reachable{true};
-};
-
-auto install_mock(hs::ClientServerRuntime& runtime, std::shared_ptr<MockLiveKit> const& mock) -> void
-{
-    runtime.homeserver.test_livekit_perform = [mock](merovingian::http::OutboundRequest const& outbound) {
-        mock->requests.push_back(outbound);
-        auto result = merovingian::http::OutboundResult{};
-        result.ok = mock->reachable;
-        if (mock->reachable)
-        {
-            result.response.status = mock->status;
-            result.response.body = "{}";
-        }
-        else
-        {
-            result.error = merovingian::http::OutboundError::network_error;
-            result.error_detail = "connection refused";
-        }
-        return result;
-    };
-}
-
-[[nodiscard]] auto header_value(merovingian::http::OutboundRequest const& outbound, std::string_view const name)
-    -> std::optional<std::string>
-{
-    for (auto const& header : outbound.headers)
-    {
-        if (header.name == name)
-        {
-            return header.value;
-        }
-    }
-    return std::nullopt;
-}
-
-[[nodiscard]] auto verified_payload(std::string_view const token) -> merovingian::canonicaljson::Object
-{
-    auto const secret = secret_bytes(api_secret);
-    auto const verified = merovingian::crypto::verify_hs256_token(token, std::span<std::uint8_t const>{secret});
-    REQUIRE(verified.has_value());
-    CHECK(verified->header_json == R"({"alg":"HS256","typ":"JWT"})");
-    return parse_object(verified->payload_json);
-}
-
-// A server with the service on, alice in a public room and bob registered but not in it.
-class LiveKitFixture final
-{
-public:
-    explicit LiveKitFixture(std::string const& secret_path = {})
-        : m_secret{api_secret}
-        , m_started{hs::start_client_server(livekit_config(secret_path.empty() ? m_secret.path() : secret_path))}
-        , m_mock{std::make_shared<MockLiveKit>()}
-    {
-        REQUIRE(m_started.started);
-        install_mock(runtime(), m_mock);
-        alice_token = login(runtime(), "alice");
-        bob_token = login(runtime(), "bob");
-        auto const created =
-            request(runtime(), "POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})");
-        REQUIRE(created.status == 200U);
-        auto const body = parse_object(created.body);
-        auto const* id = string_member(body, "room_id");
-        REQUIRE(id != nullptr);
-        room_id = *id;
-    }
-
-    [[nodiscard]] auto runtime() -> hs::ClientServerRuntime&
-    {
-        return m_started.runtime;
-    }
-
-    [[nodiscard]] auto mock() const -> MockLiveKit&
-    {
-        return *m_mock;
-    }
-
-    std::string alice_token{};
-    std::string bob_token{};
-    std::string room_id{};
-
-private:
-    SecretFile m_secret;
-    hs::ClientServerStartResult m_started;
-    std::shared_ptr<MockLiveKit> m_mock;
-};
+using namespace merovingian::tests::livekit;
 
 constexpr auto remote_server = std::string_view{"remote.example.org"};
 constexpr auto carol = std::string_view{"@carol:remote.example.org"};

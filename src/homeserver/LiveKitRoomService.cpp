@@ -85,6 +85,34 @@ auto livekit_create_room_request(std::string_view const api_url, std::string_vie
     return request;
 }
 
+auto livekit_get_participant_request(std::string_view const api_url, std::string_view const api_key,
+                                     std::span<std::uint8_t const> const api_secret, std::string_view const room_name,
+                                     std::string_view const identity, std::int64_t const now_seconds)
+    -> std::optional<http::OutboundRequest>
+{
+    auto const base = parsed_api_url(api_url);
+    if (!base.has_value() || !crypto::livekit_name_is_valid(room_name) || !crypto::livekit_name_is_valid(identity))
+    {
+        return std::nullopt;
+    }
+    auto token = crypto::sign_livekit_room_admin_token(api_key, api_secret, room_name, now_seconds,
+                                                       now_seconds + livekit_service_token_seconds);
+    if (!token.has_value())
+    {
+        return std::nullopt;
+    }
+    auto request = http::OutboundRequest{};
+    request.method = "POST";
+    request.url = twirp_url(*base, "GetParticipant");
+    request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
+    request.headers.push_back(http::OutboundHeader{"Authorization", "Bearer " + std::move(*token)});
+    // Both names are 43 base64 characters (checked above), so they need no JSON escaping.
+    request.body = R"({"room":")" + std::string{room_name} + R"(","identity":")" + std::string{identity} + R"("})";
+    request.allow_cleartext_http = base->scheme == "http";
+    request.max_response_body_bytes = livekit_response_max_bytes;
+    return request;
+}
+
 auto perform_livekit_request(http::OutboundRequest request, http::OutboundClient& client,
                              federation::CachedServerDiscovery& discovery, std::uint32_t const timeout_seconds,
                              LiveKitTestPerform const& test_perform) -> http::OutboundResult

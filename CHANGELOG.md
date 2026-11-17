@@ -9,11 +9,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * MatrixRTC calls on LiveKit need no `lk-jwt-service`: `POST .../rtc/livekit/get_token` (MSC4195) issues tokens to
   joined users; `server.rtc.livekit.url`, `api_url`, `api_key` and `api_secret_file` turn it on (ADR-0829, ADR-0830).
+* A token for another server's SFU is relayed to it over federation, and other servers' joined users get subscribe-only
+  tokens for this server's SFU, judged by the main process (ADR-0831).
+* `delegate_delayed_leave` (MSC4195): this server sends a caller's delayed leave once LiveKit no longer shows them,
+  checked every 30 s and sooner on LiveKit's signed webhook, kept across restarts (ADR-0832, ADR-0833).
 
 ## Security Fixes
 
 * LiveKit tokens are HS256, signed only by typed functions that cannot grant room creation, administration or hidden
   participants; the API secret is read per token and never logged (ADR-0828).
+* LiveKit's webhook is believed only when signed with the API secret for its exact body and recent, and even then only
+  brings a check forward: it never sends or restarts an event (ADR-0833).
 
 ## Bug fixes
 
@@ -22,9 +28,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Release notes
 
-Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, and an exact
-`state_after` on `/sync`. After a restart, the first `state_after` sync of each room with news carries its whole state
-once.
+Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
+and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
+`state_after` sync of each room with news carries its whole state once.
 
 # Version 1.1.2
 

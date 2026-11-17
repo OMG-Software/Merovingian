@@ -872,6 +872,22 @@ What the service does:
   `security.federation.per_origin_request_rate`.
 - The `livekit` logger records each issued or refused token with the user and room, never the token, the secret or
   the device.
+- A client may hand this server its call membership's delayed leave
+  (`POST /_matrix/client/v1/rtc/livekit/delegate_delayed_leave`, or the `io.element.msc4195` unstable path), so the
+  leave is sent when it drops out of the call even if it vanishes without a word (ADR-0832). The delayed event must be
+  the caller's own, scheduled, in a room the caller is joined to, with a delay of at least 5 minutes; a user holds at
+  most 20 delegations, and asking is limited to 30 a minute per user. The `livekit-delegations` job asks LiveKit about
+  each delegation every 30 seconds (`GetParticipant`, with a token of its own valid for that one room): while the
+  participant is in the call it restarts the event once less than half the delay is left, and once LiveKit no longer
+  shows the participant it sends the event at once. A participant never seen in the call is given 2 minutes to
+  connect. If LiveKit cannot be reached nothing is restarted, so the event is sent by its own timer: a lost LiveKit
+  ends memberships late, never early. Delegations survive a restart.
+- To end memberships within seconds rather than within 30 seconds, point LiveKit's webhooks at this server:
+  `webhook.urls: ["https://<your client address>/_merovingian/livekit/webhook"]` and `webhook.api_key: <api_key>` in
+  LiveKit's configuration (ADR-0833). The path is served on the client listener only while the built-in service is on.
+  A webhook is accepted only when signed by LiveKit with this API key and secret, for its exact body, and recent; it
+  then only makes the job check that participant at once. A webhook never sends or restarts an event by itself, so a
+  forged or replayed one can at most cause an early check. Without webhooks everything still works, 30 seconds slower.
 
 With the service on, `GET /_matrix/client/v1/rtc/transports` lists `{"type":"livekit","url":"<server.rtc.livekit.url>"}`
 and, on the stable path only, the same with type `m.livekit`. `/_matrix/client/versions` adds `org.matrix.msc4195`
@@ -918,8 +934,10 @@ joins without a delayed leave. The endpoints are listed in
 
 The wire shapes were taken from the source of Element Web 1.12.35, Element X 26.11.0, Element Call 0.28.2 and
 `lk-jwt-service` 0.10.0 at those releases (ADR-0823). No real client has been run against this server yet.
-`lk-jwt-service` 0.10.0 manages a delegated leave as an application service acting for the user, so an operator who
-wants that registers it as an application service whose user namespace covers the local users; see the
+With the built-in token service, a delegated leave is handled by this server itself (see
+[the built-in token service](#the-built-in-token-service-serverrtclivekit) above). With an external `lk-jwt-service`,
+0.10.0 manages a delegated leave as an application service acting for the user, so an operator who wants that
+registers it as an application service whose user namespace covers the local users; see the
 [application service section](#application-service-api-appservice).
 
 What you will notice in operation (ADR-0824, ADR-0825):

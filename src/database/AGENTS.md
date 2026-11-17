@@ -19,6 +19,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `DelayedEventStore.cpp` | The delayed-event store functions and their caps (`max_delayed_event_id_bytes` 64, `max_delayed_event_content_bytes` 65,536, `max_delayed_event_error_bytes` 1,024, `max_delayed_event_field_bytes` 255, `max_delayed_event_delay_ms` 31 days): store, restart, cancel, record the outcome of a send, delete a user's rows, prune by age. Finalising evicts the user's oldest finalised rows in the same transaction (ADR-0824, ADR-0825) |
 | `DelayedEventStatusText.cpp` | The `status` column's text for `DelayedEventStatus` and its strict parse (an unknown text makes hydration skip the row) |
 | `DelayedEventRowText.cpp` | `parse_delayed_event_row`, the one strict reading of a stored row both loaders use: the three numeric columns are 1+ ASCII digits that fit 64 bits, both booleans are exactly `true` or `false`, a scheduled row's `delay_ms` is 1 to `max_delayed_event_delay_ms`, a finalised row has a non-zero `finalised_at_ms`. Anything else is skipped, never repaired or guessed |
+| `LiveKitDelegationTable.cpp` | `LiveKitDelegationTable`, the in-memory copy of `livekit_delegations` (migration 004, ADR-0832): by delay ID, by (user, room, slot, member) and a count per user; the caps (`max_livekit_delegation_delay_id_bytes` 64, `max_livekit_delegation_field_bytes` 255) and `livekit_delegation_is_storable` |
+| `LiveKitDelegationStore.cpp` | `store_livekit_delegation` (one transaction replaces the row of the same key and of the same delay ID), `delete_livekit_delegation`, `delete_livekit_delegations_of_user` (always runs the DELETE, so a row hydration skipped goes too) |
+| `LiveKitDelegationRowText.cpp` | `parse_livekit_delegation_row`, the strict reading of a stored row both loaders use; a bad row is skipped and counted (`livekit_delegation_rows_skipped_at_load`), never repaired |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
@@ -229,6 +232,12 @@ again). A new path that revokes all of a device's or a user's tokens uses one of
 single-table revokes. The grant's
 `oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
 `remember_audit_event` after the commit). Neither table is read by the federation worker.
+
+## LiveKit delegations (migration 004, ADR-0832)
+
+`PersistentStore::livekit_delegations` is a `LiveKitDelegationTable`: write it only through `LiveKitDelegationStore.hpp`
+(hydration uses `insert`), and ask it by `find`, `find_by_key` and `count_of_user`. The store functions change memory
+only after `commit_persistent_transaction` returns true. The federation worker's load profile never reads the table.
 
 ## Delayed events (migration 003, ADR-0824)
 

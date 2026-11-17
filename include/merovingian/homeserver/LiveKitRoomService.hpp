@@ -45,6 +45,15 @@ inline constexpr auto livekit_room_departure_timeout_seconds = std::uint32_t{20U
                                                std::span<std::uint8_t const> api_secret, std::string_view room_name,
                                                std::int64_t now_seconds) -> std::optional<http::OutboundRequest>;
 
+// The `GetParticipant` request for `identity` in `room_name` (both MSC4195 names), signed with a token granting
+// `roomAdmin` over that one room only (`crypto::sign_livekit_room_admin_token`). Used only by the delegated delayed
+// leave's checks (ADR-0832). nullopt on the same refusals as `livekit_create_room_request`, or a name that is not an
+// MSC4195 name.
+[[nodiscard]] auto livekit_get_participant_request(std::string_view api_url, std::string_view api_key,
+                                                   std::span<std::uint8_t const> api_secret, std::string_view room_name,
+                                                   std::string_view identity, std::int64_t now_seconds)
+    -> std::optional<http::OutboundRequest>;
+
 // Stands in for LiveKit in tests: it is handed the finished request in place of resolving and connecting.
 using LiveKitTestPerform = std::function<http::OutboundResult(http::OutboundRequest const&)>;
 

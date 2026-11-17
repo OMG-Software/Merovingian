@@ -15,8 +15,8 @@ call is added here.
 ### Where a call goes
 
 * A call goes only to `server.rtc.livekit.api_url`, never to an address a request names.
-* `livekit_create_room_request` parses the URL again with `http::parse_outbound_url` and holds it to the
-  configuration's rule (`https`, or `http` to a loopback IP literal). It rebuilds the URL from the parsed parts with an
+* Each request builder (`livekit_create_room_request`, `livekit_get_participant_request`) parses the URL again with
+  `http::parse_outbound_url` and holds it to the configuration's rule (`https`, or `http` to a loopback IP literal). It rebuilds the URL from the parsed parts with an
   explicit port and appends `/twirp/livekit.RoomService/<Method>`.
 * `perform_livekit_request` resolves the host with `discovery.upstream().lookup_addresses`, the operator-trusted lookup
   the application service client uses (ADR-0515). The connection is pinned to the addresses found.
@@ -26,10 +26,14 @@ call is added here.
 
 ### How a call is made
 
-* Every call is made from a client request with an ADR-0079 slot held, under one deadline, and with `runtime.mutex`
+* `CreateRoom` is made from a client request with an ADR-0079 slot held, under one deadline, and with `runtime.mutex`
   released around the call only (`src/homeserver/AGENTS.md`).
-* At most 16 KiB of answer is read (`livekit_response_max_bytes`). Nothing in an answer is trusted or returned to the
-  client: only the HTTP status is read.
+* `GetParticipant` is made by the "livekit-delegations" job (ADR-0832), on its own thread, never from a client request:
+  it holds no request thread and so takes no ADR-0079 slot. The job takes `runtime.mutex` before and after its calls,
+  never during one; each call has 10 seconds, and one run makes at most 16 (`livekit_delegation_checks_per_run`).
+* At most 16 KiB of answer is read (`livekit_response_max_bytes`). Nothing in an answer is returned to a client. Of
+  `CreateRoom`'s answer only the HTTP status is read; of `GetParticipant`'s only the status, the Twirp error `code`
+  and the participant's `state`, which decide whether a delayed event is restarted, sent or left alone.
 
 ### What each call may do
 
@@ -39,8 +43,12 @@ call is added here.
 | Call | Method | Grant | When |
 |---|---|---|---|
 | Create the room | `POST /twirp/livekit.RoomService/CreateRoom`, body `{"name", "empty_timeout": 300, "departure_timeout": 20}` | `video.roomCreate` only | Before a publishing token is issued (MSC4195 MUST) |
+| Look up one participant | `POST /twirp/livekit.RoomService/GetParticipant`, body `{"room", "identity"}` (MSC4195 names) | `video.room` (that room) and `video.roomAdmin` | Each check of a delegated delayed leave (ADR-0832) |
 
-No call removes a participant, ends a room, changes permissions or reads metadata. Adding one is a change to this
+LiveKit has no grant narrower than `roomAdmin` for `GetParticipant`, so that token could also act on participants of
+its one room for its one minute. It is accepted because it names one room, is sent only to the configured address over
+verified TLS (or to a loopback address), and is never stored or logged; this server sends it with `GetParticipant`
+alone. No call removes a participant, ends a room, changes permissions or reads metadata. Adding one is a change to this
 record and a new typed signer, and a call that acts against a participant (for example `RemoveParticipant`) needs the
 owner's decision first.
 
@@ -51,7 +59,8 @@ owner's decision first.
 
 ### Positive Consequences
 
-* A leaked call token can create a room for one minute and nothing else.
+* A leaked `CreateRoom` token can create a room for one minute and nothing else; a leaked `GetParticipant` token acts
+  on one room for one minute.
 
 ### Negative Consequences
 
@@ -60,5 +69,6 @@ owner's decision first.
 
 ## Links
 
+* Refined by [ADR-0832](0832-a-delegated-delayed-leave-is-restarted-while-livekit-shows-the-participant-and-sent-once-it-does-not.md)
 * Refines [ADR-0829](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md)
 * [ADR-0079](0079-cap-client-triggered-outbound-proxying.md)

@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LegacyAuthPolicy.hpp"
+#include "merovingian/homeserver/LiveKitDelegations.hpp"
 #include "merovingian/homeserver/LiveKitTokenService.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
@@ -4203,6 +4204,9 @@ namespace
             "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
             "/_matrix/client/v1/rtc/livekit/get_token",
             "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",
+            "/_matrix/client/v1/rtc/livekit/delegate_delayed_leave",
+            "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave",
+            "/_merovingian/livekit/webhook",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
             "/_matrix/client/v3/devices",
@@ -4243,82 +4247,85 @@ namespace
             std::string_view allow;
         };
         static constexpr auto routes = std::to_array<StaticRouteMethods>({
-            {"/_matrix/client/v3/admin/safety/reports",                                     "GET, POST"       },
-            {"/_matrix/client/v3/admin/safety/policy_rules",                                "GET, POST, PUT"  },
-            {"/_matrix/client/v3/pushrules/",                                               "GET"             },
-            {"/_matrix/client/v3/pushrules/global/",                                        "GET"             },
-            {"/_matrix/client/v3/sync",                                                     "GET"             },
-            {"/_matrix/client/v4/sync",                                                     "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                            "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                 "GET, POST"       },
-            {"/_matrix/client/v3/publicRooms",                                              "GET, POST"       },
-            {"/_matrix/client/v3/register/available",                                       "GET"             },
-            {"/_matrix/client/v1/register/m.login.registration_token/validity",             "GET"             },
-            {"/_matrix/client/v3/register/email/requestToken",                              "POST"            },
-            {"/_matrix/client/v3/register/msisdn/requestToken",                             "POST"            },
-            {"/_matrix/client/v3/register",                                                 "POST"            },
-            {"/_matrix/client/v3/login",                                                    "GET, POST"       },
-            {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
-            {"/_matrix/client/v1/login/get_token",                                          "POST"            },
-            {"/_matrix/client/v3/refresh",                                                  "POST"            },
-            {"/_matrix/client/v3/logout",                                                   "POST"            },
-            {"/_matrix/client/v3/logout/all",                                               "POST"            },
-            {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
-            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
-            {"/_merovingian/oauth2/register",                                               "POST"            },
-            {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
-            {"/_merovingian/oauth2/token",                                                  "POST"            },
-            {"/_merovingian/oauth2/revoke",                                                 "POST"            },
-            {"/_merovingian/oauth2/device",                                                 "POST"            },
-            {"/_merovingian/oauth2/link",                                                   "GET, POST"       },
-            {"/_merovingian/account",                                                       "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
-            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
-            {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
-            {"/_matrix/client/v3/account/password/msisdn/requestToken",                     "POST"            },
-            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken", "POST"            },
-            {"/_matrix/client/v3/account/whoami",                                           "GET"             },
-            {"/_matrix/client/v3/account/password",                                         "POST"            },
-            {"/_matrix/client/v3/account/deactivate",                                       "POST"            },
-            {"/_matrix/client/v3/account/3pid",                                             "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/add",                                         "POST"            },
-            {"/_matrix/client/v3/account/3pid/bind",                                        "POST"            },
-            {"/_matrix/client/v3/account/3pid/unbind",                                      "POST"            },
-            {"/_matrix/client/v3/account/3pid/delete",                                      "POST"            },
-            {"/_matrix/client/v3/pushers",                                                  "GET"             },
-            {"/_matrix/client/v3/pushers/set",                                              "POST"            },
-            {"/_matrix/client/v3/notifications",                                            "GET"             },
-            {"/_matrix/client/v3/capabilities",                                             "GET"             },
-            {"/_matrix/client/v3/keys/changes",                                             "GET"             },
-            {"/_matrix/client/v3/keys/claim",                                               "POST"            },
-            {"/_matrix/client/v3/keys/device_signing/upload",                               "POST"            },
-            {"/_matrix/client/v3/keys/query",                                               "POST"            },
-            {"/_matrix/client/v3/keys/signatures/upload",                                   "POST"            },
-            {"/_matrix/client/v3/keys/upload",                                              "POST"            },
-            {"/_matrix/client/v3/thirdparty/protocols",                                     "GET"             },
-            {"/_matrix/client/v3/thirdparty/location",                                      "GET"             },
-            {"/_matrix/client/v3/thirdparty/user",                                          "GET"             },
-            {"/_matrix/media/v3/config",                                                    "GET"             },
-            {"/_matrix/media/v3/upload",                                                    "POST"            },
-            {"/_matrix/media/v1/create",                                                    "POST"            },
-            {"/_matrix/media/v3/preview_url",                                               "GET"             },
-            {"/_matrix/client/v1/media/config",                                             "GET"             },
-            {"/_matrix/client/v1/media/upload",                                             "POST"            },
-            {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
-            {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
-            {"/_matrix/client/v1/rtc/transports",                                           "GET"             },
-            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                  "GET"             },
-            {"/_matrix/client/v1/rtc/livekit/get_token",                                    "POST"            },
-            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",           "POST"            },
-            {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
-            {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
-            {"/_matrix/client/v3/devices",                                                  "GET"             },
-            {"/_matrix/client/v3/delete_devices",                                           "POST"            },
-            {"/_matrix/client/v3/createRoom",                                               "POST"            },
-            {"/_matrix/client/v3/joined_rooms",                                             "GET"             },
-            {"/_matrix/client/v1/mutual_rooms",                                             "GET"             },
-            {"/_matrix/client/v3/user_directory/search",                                    "POST"            },
-            {"/_matrix/client/v3/search",                                                   "POST"            },
+            {"/_matrix/client/v3/admin/safety/reports",                                        "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                                   "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                                  "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                                           "GET"             },
+            {"/_matrix/client/v3/sync",                                                        "GET"             },
+            {"/_matrix/client/v4/sync",                                                        "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                               "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                    "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                                 "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                                          "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity",                "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                                 "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                                "POST"            },
+            {"/_matrix/client/v3/register",                                                    "POST"            },
+            {"/_matrix/client/v3/login",                                                       "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                                          "GET"             },
+            {"/_matrix/client/v1/login/get_token",                                             "POST"            },
+            {"/_matrix/client/v3/refresh",                                                     "POST"            },
+            {"/_matrix/client/v3/logout",                                                      "POST"            },
+            {"/_matrix/client/v3/logout/all",                                                  "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                               "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                      "GET"             },
+            {"/_merovingian/oauth2/register",                                                  "POST"            },
+            {"/_merovingian/oauth2/authorize",                                                 "GET, POST"       },
+            {"/_merovingian/oauth2/token",                                                     "POST"            },
+            {"/_merovingian/oauth2/revoke",                                                    "POST"            },
+            {"/_merovingian/oauth2/device",                                                    "POST"            },
+            {"/_merovingian/oauth2/link",                                                      "GET, POST"       },
+            {"/_merovingian/account",                                                          "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",                             "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                            "POST"            },
+            {"/_matrix/client/v3/account/password/email/requestToken",                         "POST"            },
+            {"/_matrix/client/v3/account/password/msisdn/requestToken",                        "POST"            },
+            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken",    "POST"            },
+            {"/_matrix/client/v3/account/whoami",                                              "GET"             },
+            {"/_matrix/client/v3/account/password",                                            "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                                          "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                                "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                                            "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                                           "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                                         "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                                         "POST"            },
+            {"/_matrix/client/v3/pushers",                                                     "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                                 "POST"            },
+            {"/_matrix/client/v3/notifications",                                               "GET"             },
+            {"/_matrix/client/v3/capabilities",                                                "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                                "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                                  "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                                  "POST"            },
+            {"/_matrix/client/v3/keys/query",                                                  "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                                      "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                                 "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                                        "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                                         "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                                             "GET"             },
+            {"/_matrix/media/v3/config",                                                       "GET"             },
+            {"/_matrix/media/v3/upload",                                                       "POST"            },
+            {"/_matrix/media/v1/create",                                                       "POST"            },
+            {"/_matrix/media/v3/preview_url",                                                  "GET"             },
+            {"/_matrix/client/v1/media/config",                                                "GET"             },
+            {"/_matrix/client/v1/media/upload",                                                "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                                           "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                                             "GET"             },
+            {"/_matrix/client/v1/rtc/transports",                                              "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                     "GET"             },
+            {"/_matrix/client/v1/rtc/livekit/get_token",                                       "POST"            },
+            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",              "POST"            },
+            {"/_matrix/client/v1/rtc/livekit/delegate_delayed_leave",                          "POST"            },
+            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave", "POST"            },
+            {"/_merovingian/livekit/webhook",                                                  "POST"            },
+            {"/_matrix/client/v3/room_keys/version",                                           "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                                              "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                                     "GET"             },
+            {"/_matrix/client/v3/delete_devices",                                              "POST"            },
+            {"/_matrix/client/v3/createRoom",                                                  "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                                "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                                "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                                       "POST"            },
+            {"/_matrix/client/v3/search",                                                      "POST"            },
         });
         auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
         return row == routes.end() ? std::string_view{} : row->allow;
@@ -17426,6 +17433,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return DispatchResult{DispatchResult::Status::complete, handle_oauth_revoke(rt, req), {}};
         }
     }
+    // POST /_merovingian/livekit/webhook: LiveKit's signed webhook (ADR-0833). LiveKit holds no access token, so it is
+    // answered before the access-token gate; with the built-in token service off the path is not served, so it is 404
+    // whatever the method. Another method falls through to the 405 gate. LiveKitDelegations.cpp authenticates it; an
+    // authenticated event at most brings a delegation's check forward.
+    if (request_path == livekit_webhook_path)
+    {
+        if (rt.homeserver.config.server().rtc.token_service.url.empty())
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            auto const now_seconds = static_cast<std::int64_t>(delayed_event_now_ms(rt.homeserver) / 1000U);
+            auto answer = receive_livekit_webhook(rt, req, now_seconds);
+            if (!answer.ok)
+            {
+                return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+            }
+            return dispatch_resp(req, rt, 200U, std::move(answer.value));
+        }
+    }
     // POST /_merovingian/oauth2/device (spec "Device authorization grant", RFC 8628 section 3.1) and GET and POST
     // /_merovingian/oauth2/link (its verification page): answered before the access-token gate, and 404 unless both
     // the OAuth 2.0 API and the device grant are on (ADR-0804). Another method falls through to the 405 gate. The
@@ -20218,6 +20246,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  request_path == "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token"))
     {
         auto answer = issue_client_livekit_token(rt, req, *user, guard);
+        if (!answer.ok)
+        {
+            return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+        }
+        return dispatch_resp(req, rt, 200U, std::move(answer.value));
+    }
+    // POST /_matrix/client/{v1,unstable/io.element.msc4195}/rtc/livekit/delegate_delayed_leave: hand this server the
+    // caller's delayed leave, to be restarted while LiveKit shows them and sent once it does not (MSC4195; ADR-0832).
+    // LiveKitDelegations.cpp judges the request and makes no network call; this only answers.
+    if (req.method == "POST" &&
+        (request_path == "/_matrix/client/v1/rtc/livekit/delegate_delayed_leave" ||
+         request_path == "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave"))
+    {
+        auto answer = delegate_livekit_delayed_leave(rt, req.body, *user);
         if (!answer.ok)
         {
             return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);

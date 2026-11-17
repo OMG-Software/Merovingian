@@ -230,6 +230,10 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                 // again; each token for this server's SFU may cost a call to LiveKit.
                 {"/_matrix/client/v1/rtc/livekit/get_token", {60U, 60U}},
                              {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token", {60U, 60U}},
+                             // ADR-0832: a client delegates its leave once per call join and again when it
+                // replaces the delayed event; each stored delegation costs the job a call to LiveKit every 30 s.
+                {"/_matrix/client/v1/rtc/livekit/delegate_delayed_leave", {30U, 60U}},
+                             {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave", {30U, 60U}},
                              },
         .default_per_ip = {600U, 60U},
     };
