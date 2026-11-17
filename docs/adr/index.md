@@ -701,3 +701,7 @@
 * [0820 - A left room's state_after stops at what the user may read, and always holds their own membership](0820-a-left-rooms-state-after-stops-at-what-the-user-may-read.md)
 * [0821 - server.turn.uris is added beside server.turn.server, which is kept](0821-server-turn-uris-is-added-beside-server-turn-server-which-is-kept.md)
 * [0822 - The RTC transport is advertised as type livekit with livekit_service_url](0822-the-rtc-transport-is-advertised-as-type-livekit-with-livekit-service-url.md)
+* [0823 - Delayed events are served on the stable, unstable and query-parameter forms that released clients send](0823-delayed-events-are-served-on-the-stable-unstable-and-query-parameter-forms-that-released-clients-send.md)
+* [0824 - A delayed event is a stored row that is kept after it is finalised, bounded per user, and deleted with the account](0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md)
+* [0825 - A due delayed event is sent by one job through the ordinary send path, never early and at least once](0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)
+* [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
