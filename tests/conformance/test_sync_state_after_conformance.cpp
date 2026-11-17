@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
+// +-------------------------------------------------------------------------+
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE here encodes a MUST or SHOULD of the Matrix v1.19 spec   |
+// |  (the scenario header quotes it). If one fails, fix the IMPLEMENTATION  |
+// |  first. Do NOT weaken, comment out or remove an assertion, or change an |
+// |  expected value, without citing the spec section that changed.          |
+// +-------------------------------------------------------------------------+
+//
 // GET /_matrix/client/v3/sync `use_state_after` and the `state_after` section of joined and left rooms
 // (client-server-api.md, GET /sync, "Joined Room", "Left Room"; ADR-0818 to ADR-0820).
 #include "../support/JsonTestSupport.hpp"
@@ -59,6 +68,7 @@ SCENARIO("An initial sync answers state_after or state as use_state_after asks",
 
             THEN("state_after is the whole state at the end of the timeline, and state is omitted")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 auto const after = events_of(joined, "state_after");
                 REQUIRE(topics_in(after) == std::vector<std::string>{"second"});
@@ -73,6 +83,7 @@ SCENARIO("An initial sync answers state_after or state as use_state_after asks",
 
             THEN("state is the state at the start of the timeline, and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(joined);
                 REQUIRE(topics_in(events_of(joined, "state")) == std::vector<std::string>{"first"});
             }
@@ -84,6 +95,7 @@ SCENARIO("An initial sync answers state_after or state as use_state_after asks",
 
             THEN("it is as if it were false")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(joined);
                 REQUIRE(topics_in(events_of(joined, "state")) == std::vector<std::string>{"first"});
             }
@@ -120,6 +132,7 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
 
             THEN("state_after is present and empty, and state is omitted")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 REQUIRE(events_of(joined, "state_after").empty());
             }
@@ -132,7 +145,9 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
 
             THEN("state is present and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(off, "join", room));
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(absent, "join", room));
             }
         }
@@ -146,6 +161,7 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
 
             THEN("state_after repeats the change, as the client takes no state from the timeline, and nothing else")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 REQUIRE(topics_in(events_of(joined, "timeline")) == std::vector<std::string>{"second"});
                 auto const after = events_of(joined, "state_after");
@@ -178,6 +194,7 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
                 auto const* timeline = object_member_as_object(joined, "timeline");
                 REQUIRE(timeline != nullptr);
                 REQUIRE(events_of(joined, "timeline").size() == 1U);
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 auto const after = events_of(joined, "state_after");
                 REQUIRE(event_types(after) == Keys{"m.room.topic"});
@@ -209,6 +226,7 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
             THEN("state_after is present and does not hold it")
             {
                 auto const& joined = required_room(synced, "join", room);
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 REQUIRE(events_of(joined, "state_after").empty());
             }
@@ -290,6 +308,7 @@ SCENARIO("full_state=true returns the whole state in the section use_state_after
 
             THEN("state_after holds all state, the timeline's change included, and state is omitted")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 auto const after = events_of(joined, "state_after");
                 REQUIRE(event_types(after).contains("m.room.create"));
@@ -304,6 +323,7 @@ SCENARIO("full_state=true returns the whole state in the section use_state_after
 
             THEN("state holds all state up to the start of the timeline, and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(joined);
                 auto const state = events_of(joined, "state");
                 REQUIRE(event_types(state).contains("m.room.create"));
@@ -319,6 +339,7 @@ SCENARIO("full_state=true returns the whole state in the section use_state_after
             THEN("the room is still reported, with all state")
             {
                 auto const& joined = required_room(synced, "join", room);
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 REQUIRE(event_types(events_of(joined, "state_after")).contains("m.room.create"));
             }
@@ -361,6 +382,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state_after is the state up to his leave, the leave included, and state is omitted")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 REQUIRE(topics_in(after) == std::vector<std::string>{"changed before the leave"});
@@ -376,7 +398,9 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state is present and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(absent, "leave", room));
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(off, "leave", room));
             }
         }
@@ -387,6 +411,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state_after holds what changed up to his leave and the leave, though the timeline carries it")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 REQUIRE(content_of(events_of(left, "timeline"), "m.room.member", user_id("dave"), "membership") ==
                         "leave");
@@ -402,6 +427,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state is present and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(synced, "leave", room));
             }
         }
@@ -413,6 +439,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state_after is present and state is omitted")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
             }
         }
@@ -423,6 +450,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state is present and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(required_room(synced, "leave", room));
             }
         }
@@ -448,6 +476,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state_after holds his ban and nothing of what happened after he left")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 REQUIRE(topics_in(after).empty());
@@ -487,6 +516,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 
             THEN("state_after holds only her own leave, as she never could read the room")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 REQUIRE(event_types(after) == Keys{"m.room.member"});
@@ -529,6 +559,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
 
             THEN("state_after keeps other state and only the sender's and her own membership")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 auto const after = events_of(joined, "state_after");
                 REQUIRE(topics_in(after) == std::vector<std::string>{"first"});
@@ -542,6 +573,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
 
             THEN("state holds those members, and state_after is omitted")
             {
+                // Spec MUST: with use_state_after false or absent the room carries state and omits state_after.
                 require_state_only(joined);
                 REQUIRE(member_keys(events_of(joined, "state")) == Keys{user_id("alice"), user_id("bob")});
             }
@@ -559,6 +591,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(member_keys(events_of(required_room(second, "join", room), "state_after")) ==
                         Keys{user_id("carol")});
                 auto const after = events_of(required_room(third, "join", room), "state_after");
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(required_room(third, "join", room));
                 REQUIRE(member_keys(after).empty());
             }
@@ -614,6 +647,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
 
             THEN("state_after holds her own membership and all other state")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(joined);
                 auto const after = events_of(joined, "state_after");
                 REQUIRE(event_types(after).contains("m.room.create"));
@@ -644,6 +678,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
 
             THEN("state_after holds his leave and the sender's membership")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 REQUIRE(member_keys(after) == Keys{user_id("bob"), user_id("dave")});
@@ -659,6 +694,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
 
             THEN("state_after keeps other state and holds only his own membership among members")
             {
+                // Spec MUST: with use_state_after=true the room carries state_after and omits state.
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 REQUIRE(event_types(after).contains("m.room.create"));
