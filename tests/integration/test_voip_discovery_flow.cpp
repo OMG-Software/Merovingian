@@ -109,10 +109,15 @@ SCENARIO("GET /voip/turnServer returns every server.turn.uris entry in order wit
             {
                 REQUIRE(response.status == 200U);
                 auto const body = parse_object(response.body);
-                REQUIRE(string_member(body, "username") != nullptr);
-                CHECK(*string_member(body, "username") == "turnuser");
-                CHECK(*string_member(body, "password") == "turnpass");
-                CHECK(*int_member(body, "ttl") == 600);
+                auto const* username = string_member(body, "username");
+                REQUIRE(username != nullptr);
+                CHECK(*username == "turnuser");
+                auto const* password = string_member(body, "password");
+                REQUIRE(password != nullptr);
+                CHECK(*password == "turnpass");
+                auto const* ttl = int_member(body, "ttl");
+                REQUIRE(ttl != nullptr);
+                CHECK(*ttl == 600);
                 auto const* uris = object_member_as_array(body, "uris");
                 REQUIRE(uris != nullptr);
                 REQUIRE(uris->size() == 3U);
@@ -207,8 +212,12 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
                 auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&(*transports)[0U].storage());
                 REQUIRE(entry != nullptr);
                 CHECK(entry->size() == 2U);
-                CHECK(*string_member(*entry, "type") == "livekit");
-                CHECK(*string_member(*entry, "livekit_service_url") == livekit_url);
+                auto const* type = string_member(*entry, "type");
+                REQUIRE(type != nullptr);
+                CHECK(*type == "livekit");
+                auto const* service_url = string_member(*entry, "livekit_service_url");
+                REQUIRE(service_url != nullptr);
+                CHECK(*service_url == livekit_url);
             }
         }
 
@@ -230,8 +239,12 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
                 auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&(*transports)[0U].storage());
                 REQUIRE(entry != nullptr);
                 CHECK(entry->size() == 2U);
-                CHECK(*string_member(*entry, "type") == "livekit");
-                CHECK(*string_member(*entry, "livekit_service_url") == livekit_url);
+                auto const* type = string_member(*entry, "type");
+                REQUIRE(type != nullptr);
+                CHECK(*type == "livekit");
+                auto const* service_url = string_member(*entry, "livekit_service_url");
+                REQUIRE(service_url != nullptr);
+                CHECK(*service_url == livekit_url);
             }
         }
 
@@ -361,8 +374,12 @@ SCENARIO("/.well-known/matrix/client carries rtc_foci only when a service is con
                 auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&(*foci)[0U].storage());
                 REQUIRE(entry != nullptr);
                 CHECK(entry->size() == 2U);
-                CHECK(*string_member(*entry, "type") == "livekit");
-                CHECK(*string_member(*entry, "livekit_service_url") == livekit_url);
+                auto const* type = string_member(*entry, "type");
+                REQUIRE(type != nullptr);
+                CHECK(*type == "livekit");
+                auto const* service_url = string_member(*entry, "livekit_service_url");
+                REQUIRE(service_url != nullptr);
+                CHECK(*service_url == livekit_url);
             }
         }
     }

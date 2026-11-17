@@ -225,9 +225,12 @@ SCENARIO("GET /voip/turnServer lists every server.turn.uris entry in order with 
                 auto const* uris = object_member_as_array(body, "uris");
                 REQUIRE(uris != nullptr);
                 REQUIRE(uris->size() == 2U);
-                REQUIRE(*std::get_if<std::string>(&(*uris)[0U].storage()) ==
-                        "turn:turn.example.org:3478?transport=udp");
-                REQUIRE(*std::get_if<std::string>(&(*uris)[1U].storage()) == "turns:turn.example.org:5349");
+                auto const* first = std::get_if<std::string>(&(*uris)[0U].storage());
+                auto const* second = std::get_if<std::string>(&(*uris)[1U].storage());
+                REQUIRE(first != nullptr);
+                REQUIRE(second != nullptr);
+                REQUIRE(*first == "turn:turn.example.org:3478?transport=udp");
+                REQUIRE(*second == "turns:turn.example.org:5349");
             }
         }
     }
