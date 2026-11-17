@@ -173,7 +173,7 @@ struct Synced final
 // Whether `room` has the member `part`, whatever it holds.
 [[nodiscard]] inline auto has_part(Object const& room, std::string_view part) -> bool
 {
-    return object_member_as_object(room, part) != nullptr;
+    return object_member(room, part) != nullptr;
 }
 
 // The events of `room.<part>`, which must be present.
