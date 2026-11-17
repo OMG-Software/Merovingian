@@ -473,13 +473,14 @@ struct FixtureExpectations final
     auto length = std::size_t{0U};
     REQUIRE(sodium_hex2bin(key.data(), key.size(), hex.c_str(), hex.size(), nullptr, &length, nullptr) == 0);
     REQUIRE(length == key.size());
-    auto const path = merovingian::tests::temporary_directory() /
-                      ("merovingian-upgrade-fixture-master-" +
-                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".key");
+    auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-fixture-master", ".key");
     {
         auto output = std::ofstream{path, std::ios::binary};
+        REQUIRE(output.is_open());
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         output.write(reinterpret_cast<char const*>(key.data()), static_cast<std::streamsize>(key.size()));
+        output.close();
+        REQUIRE_FALSE(output.fail());
     }
     std::filesystem::permissions(path, std::filesystem::perms::owner_read);
     return path;
@@ -529,12 +530,13 @@ struct FixtureExpectations final
 // The runtime reads its database URI only from an owner-read-only file (ISO-7).
 [[nodiscard]] auto write_uri_file(std::string const& conninfo) -> std::filesystem::path
 {
-    auto const path =
-        merovingian::tests::temporary_directory() /
-        ("merovingian-upgrade-uri-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-uri", "");
     {
         auto output = std::ofstream{path};
+        REQUIRE(output.is_open());
         output << conninfo << '\n';
+        output.close();
+        REQUIRE_FALSE(output.fail());
     }
     std::filesystem::permissions(path, std::filesystem::perms::owner_read);
     return path;
@@ -1319,7 +1321,7 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
     GIVEN("a copy of the SQLite database the last 1.0.x release wrote, and its master key")
     {
         auto const expected = load_fixture_expectations("sqlite");
-        auto const path = unique_sqlite_path("fixture");
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-fixture", ".sqlite3");
         std::filesystem::copy_file(fixture_directory() / "merovingian.sqlite3", path,
                                    std::filesystem::copy_options::overwrite_existing);
         std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
