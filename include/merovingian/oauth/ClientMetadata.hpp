@@ -45,20 +45,20 @@ public:
     // The metadata of a registration request body, already parsed as JSON, or a refusal:
     //
     //  - not an object, more than max_members members, a duplicated key, or a known key of the wrong JSON type:
-    //    `invalid_client_metadata`;
-    //  - `client_uri` (required): ClientUri::read, else `invalid_client_metadata`;
-    //  - `application_type`: `web` (also when omitted) or `native`, else `invalid_client_metadata`;
-    //  - `redirect_uris`: an array of at most max_redirect_uris strings; each is checked by validate_redirect_uri and
-    //    a failure is `invalid_redirect_uri`; duplicates collapse and the result is sorted;
-    //  - `grant_types`: `["authorization_code"]` when omitted; unknown values are ignored and duplicates collapse.
-    //    An array with no known value is `invalid_client_metadata`;
-    //  - `response_types`: `["code"]` when omitted; unknown values are ignored. With `authorization_code` registered,
-    //    `code` and at least one redirect URI are required, else `invalid_client_metadata`;
-    //  - `token_endpoint_auth_method`: omitted or `none`, else `invalid_client_metadata`;
+    //    `invalid_client_metadata`.
+    //  - `client_uri` (required): ClientUri::read, else `invalid_client_metadata`.
+    //  - `application_type`: `web` (also when omitted) or `native`, else `invalid_client_metadata`.
+    //  - `redirect_uris`: an array of at most max_redirect_uris strings. Each is checked by validate_redirect_uri and
+    //    a failure is `invalid_redirect_uri`. Duplicates collapse and the result is sorted.
+    //  - `grant_types`: `["authorization_code"]` when omitted. Unknown values are ignored and duplicates collapse.
+    //    An array with no known value is `invalid_client_metadata`.
+    //  - `response_types`: `["code"]` when omitted. Unknown values are ignored. With `authorization_code` registered,
+    //    `code` and at least one redirect URI are required, else `invalid_client_metadata`.
+    //  - `token_endpoint_auth_method`: omitted or `none`, else `invalid_client_metadata`.
     //  - `client_name`: 1 to max_client_name_bytes bytes passing display_text_is_safe, else
-    //    `invalid_client_metadata`;
+    //    `invalid_client_metadata`.
     //  - `policy_uri`, `tos_uri`: a ParsedUri accepted by https_uri_is_on_client_host, else
-    //    `invalid_client_metadata`;
+    //    `invalid_client_metadata`.
     //  - `logo_uri`, every localised key (`name#lang`) and every other key: ignored, never registered.
     [[nodiscard]] static auto validate(canonicaljson::Value const& request)
         -> std::variant<ClientMetadata, OAuthRefusal>;
