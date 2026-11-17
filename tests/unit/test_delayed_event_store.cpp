@@ -176,6 +176,11 @@ SCENARIO("The delayed-event delay maximum is one number in the config and the da
     }
 }
 
+// `store_delayed_event` is the one place a new row enters the table, and it judges the row before it builds a statement
+// (ADR-0824). This scenario proves what it refuses and what it accepts: every length cap is tested at the cap and one
+// byte over, a refusal writes nothing, and a repeated delay ID or transaction is refused without a write. The caps are
+// cases of one table, not scenarios, because each case is the same call on a fresh store and only the changed field
+// differs. The per-user cap on scheduled rows is not enforced here on purpose, and the last WHEN pins that.
 SCENARIO("A delayed event is stored once, within its caps, and refused outside them",
          "[database][delayed-events][delayed-event-store]")
 {
@@ -192,6 +197,9 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                 std::function<void(PersistentDelayedEvent&)> change;
                 bool stored;
             };
+            // Each limit is a pair, the largest accepted value and one over it, so a comparison written as < instead of
+            // <= moves the boundary by one and fails a case. The lambda changes one field of an otherwise valid row, so
+            // a refusal can only be that field's.
             auto const cases = std::vector<Case>{
                 {"baseline",
                  [](PersistentDelayedEvent&) {
@@ -260,6 +268,9 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                  [](PersistentDelayedEvent& r) {
                      r.device_id = std::string(db::max_delayed_event_field_bytes, 'v');
                  }, true },
+                // A NUL byte in any text column is refused, because PostgreSQL TEXT cannot hold one and the table's
+                // transaction key joins its parts with one. Every column gets its own case so that a check missing from
+                // one column is a failure.
                 {"delay id with a NUL byte",
                  [](PersistentDelayedEvent& r) {
                      r.delay_id += std::string{'\0'} + "x";
@@ -316,6 +327,9 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                  [](PersistentDelayedEvent& r) {
                      r.delay_ms = 1U;
                  }, true },
+                // A delay of 0 is refused. Read back as a scheduled row it would be due at once, which is sending early
+                // (ADR-0824). The largest delay is the 31 day maximum that the config module must agree with (the first
+                // scenario of this file).
                 {"delay of zero",
                  [](PersistentDelayedEvent& r) {
                      r.delay_ms = 0U;
@@ -328,6 +342,9 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                  [](PersistentDelayedEvent& r) {
                      r.delay_ms = db::max_delayed_event_delay_ms + 1U;
                  }, false},
+                // A new row is always scheduled with no outcome. A row reaches sent, cancelled or failed only by
+                // finalising a scheduled one, so a row that already claims an outcome, a finalised time, an event ID or
+                // an error is refused.
                 {"status sent",
                  [](PersistentDelayedEvent& r) {
                      r.status = DelayedEventStatus::sent;
@@ -353,12 +370,16 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                      r.error_json = "{}";
                  }, false},
             };
+            // The outcomes and the transaction counts are collected first and judged in the THEN, so the loop only acts
+            // and the THEN holds every assertion about it.
             auto outcomes = std::vector<std::pair<std::string, bool>>{};
             auto transactions_by_refusal = std::vector<std::uint64_t>{};
             for (auto const& each : cases)
             {
                 auto candidate = row("d-case");
                 each.change(candidate);
+                // A refused row must leave the database untouched, so the transaction count is read before the call and
+                // the difference is recorded for every refused case.
                 // A fresh store per case: the baseline's ID would otherwise collide with the next case.
                 auto fresh = opened_store();
                 auto const before = db::committed_transaction_count(fresh.store);
@@ -384,6 +405,9 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
             }
         }
 
+        // The delay ID is the primary key and the (user, device, room, type, transaction ID) key is the idempotency
+        // key, so a second row for either is refused without a commit. The same transaction ID on another device is a
+        // different key. The repeat of `d-1` is by another user, to show that the existing row is not overwritten.
         WHEN("a delay ID is stored twice, and the same transaction is stored under a second delay ID")
         {
             auto first = row("d-1");
@@ -412,6 +436,8 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
             }
         }
 
+        // 150 is above the default cap of 100 per user. The caller needs the count of scheduled rows to compute
+        // `Retry-After` (ADR-0826), so the cap is the caller's check and the store accepts all of them.
         WHEN("rows are stored for a user beyond any plausible per-user cap")
         {
             auto all = true;
@@ -552,6 +578,11 @@ SCENARIO("A failed commit leaves the delayed-events mirror unchanged",
     }
 }
 
+// `record_delayed_event_outcome` finalises a row after the send was attempted (ADR-0825). It is the one store function
+// whose memory changes even when its commit fails, because the event is already sent and a row left scheduled would be
+// sent again on every run of the job. The first WHEN proves that exception and the second proves that an outcome of the
+// wrong shape is refused and writes nothing. They share one GIVEN because both start from scheduled rows that the job
+// has marked as being sent.
 SCENARIO("The outcome of a send is recorded, and a failed commit still finalises memory",
          "[database][delayed-events][delayed-event-store]")
 {
@@ -566,6 +597,8 @@ SCENARIO("The outcome of a send is recorded, and a failed commit still finalises
         REQUIRE(store.delayed_events.mark_being_sent("d-bad"));
         REQUIRE(store.delayed_events.mark_being_sent("d-lost"));
 
+        // `force_next_persist_failures` makes the next commit fail with no write. The transaction count after equals
+        // the count before, which shows the database changed nothing while memory still finalised the row.
         WHEN("a success, a failure and a success whose commit fails are recorded")
         {
             auto const sent =
@@ -597,6 +630,9 @@ SCENARIO("The outcome of a send is recorded, and a failed commit still finalises
             }
         }
 
+        // A sent outcome needs an event ID and no error, a failed outcome needs an error and no event ID, and no other
+        // status is an outcome, so each wrong shape is a separate call on the same scheduled row. The row is then
+        // finalised once, and a second outcome for it is refused, because an outcome is recorded once.
         WHEN("an outcome is recorded with the wrong shape, for an absent row and for a finalised row")
         {
             auto const no_event =
@@ -621,6 +657,7 @@ SCENARIO("The outcome of a send is recorded, and a failed commit still finalises
                     DelayedEventOutcomeResult::recorded);
             auto const twice =
                 db::record_delayed_event_outcome(store, "d-ok", DelayedEventStatus::sent, 2U, "$f", {}, 10U);
+            // The error exactly at its cap (1,024 bytes) is the one accepted case, against `long_error` one byte over.
             auto const at_cap =
                 db::record_delayed_event_outcome(store, "d-bad", DelayedEventStatus::failed, 1U, {},
                                                  std::string(db::max_delayed_event_error_bytes, 'e'), 10U);
@@ -643,6 +680,12 @@ SCENARIO("The outcome of a send is recorded, and a failed commit still finalises
     }
 }
 
+// A finalised row is kept for the spec's idempotent answers, bounded per user by `max_finalised_per_user` (ADR-0824).
+// The row being finalised is still scheduled when the bound is judged, so a user at the bound loses the oldest
+// finalised row to make room for it. The eviction must be in the same transaction as the status update, so a crash
+// cannot leave the user over the bound or a row finalised without its eviction. The captured statements and the
+// transaction counts prove that. The GIVENs differ in size: a small one for the exact arithmetic and one with 300 rows
+// for the batching of the DELETE.
 SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evicting the oldest in the same transaction",
          "[database][delayed-events][delayed-event-store]")
 {
@@ -656,6 +699,8 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
         REQUIRE(db::store_delayed_event(store, row("live-2")));
         db::enable_statement_capture(store, 16U);
 
+        // Three finalised rows and a bound of 3: finalising a fourth evicts exactly the oldest (`old-0`, finalised
+        // first), so the user ends at 3. The other user's row proves the eviction is per user.
         WHEN("a row is cancelled with a bound of 3")
         {
             auto const before = db::committed_transaction_count(store);
@@ -711,6 +756,8 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
             }
         }
 
+        // The mirror changes only after the commit (ADR-0824), so a failed commit must leave both the status and the
+        // rows that would have been evicted as they were.
         WHEN("the evicting commit fails")
         {
             db::force_next_persist_failures(store, 1U);
@@ -733,6 +780,8 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
         REQUIRE(db::store_delayed_event(store, row("live")));
         db::enable_statement_capture(store, 16U);
 
+        // 300 held, 1 more, bound 100: 201 rows go and 99 old ones stay. A DELETE names at most 128 delay IDs, so 201
+        // rows are two DELETE statements, and with the UPDATE that is three statements in one transaction.
         WHEN("one more row is cancelled with a bound of 100")
         {
             auto const before = db::committed_transaction_count(store);
@@ -751,6 +800,9 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
     }
 }
 
+// Deactivation deletes every row of the user, scheduled and finalised, in one statement (ADR-0824). The second call is
+// for a user with no rows, which still runs its DELETE, because a row that hydration skipped is in the database and not
+// in memory (the next scenario).
 SCENARIO("All of a user's delayed events are deleted in one statement",
          "[database][delayed-events][delayed-event-store]")
 {
@@ -787,6 +839,9 @@ SCENARIO("All of a user's delayed events are deleted in one statement",
     }
 }
 
+// A row the loader skipped is in the file and not in memory. If deletion asked memory first it would find nothing and
+// skip the DELETE, and the row would outlive its account (ADR-0824). The row is written with raw SQL on purpose,
+// because the store functions would also put it in memory.
 SCENARIO("Deactivation deletes a delayed event that exists only in the database",
          "[database][delayed-events][delayed-event-store][sqlite]")
 {
@@ -816,6 +871,9 @@ SCENARIO("Deactivation deletes a delayed event that exists only in the database"
     }
 }
 
+// The delayed-events job prunes finalised rows past the age bound, a bounded batch per run, oldest first (ADR-0824).
+// This scenario proves the cutoff is exclusive, the batch limit is honoured, a scheduled row is never pruned, and a
+// prune of nothing writes nothing. The rows are finalised at 100 to 109 so the cutoffs name exact rows.
 SCENARIO("Pruning by age deletes the oldest finalised rows below the cutoff, up to the row limit",
          "[database][delayed-events][delayed-event-store]")
 {
@@ -825,10 +883,13 @@ SCENARIO("Pruning by age deletes the oldest finalised rows below the cutoff, up 
         auto& store = opened.store;
         fill_finalised(store, "r", alice, 10U);
         fill_finalised(store, "early", bob, 1U);
+        // `early-0` was already cancelled by `fill_finalised`, so a second cancel is refused. It is finalised at 100,
+        // the same time as `r-0`, so a prune must treat equal times alike and take both in delay ID order.
         REQUIRE(db::cancel_delayed_event(store, "early-0", 1U, 100U) == false);
         REQUIRE(db::store_delayed_event(store, row("live")));
         db::enable_statement_capture(store, 16U);
 
+        // Six rows are below 105 (`r-0` to `r-4` and `early-0`), and a limit of 3 takes the three oldest of them.
         WHEN("rows below 105 are pruned with a limit of 3")
         {
             auto const before = db::committed_transaction_count(store);
@@ -860,6 +921,8 @@ SCENARIO("Pruning by age deletes the oldest finalised rows below the cutoff, up 
             }
         }
 
+        // Both calls find nothing. The cutoff is exclusive, so a cutoff equal to the oldest finalised time deletes
+        // nothing, and neither call may open a transaction.
         WHEN("the limit is zero, or the cutoff is at the oldest row")
         {
             auto const before = db::committed_transaction_count(store);
@@ -876,6 +939,7 @@ SCENARIO("Pruning by age deletes the oldest finalised rows below the cutoff, up 
         }
     }
 
+    // 300 rows exceed the 128 IDs one DELETE may name, so the batching is exercised: 128, 128 and 44.
     GIVEN("300 finalised rows")
     {
         auto opened = opened_store();
@@ -899,6 +963,10 @@ SCENARIO("Pruning by age deletes the oldest finalised rows below the cutoff, up 
     }
 }
 
+// A delayed event must survive a restart, because a lost call leave leaves a vanished participant listed in the call
+// (ADR-0824). This scenario writes rows of every status through the store functions into a file, opens the file again
+// and compares every column and every index, so a column the writer or the loader forgets is a failure. The later WHENs
+// prove the loader skips a row it cannot read exactly and that deletions reached the file, not just memory.
 SCENARIO("Delayed events survive a reopen of a SQLite store with every column and index",
          "[database][delayed-events][delayed-event-store][sqlite]")
 {
@@ -917,10 +985,14 @@ SCENARIO("Delayed events survive a reopen of a SQLite store with every column an
             first.device_id = "";
             first.via_appservice = true;
             first.txn_id = "";
+            // The largest delay, an empty device ID, a state key and the appservice flag are set so that this row
+            // exercises the columns a plain message leaves at their defaults.
             first.delay_ms = db::max_delayed_event_delay_ms;
             first.delayed_since_ms = 123'456'789U;
             auto message = row("d-message");
             message.txn_id = "txn-1";
+            // Content with an escaped newline, escaped quotes and a non-ASCII letter proves the text comes back byte
+            // for byte through the column.
             message.content_json = R"({"body":"line\nbreak \"quoted\" é"})";
             REQUIRE(db::store_delayed_event(opened.store, first));
             REQUIRE(db::store_delayed_event(opened.store, message));
@@ -974,6 +1046,8 @@ SCENARIO("Delayed events survive a reopen of a SQLite store with every column an
                 REQUIRE(table.scheduled_count(alice) == 2U);
                 REQUIRE(table.finalised_count(alice) == 2U);
                 REQUIRE(table.finalised_count(bob) == 1U);
+                // `d-message` is due at 61,000. `d-state` is due much later because its delay is the maximum, so the
+                // due order index must rebuild with `d-message` first.
                 REQUIRE(table.earliest_due() == table.find("d-message"));
                 REQUIRE(table.earliest_due_ms_of_user(alice) == std::optional<std::uint64_t>{61'000U});
                 REQUIRE(table.find_by_transaction(alice, "DEVICE", "!room:example.org", "m.room.message", "txn-1") ==
@@ -983,6 +1057,8 @@ SCENARIO("Delayed events survive a reopen of a SQLite store with every column an
             }
         }
 
+        // 'done' is not a status the store writes. The loader skips the row and never repairs it (ADR-0824), and the
+        // file still holds it afterwards, since a repair would be a guess.
         WHEN("the file holds a row whose status text is not one of the four, and the store is opened")
         {
             {
@@ -1006,6 +1082,8 @@ SCENARIO("Delayed events survive a reopen of a SQLite store with every column an
             }
         }
 
+        // A prune below 2001 takes `d-sent` (finalised at 2000) and not `d-cancelled` (2001), and the user deletion
+        // takes `d-failed`. Reopening shows that the file, and not only memory, lost them.
         WHEN("the rows are deleted by user and by prune and the store is opened again")
         {
             {

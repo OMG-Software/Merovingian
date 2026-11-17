@@ -518,6 +518,11 @@ SCENARIO("A delayed state event is sent as a state event and stamped with the ti
     }
 }
 
+// The spec answers a repeated management action with 200 or 409 by the state the event is in (ADR-0824, ADR-0825), and
+// a restart moves the deadline. The first GIVEN proves the restart and the cancel on one event. The second holds one
+// event in each state of its life (scheduled, sent, cancelled, failed and being sent) and asks every action of every
+// state, so a cell of the outcome table that nobody thought of is still answered. The cells share one GIVEN because
+// building the five states is the expensive part, and a THEN loop with INFO names the cell that fails.
 SCENARIO("Restarting a delayed event moves its deadline, and every cell of the outcome table is answered",
          "[homeserver][delayed-events][manage]")
 {
@@ -538,6 +543,10 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
                 CHECK(restarted.value.empty());
                 CHECK(*int_member(looked_up(fixture, alice, id), "delayed_since_ts") ==
                       static_cast<std::int64_t>(t0 + 20'000U));
+                // t0 + 60 s is the due time the event had before the restart. The restart moved the deadline to the
+                // restart time plus the delay, so this run must send nothing, and one millisecond before the new
+                // deadline must send nothing either. Only the exact new deadline sends, which is the boundary of never
+                // early (ADR-0825).
                 drain_job(fixture, t0 + 60'000U);
                 CHECK(fixture.event_count() == before);
                 drain_job(fixture, t0 + 80'000U - 1U);
@@ -547,6 +556,8 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
             }
         }
 
+        // A cancelled row stays in the table so that a lookup still answers (ADR-0824). The clock is moved far past the
+        // due time, so a cancelled row that the job still offered as due would be sent.
         WHEN("it is cancelled")
         {
             auto const cancelled = manage(fixture, alice, id, hs::DelayedEventAction::cancel);
@@ -564,6 +575,8 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
         }
     }
 
+    // Each state is reached the way it is reached in production, through the job and the management calls, and not by
+    // writing the status, so the table holds what the runtime would hold.
     GIVEN("one delayed event in each state of its life")
     {
         auto fixture = Fixture{memory_config()};
@@ -573,6 +586,8 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
         auto const failed = scheduled_id(fixture, message_request(fixture, bob, "d", 2'000U));
         auto const being_sent = scheduled_id(fixture, message_request(fixture, alice, "e"));
         REQUIRE(manage(fixture, alice, cancelled, hs::DelayedEventAction::cancel).ok);
+        // Bob leaves the room, so his event fails when it falls due: the sender is authorised against the room as it is
+        // then, not as it was when the event was scheduled (ADR-0825). That is how the failed state is reached.
         REQUIRE(request(fixture.runtime(), "POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/leave",
                         fixture.bob_token, "{}")
                     .status == 200U);
@@ -580,6 +595,8 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
         drain_job(fixture, t0 + 5'000U);
         REQUIRE(status_of(fixture, alice, sent) == db::DelayedEventStatus::sent);
         REQUIRE(status_of(fixture, bob, failed) == db::DelayedEventStatus::failed);
+        // The being-sent mark is held only while the job is inside the send, and a test cannot stop there, so the mark
+        // is set through the table. It is in memory only, as in production, and it makes every action answer 409.
         REQUIRE(fixture.table().mark_being_sent(being_sent));
 
         using Action = hs::DelayedEventAction;
@@ -593,6 +610,7 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
             std::uint16_t status;
             std::string_view reason;
         };
+        // The reasons are the exact texts a client reads, so a reworded refusal is a failure.
         auto const sent_reason = std::string_view{"The delayed event has already been sent."};
         auto const cancelled_reason = std::string_view{"The delayed event has already been cancelled."};
         auto const being_reason = std::string_view{"The delayed event is being sent."};
@@ -600,6 +618,10 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
         THEN("the outcome table of the design holds cell by cell")
         {
             auto const cells = std::vector<Expected>{
+                // A sent event answers `send` with 200 and the other two with 409. A cancelled event and a failed one
+                // are both cancelled for the client: the same reason text, and `cancel` is the repeat that answers 200.
+                // A being-sent event answers 409 to all three, since a second send, restart or cancel must not race the
+                // send.
                 {"sent restart",       &sent,       alice, Action::restart, false, 409U, sent_reason     },
                 {"sent cancel",        &sent,       alice, Action::cancel,  false, 409U, sent_reason     },
                 {"sent send",          &sent,       alice, Action::send,    true,  200U, {}              },
@@ -625,6 +647,8 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
                     CHECK(result.reason == cell.reason);
                 }
             }
+            // The scheduled event was never asked about, and a being-sent row refused every action, so neither has
+            // changed.
             CHECK(status_of(fixture, alice, scheduled) == db::DelayedEventStatus::scheduled);
             CHECK(status_of(fixture, alice, being_sent) == db::DelayedEventStatus::scheduled);
         }
@@ -996,12 +1020,18 @@ SCENARIO("Scheduling the same transaction again returns the same delay ID and st
     }
 }
 
+// Scheduling checks what it can check cheaply at once: that the sender is in the room and, for a state event, may send
+// it. The real authorisation is at send time (ADR-0825). This scenario proves that a refusal at scheduling is the
+// refusal the ordinary route gives for the same event, status for status, so a client cannot tell a delayed send from
+// an immediate one by how it is refused, and that nothing is stored when it is refused. The second WHEN proves the size
+// and shape limits (ADR-0826) at their boundary, again with nothing stored.
 SCENARIO("A delayed event the sender could not send now is refused when it is scheduled, as the ordinary routes refuse",
          "[homeserver][delayed-events][schedule][refusal]")
 {
     GIVEN("a room, a user who is not in it and a user without the power to send state")
     {
         auto fixture = Fixture{memory_config()};
+        // Carol is signed in and is not in the room, so the only reason to refuse her is that she is not a member.
         auto const carol_token = sign_in(fixture.runtime(), "carol", "D3");
         auto const unknown_room = std::string{"!nowhere:example.org"};
 
@@ -1013,10 +1043,14 @@ SCENARIO("A delayed event the sender could not send now is refused when it is sc
             auto const unknown_ordinary = request(
                 fixture.runtime(), "PUT", "/_matrix/client/v3/rooms/" + unknown_room + "/send/m.test.delayed/t1",
                 fixture.alice_token, R"({"body":"x"})");
+            // A user who is not in the room, and a room that does not exist, are refused by the ordinary route too. The
+            // same event is sent through it so the expected status is read from the real route and not written here.
             auto const stranger_result = schedule(fixture, message_request(fixture, "@carol:example.org"));
             auto const stranger_ordinary = request(
                 fixture.runtime(), "PUT", "/_matrix/client/v3/rooms/" + fixture.room_id + "/send/m.test.delayed/t1",
                 carol_token, R"({"body":"x"})");
+            // Bob is in the room, so membership cannot be what refuses him. A state event needs a power level that he
+            // does not have, which is the `may_send_state_event` check.
             auto const weak_result = schedule(fixture, state_request(fixture, bob));
             auto const weak_ordinary =
                 request(fixture.runtime(), "PUT", "/_matrix/client/v3/rooms/" + fixture.room_id + "/state/m.test.state",
@@ -1038,6 +1072,10 @@ SCENARIO("A delayed event the sender could not send now is refused when it is sc
 
         WHEN("an oversized type, transaction ID or content, or a NUL byte, is scheduled")
         {
+            // Each value is one over a limit, or a shape the ordinary route refuses: 256 bytes is one over the 255 byte
+            // limit of a type, a transaction ID and a state key, and the content is over the 65,536 byte event limit. A
+            // NUL byte is refused because the stored text cannot hold one, a delay of 0 because it would be due at
+            // once, and content that is not an object because an event's content is an object.
             auto long_type = message_request(fixture);
             long_type.event_type = std::string(256U, 't');
             auto long_txn = message_request(fixture, alice, std::string(256U, 'x'));
@@ -1056,6 +1094,8 @@ SCENARIO("A delayed event the sender could not send now is refused when it is sc
 
             THEN("each gets the ordinary answer and nothing is stored")
             {
+                // The oversized type and content are 413, and the transaction ID is 400, as the ordinary send route
+                // answers them.
                 auto const type_result = schedule(fixture, long_type);
                 CHECK(type_result.status == 413U);
                 CHECK(type_result.errcode == "M_TOO_LARGE");
@@ -1282,6 +1322,11 @@ SCENARIO("Deactivation succeeds when the delayed-events delete fails, and the jo
     }
 }
 
+// The job body returns how long its caller should sleep (ADR-0825). Too short a wait wastes a thread, too long a wait
+// sends late, and 0 would spin, so the return value is part of the contract. This scenario proves the exact wait to the
+// next deadline, the cap of 60 seconds, the pace of 5 ms while another event is due so that a backlog cannot starve
+// requests of the lock, one send per run in deadline order, and that a set stop flag sends nothing. It never sleeps:
+// the job is called with a chosen `now_ms`.
 SCENARIO("The job's return value says when it should run next, and it stops when asked",
          "[homeserver][delayed-events][job][pacing]")
 {
@@ -1299,6 +1344,10 @@ SCENARIO("The job's return value says when it should run next, and it stops when
             }
         }
 
+        // The three runs are made before the THEN and at three different clocks. At t0 + 500 ms the first event is
+        // 12,000 ms away. At t0 - 1 ms, a clock before the schedule, it is 12,501 ms away, which shows the wait follows
+        // the clock and not a stored value. After the first event is cancelled the next is 120 seconds away, so the
+        // wait is capped.
         WHEN("an event due in 12.5 s and one due in two minutes are scheduled")
         {
             std::ignore = scheduled_id(fixture, message_request(fixture, alice, "a", 12'500U));
@@ -1321,6 +1370,8 @@ SCENARIO("The job's return value says when it should run next, and it stops when
     GIVEN("102 events due at once, due 1 ms apart")
     {
         auto fixture = Fixture{memory_config()};
+        // 102 is more than the default of 100 scheduled events per user, so the cap is raised to the largest value,
+        // 1,000, to schedule them all.
         fixture.runtime().limits.max_scheduled_delayed_events_per_user = 1000U;
         auto ids = std::vector<std::string>{};
         for (auto index = 0; index < 102; ++index)
@@ -1331,6 +1382,9 @@ SCENARIO("The job's return value says when it should run next, and it stops when
         }
         auto const before = fixture.event_count();
 
+        // Every event is already due, so one run that sent them all would hold the lock for the whole backlog. The run
+        // must send only the earliest, which is the last one scheduled, and ask to run again after 5 ms and not at
+        // once.
         WHEN("the job runs once")
         {
             auto const wait = run_job(fixture, t0 + 5'000U);
@@ -1376,6 +1430,8 @@ SCENARIO("The job's return value says when it should run next, and it stops when
             }
         }
 
+        // The stop flag is checked before a send, so a server that is shutting down sends nothing it has not already
+        // begun.
         WHEN("the job runs with its stop flag already set")
         {
             auto stop = hs::StopFlag{};
@@ -1390,6 +1446,8 @@ SCENARIO("The job's return value says when it should run next, and it stops when
         }
     }
 
+    // The next deadline is 2 ms away, less than the pace, so the pace is the lower bound of the wait and the wait is
+    // never shorter than 5 ms.
     GIVEN("one event due now and one due in 2 ms")
     {
         auto fixture = Fixture{memory_config()};
@@ -1885,6 +1943,11 @@ SCENARIO("The real clock reads a time after 2026-01-01", "[homeserver][delayed-e
     }
 }
 
+// The loader does not parse a row's content, and the scheduling path refuses content that is not a JSON object, so a
+// stored row with such content can only come from a damaged or foreign database. The job must fail it as a send that
+// cannot be made, with the standard error stored, and send nothing. A lookup of such a row must not show content it
+// cannot read. The rows are written with raw SQL on purpose, because the store functions and the scheduling path would
+// refuse them, and the server is restarted so that the loader is what reads them.
 SCENARIO("A stored row whose content is not a JSON object fails when due and cannot be shown",
          "[homeserver][delayed-events][persistence][job][lookup]")
 {
@@ -1929,13 +1992,18 @@ SCENARIO("A stored row whose content is not a JSON object fails when due and can
                 return db::commit_persistent_transaction(first.runtime().homeserver.database.persistent_store,
                                                          {statement});
             };
+            // The array row is due 1,000 ms after the stored start and the text row 5,000 ms after it, so a run at t0 +
+            // 1,000 ms touches only the array row, and the text row is the one a lookup is asked about.
             REQUIRE(insert(array_id, "[]", "1000"));
             REQUIRE(insert(text_id, "not json", "5000"));
         }
         auto restarted = hs::start_client_server(config);
         REQUIRE(restarted.started);
         auto& homeserver = restarted.runtime.homeserver;
+        // The clock is frozen at t0, which is the start time stored in the rows, so the due times are exact.
         homeserver.test_frozen_event_clock_ms = static_cast<std::int64_t>(t0);
+        // Both rows must have loaded: the loader accepts any non-empty content, so the failure being proved is the
+        // job's and not the loader's.
         REQUIRE(homeserver.database.persistent_store.delayed_events.find_owned(alice, array_id) != nullptr);
         REQUIRE(homeserver.database.persistent_store.delayed_events.find_owned(alice, text_id) != nullptr);
 

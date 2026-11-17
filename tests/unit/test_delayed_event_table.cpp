@@ -500,6 +500,11 @@ SCENARIO("A second sent row claiming an event ID another row holds is refused", 
     }
 }
 
+// `DelayedEventTable` owns its rows and keeps every index right by construction (ADR-0824), so an erase that leaves a
+// stale entry in one index is the failure to catch: a later lookup would return a pointer to a row that is gone. Each
+// WHEN erases by a different route (one row, a user, the being-sent row, everything) and the THEN asks every index that
+// could still name the row. The GIVEN holds scheduled, sent and cancelled rows for two users so that each index has an
+// entry for the erased rows and for rows that must stay.
 SCENARIO("Erasing a row, or all of a user's rows, removes it from every index", "[database][delayed-events]")
 {
     GIVEN("two users with scheduled, sent and cancelled rows")
@@ -513,8 +518,12 @@ SCENARIO("Erasing a row, or all of a user's rows, removes it from every index", 
         REQUIRE(table.finalise("a-2", DelayedEventStatus::sent, 10U, "$sent-a", {}));
         REQUIRE(table.finalise("a-3", DelayedEventStatus::cancelled, 11U, {}, {}));
         REQUIRE(table.finalise("b-2", DelayedEventStatus::sent, 12U, "$sent-b", {}));
+        // The being-sent mark lives in a set of its own beside the row indexes, so the erase of a marked row is its own
+        // case.
         REQUIRE(table.mark_being_sent("b-1"));
 
+        // `a-2` is a sent row, so it sits in the user's finalised list and in the event ID index as well as the row
+        // map.
         WHEN("one row is erased")
         {
             auto const erased = table.erase("a-2");
@@ -532,6 +541,8 @@ SCENARIO("Erasing a row, or all of a user's rows, removes it from every index", 
             }
         }
 
+        // The user holds a scheduled row with a transaction ID, a sent row and a cancelled row, one for each index that
+        // keys on something other than the delay ID. The other user's rows prove the erase is scoped to the user.
         WHEN("all of the first user's rows are erased")
         {
             auto const erased = table.erase_user("@a:example.org");
@@ -553,6 +564,8 @@ SCENARIO("Erasing a row, or all of a user's rows, removes it from every index", 
             }
         }
 
+        // A mark left behind would hide a later row with the same delay ID from the due order, so the mark must go with
+        // the row. `a-1` is then the earliest due row because `b-1` is gone.
         WHEN("the row marked as being sent is erased")
         {
             REQUIRE(table.erase("b-1"));

@@ -1687,6 +1687,11 @@ SCENARIO("PostgreSQL OAuth clients and sessions survive a reopen and a session g
     }
 }
 
+// A delayed event must survive a restart, or a call's scheduled leave is lost (ADR-0824). This is the PostgreSQL twin
+// of the SQLite reopen scenario in `test_delayed_event_store.cpp`: PostgreSQL has its own loader, and its own text
+// columns and bound parameters, so the same round trip must be proved on it. One row of each status is written through
+// the store functions, the store is closed and opened again, and every column and index is read back. It needs a
+// database, so it is skipped, not failed, when `MEROVINGIAN_TEST_POSTGRESQL_URI` is not set.
 SCENARIO("PostgreSQL delayed events of every status survive a reopen with every column and index",
          "[database][postgresql][integration][pg-behaviour][delayed-events]")
 {
@@ -1699,6 +1704,8 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
             return;
         }
         auto opened = reopen(uri);
+        // The database is shared by every test and every run, so each ID carries a suffix that no other run uses. A row
+        // of another test can then never collide with these, and the counts below are the counts of these users alone.
         auto const suffix = unique_suffix();
         auto const alice = "@delayed-a-" + suffix + ":example.org";
         auto const bob = "@delayed-b-" + suffix + ":example.org";
@@ -1719,6 +1726,8 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
         state.is_state = true;
         state.state_key = alice;
         state.via_appservice = true;
+        // The largest delay and a large `delayed_since_ms` check that the numbers come back as the same values, and the
+        // state key and appservice flag fill the columns that a message leaves empty.
         state.delay_ms = db::max_delayed_event_delay_ms;
         state.delayed_since_ms = 123'456'789U;
         auto message = make("message", alice);
@@ -1736,6 +1745,8 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
                                                  2002U, {}, R"({"errcode":"M_FORBIDDEN","error":"nope"})",
                                                  10U) == db::DelayedEventOutcomeResult::recorded);
 
+        // The first store is discarded before the second is opened, so every value below was read from the database and
+        // none from the memory that wrote it.
         WHEN("the store is reopened")
         {
             opened = {};
@@ -1780,6 +1791,7 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
                 REQUIRE(table.find_sent_by_event_id("$sent-" + suffix) == table.find("d-sent-" + suffix));
             }
 
+            // A third open proves the DELETE reached the database, not just the mirror in `reopened`.
             AND_THEN("deleting both users' rows removes them from the database as well")
             {
                 REQUIRE(db::delete_delayed_events_of_user(reopened.store, alice));
@@ -1793,6 +1805,11 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
     }
 }
 
+// The loader reads a row strictly and skips one it cannot read exactly, never repairing it or guessing, because a delay
+// read as 0 would make a scheduled row due at once, which is sending early (ADR-0824). The damaged rows cannot be
+// written through the store functions, which refuse them, so they are inserted with raw SQL, as a damaged or foreign
+// database would hold them. Each case damages one column of an otherwise valid row, so the skipped count names the
+// case. The valid row proves the loader keeps going after a skip.
 SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactly and counts them",
          "[database][postgresql][integration][pg-behaviour][delayed-events]")
 {
@@ -1806,6 +1823,8 @@ SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactl
         }
         auto const suffix = unique_suffix();
         auto const user = "@strict-" + suffix + ":example.org";
+        // The shared database may already hold skipped rows from other tests, so the count is judged as a difference
+        // from what an open reports before these rows exist.
         auto const baseline = reopen(uri).store.delayed_event_rows_skipped_at_load;
 
         struct Damaged final
@@ -1815,6 +1834,9 @@ SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactl
             std::string_view value;
         };
         auto const cases = std::vector<Damaged>{
+            // Column 10 is `delay_ms`, column 11 is `delayed_since_ms` and column 5 is `is_state`. A number must be 1
+            // or more ASCII digits that fit 64 bits, a scheduled row's delay must be 1 to the 31 day maximum
+            // (2,678,400,000 ms), and a boolean must be exactly `true` or `false`.
             {"not a number",          10U, "abc"                  },
             {"empty",                 10U, ""                     },
             {"negative",              10U, "-5"                   },
@@ -1857,9 +1879,12 @@ SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactl
             {
                 statement.parameters.push_back(db::BoundValue{column, false});
             }
+            // Each row is committed through its own short-lived store, which is dropped at the end of the lambda, so
+            // the store under test has not seen any of them.
             auto opened = reopen(uri);
             return db::commit_persistent_transaction(opened.store, {statement});
         };
+        // A column index past the end damages nothing, so this inserts the one valid row.
         REQUIRE(insert_raw("d-strict-good-" + suffix, 99U, {}));
         for (auto const& damaged : cases)
         {
@@ -1877,6 +1902,8 @@ SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactl
                 CHECK(reopened.store.delayed_event_rows_skipped_at_load == baseline + cases.size());
             }
 
+            // A skipped row is in the database and not in memory, and deactivation must still remove it (ADR-0824). The
+            // skipped count falling back to the baseline on the next open shows the DELETE reached the skipped rows.
             AND_THEN("deleting the user's rows removes the skipped rows from the database as well")
             {
                 REQUIRE(db::delete_delayed_events_of_user(reopened.store, user));
