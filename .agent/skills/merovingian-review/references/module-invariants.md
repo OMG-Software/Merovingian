@@ -112,8 +112,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   an OAuth client that has a session (ADR-0776, ADR-0777). Whatever replaces a device's credentials replaces its
   `oauth_sessions` row in the same transaction; a grant's audit row is in its transaction (ADR-0792).
   `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
-- A finalised-row bound and the 7-day prune apply to every `delayed_events` row; only `DelayedEventTable` touches the
-  rows, and the in-memory mirror changes only after the commit (one exception, ADR-0825). A path that deletes an
+- The finalised-row bound and the 7-day prune apply to finalised `delayed_events` rows only; a scheduled row is bounded
+  by the per-user scheduled cap, never pruned by age. Only `DelayedEventTable` touches the rows, and the in-memory mirror changes only after the commit (one exception, ADR-0825). A path that deletes an
   account's data deletes these rows too (ADR-0824).
 
 ## src/email

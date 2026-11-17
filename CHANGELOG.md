@@ -29,8 +29,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 Delayed events for MatrixRTC, on top of 1.1.1. Upgrading runs migration 003, which adds one table, and a downgrade
-drops it with whatever is scheduled. The feature is on by default and `server.delayed_events.enabled = false` turns it
-off. Operators running Element Call keep `max_delay_ms` at 3600000 or more.
+drops it with whatever is scheduled. The feature is on by default; setting `server.delayed_events.enabled = false` and
+restarting stops new scheduling, while events already scheduled are still sent and can still be managed. Operators
+running Element Call keep `max_delay_ms` at 3600000 or more.
 
 # Version 1.1.1
 
