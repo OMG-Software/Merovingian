@@ -634,11 +634,14 @@ The delayed-events handlers and the `delayed-events` job log under the `delayed_
 `delay_id`, `user_id`, `room_id` and `event_type`, never the content and never the state key (a call membership's state
 key holds a device ID): `delayed_event.scheduled` (info, with `delay_ms`), `delayed_event.restarted` (info),
 `delayed_event.cancelled` (info), `delayed_event.sent` (info, with `event_id`), `delayed_event.failed` (warning, with
-`status` and `errcode`; error, with `status` and the exception's `type`, when the job's send threw), `delayed_event.prune_failed` (warning, no row fields: the age prune's commit failed and the rows stay for the next run),
-`delayed_events.rows_skipped_at_load` (warning, once per start-up when rows were skipped, with the count only: the
-loader skips a row it cannot read and never repairs it, ADR-0824) and `delayed_event.finalise_commit_failed` (error,
-with `outcome`, `commit_failed`, `refused` or `exception`: the event was sent but its row could not be recorded, so it
-is sent again after a restart).
+`status` and `errcode`; error, with `status` and the exception's `type`, when the job's send threw),
+`delayed_event.prune_failed` (warning, no row fields: the age prune's commit failed and the rows stay for the next
+run) and `delayed_event.finalise_commit_failed` (error, with `outcome`, `commit_failed`, `refused` or `exception`: the
+event was sent but its row could not be recorded, so it is sent again after a restart).
+
+The process entry point, not the `delayed_events` module, writes one start-up warning beginning
+`delayed_events.rows_skipped_at_load:` when the loader skipped rows, with the count only: the loader skips a row it
+cannot read and never repairs it (ADR-0824).
 
 ## Registration token file diagnostics
 

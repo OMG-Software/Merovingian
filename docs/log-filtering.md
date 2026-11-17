@@ -133,7 +133,7 @@ used as the first argument to `observability::log_diagnostic` and `log_diagnosti
 | `stream_token_epoch` | The database's sync token epoch: created at first start, replaced by `--after-restore`, or refused |
 | `tls` | TLS context set-up and handshake accept or reject |
 | `oauth` | OAuth 2.0 client registration, eviction at the cap, and stored metadata that no longer validates |
-| `delayed_events` | Delayed events: scheduled, restarted, cancelled, sent, failed, a failed outcome write, a failed prune, and rows skipped at load; never event content or a state key |
+| `delayed_events` | Delayed events: scheduled, restarted, cancelled, sent, failed, a failed outcome write and a failed prune; never event content or a state key. The count of rows skipped at load is a start-up warning from the process entry point, not this module |
 
 Unrecognised module names are accepted and the level is recorded —
 there is no error. Restart the server to apply.
