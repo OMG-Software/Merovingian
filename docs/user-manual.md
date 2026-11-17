@@ -858,10 +858,41 @@ start-up; anything outside the range, or not a boolean or unsigned integer, refu
 
 Not implemented yet:
 
-- **Delayed events (MSC4140).** A participant whose client vanishes (a crash or lost network) is not removed from the
-  call's membership state automatically and can stay listed until they rejoin or someone removes them.
 - **A built-in token service.** There is no `/_matrix/client/v1/rtc/livekit/*` endpoint and the transport type
   `m.livekit` is not advertised; you must run `lk-jwt-service` yourself.
+
+##### Delayed events and call membership
+
+A call member who loses connection should stop being listed. With delayed events (MSC4140) the client schedules the
+"leave" of its own call membership and keeps restarting that timer while it is connected. If the client vanishes
+(a crash or lost network), the timer runs out and the server sends the leave, so the participant is no longer listed.
+Element Call asks for a delay of 18 seconds and restarts it every few seconds. Delayed events are on by default and
+need no configuration. The keys that bound them are in the
+[`server.delayed_events.*` table](#delayed-events-serverdelayed_events) above: `enabled`, `max_delay_ms`,
+`max_scheduled_per_user` and `max_finalised_per_user`. Keep `max_delay_ms` at `3600000` (one hour) or more, because
+Element Call uses a one-hour delay when the LiveKit service takes over the leave; a client whose delay is refused
+joins without a delayed leave. The endpoints are listed in
+[the client-server API reference](matrix-v1.19-client-server-api.md).
+
+The wire shapes were taken from the source of Element Web 1.12.35, Element X 26.11.0, Element Call 0.28.2 and
+`lk-jwt-service` 0.10.0 at those releases (ADR-0823). No real client has been run against this server yet.
+`lk-jwt-service` 0.10.0 manages a delegated leave as an application service acting for the user, so an operator who
+wants that registers it as an application service whose user namespace covers the local users; see the
+[application service section](#application-service-api-appservice).
+
+What you will notice in operation (ADR-0824, ADR-0825):
+
+- A due event is sent as the user and is authorised against the room when it is sent, not when it was scheduled.
+- Events that fell due while the server was stopped are sent when it starts. A restart longer than a client's delay
+  therefore ends call memberships, and the clients rejoin.
+- A failed send is recorded and not retried. A suspended or locked account's delayed events fail.
+- Deactivating an account deletes its delayed events.
+- Setting `server.delayed_events.enabled` to `false` stops new scheduling; events already scheduled are still sent.
+- Scheduling and management are rate limited per user and per address; the built-in values can be overridden with
+  `client_rate_limits.*` (see [client rate limits](#client-rate-limits-client_rate_limits)).
+
+Not provided: the listing endpoint (MSC4486) and sticky events (MSC4354). Element Call's `matrix_2_0` mode is
+therefore not supported; the default `compatibility` mode is the one this serves.
 
 #### OAuth 2.0 API — `server.oauth.*`
 
