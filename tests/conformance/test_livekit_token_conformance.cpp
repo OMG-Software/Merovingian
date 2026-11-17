@@ -192,7 +192,8 @@ private:
 
     SecretDirectory m_secret{};
     hs::ClientServerStartResult m_started;
-    std::shared_ptr<std::vector<merovingian::http::OutboundRequest>> m_calls;
+    using CallLog = std::vector<merovingian::http::OutboundRequest>;
+    std::shared_ptr<CallLog> m_calls; // SHARED_PTR: reviewed — the call log is shared with the installed hook
 };
 
 } // namespace

@@ -211,8 +211,8 @@ namespace
     {
         auto& runtime = rt.homeserver;
         auto const& store = runtime.database.persistent_store;
-        // The whole delegation, not only its delay ID: one stored again while the lock was free (another slot or
-        // member, or the same anew) is not the participant this answer is about.
+        // The whole delegation, not only its delay ID: one stored again while the lock was released, for another slot
+        // or member or the same one anew, is not the participant this answer is about.
         auto const* row = store.livekit_delegations.find(check.delay_id);
         if (row == nullptr || row->user_id != check.user_id || row->room_id != check.room_id ||
             row->slot_id != check.slot_id || row->member_id != check.member_id || row->created_ms != check.created_ms)

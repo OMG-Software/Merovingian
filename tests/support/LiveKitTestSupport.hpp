@@ -169,7 +169,9 @@ struct MockLiveKit final
     bool reachable{true};
 };
 
-inline auto install_mock(homeserver::ClientServerRuntime& runtime, std::shared_ptr<MockLiveKit> const& mock) -> void
+inline auto install_mock(homeserver::ClientServerRuntime& runtime,
+                         std::shared_ptr<MockLiveKit> const& mock) // SHARED_PTR: reviewed — mock shared with its hook
+    -> void
 {
     runtime.homeserver.test_livekit_perform = [mock](merovingian::http::OutboundRequest const& outbound) {
         mock->requests.push_back(outbound);
@@ -252,7 +254,7 @@ public:
 private:
     SecretFile m_secret;
     homeserver::ClientServerStartResult m_started;
-    std::shared_ptr<MockLiveKit> m_mock;
+    std::shared_ptr<MockLiveKit> m_mock; // SHARED_PTR: reviewed — fixture shares the mock with the installed hook
 };
 
 } // namespace merovingian::tests::livekit
