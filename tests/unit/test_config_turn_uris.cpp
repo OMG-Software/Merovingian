@@ -194,6 +194,7 @@ SCENARIO("server.turn.uris accepts the RFC 7065 forms and refuses everything els
                                                           "turn:[::1",
                                                           "turn:[fe80::1%eth0]"};
 
+        // The valid first entry shows that one good entry does not carry a bad one with it.
         WHEN("each is parsed after a valid entry")
         {
             auto const parsed = parse_each(bad_entries, "turn:ok.example.org,");
@@ -261,8 +262,13 @@ SCENARIO("server.turn.uris uses the config's ordinary comma-separated list synta
     }
 }
 
+// ADR-0821: every entry of server.turn.uris is sent to every client, so a bad one is refused at parse time and never
+// repaired (trimmed, lower-cased, dropped). Each GIVEN is one way a list can be unsafe or ambiguous: which key sets it,
+// the entry's scheme, its characters, its length, the list's length, a repeat, and missing credentials. The valid
+// shapes, and the host, port and transport grammar, are in the scenarios above.
 SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][turn][turn-uris]")
 {
+    // Both keys would leave it unclear which URI clients get, so the configuration is refused rather than one chosen.
     GIVEN("both server.turn.server and server.turn.uris")
     {
         WHEN("the configuration is parsed")
@@ -281,6 +287,8 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
 
     GIVEN("an entry with a scheme other than turn: or turns:")
     {
+        // Each entry fails the scheme rule alone: a foreign scheme, a STUN URI, an upper-case scheme (the grammar is
+        // case-sensitive, so it is not folded), a bare host:port, and a scheme with nothing after it.
         auto const bad_entries = std::vector<std::string>{"https://t.example.org", "stun:t.example.org",
                                                           "TURN:t.example.org", "turn.example.org:3478", "turn:"};
 
@@ -305,6 +313,9 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
     {
         WHEN("each is parsed")
         {
+            // Whitespace inside an entry is not the separator the list trims around, so it is not repaired by splitting
+            // or trimming. The last entry is non-ASCII (UTF-8 for an e with an acute accent); only printable ASCII
+            // is accepted.
             auto const inner_space = parse_uris("turn:a b.example.org");
             auto const tab = parse_uris("turn:a\tb.example.org");
             auto const bell = parse_uris("turn:a\x07.example.org");
@@ -323,6 +334,7 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
 
     GIVEN("an entry longer than 512 bytes")
     {
+        // "turn:" is five bytes, so 507 further bytes is exactly the 512-byte limit and 508 is the first byte over it.
         auto const longest = "turn:" + std::string(507U, 'a');
         auto const too_long = "turn:" + std::string(508U, 'a');
 
@@ -342,6 +354,7 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
 
     GIVEN("more than 16 entries")
     {
+        // The boundary is tested from both sides, so the limit is exactly 16 and not an off-by-one either way.
         WHEN("a list of 16 and a list of 17 are parsed")
         {
             auto const accepted = parse_uris(numbered_uris(16));
@@ -360,6 +373,8 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
     {
         WHEN("the list is parsed")
         {
+            // The repeat is the third entry, not adjacent to the first, and the different scheme between them must not
+            // hide it from the check.
             auto const parsed = parse_uris("turn:t.example.org,turns:t.example.org,turn:t.example.org");
 
             THEN("the configuration is refused")
@@ -370,6 +385,8 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
         }
     }
 
+    // The list turns TURN on by itself, so it must be held to the same credential rule as server.turn.server; it is
+    // not a way to publish a relay with no username or password.
     GIVEN("server.turn.uris set but credentials missing")
     {
         WHEN("the configuration is parsed")

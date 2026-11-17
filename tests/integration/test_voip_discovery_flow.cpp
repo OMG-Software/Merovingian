@@ -187,6 +187,9 @@ constexpr auto livekit_url = "https://livekit-jwt.example.org/lk-jwt-service";
 
 } // namespace
 
+// The same configured LiveKit service URL is served on two routes that differ in path and in the name of the array:
+// the stable route as `transports`, the MSC4143 unstable route as `rtc_transports`. A client written against either
+// must find the same single entry. With no URL configured neither route fails: the two answer their own empty shape.
 SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths", "[homeserver][rtc][client-server]")
 {
     GIVEN("a server with a LiveKit service URL")
@@ -206,11 +209,13 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
                 auto const* transports = object_member_as_array(body, "transports");
                 REQUIRE(transports != nullptr);
                 REQUIRE(transports->size() == 1U);
+                // The exact body pins the serialised form (keys in canonical order, nothing extra) ...
                 CHECK(
                     response.body ==
                     R"({"transports":[{"livekit_service_url":"https://livekit-jwt.example.org/lk-jwt-service","type":"livekit"}]})");
                 auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&(*transports)[0U].storage());
                 REQUIRE(entry != nullptr);
+                // ... and the parsed checks name the two members a client reads, so a failure points at the member.
                 CHECK(entry->size() == 2U);
                 auto const* type = string_member(*entry, "type");
                 REQUIRE(type != nullptr);
@@ -221,6 +226,8 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
             }
         }
 
+        // The query string is ignored by the route, as on the other client-server routes, but must not stop the route
+        // from matching.
         WHEN("a client reads the unstable transports route, with a query string")
         {
             auto const response =
@@ -248,6 +255,7 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
             }
         }
 
+        // The stable route's own match with a query string; the unstable one is covered by the previous WHEN.
         WHEN("a client reads the stable route with a query string")
         {
             auto const response = get(started.runtime, "/_matrix/client/v1/rtc/transports?unused=1", token);
@@ -259,6 +267,8 @@ SCENARIO("MatrixRTC transports are advertised on the stable and unstable paths",
         }
     }
 
+    // Without a URL the feature is off, but a client that asks is not told an error: it gets an empty answer in the
+    // shape of each route, so it can tell "none offered" from "route unknown".
     GIVEN("a server with no LiveKit service URL")
     {
         auto started = merovingian::homeserver::start_client_server(voip_config({}));

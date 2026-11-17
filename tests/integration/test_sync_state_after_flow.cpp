@@ -246,6 +246,10 @@ SCENARIO("full_state=true leaves a left room's state_after a delta", "[integrati
 
 // ADR-0820: a client that was not joined at `since` held nothing of the room, so a left room's `state_after` is the
 // whole state as of the leave, not a delta that would hide the create event, power levels and join rules.
+//
+// Each GIVEN is one way the join that the leave ended can fall relative to `since`: after it (a join and leave inside
+// one window, the first GIVEN; a rejoin after an earlier departure, the second), before it (the third, which must stay
+// a delta so the rule is not widened to every left room), or never at all (the fourth, an invite that was declined).
 SCENARIO("A room joined and left inside one sync window gives state_after its whole readable state",
          "[integration][sync][state-after][flow]")
 {
@@ -257,11 +261,14 @@ SCENARIO("A room joined and left inside one sync window gives state_after its wh
         auto const alice = register_user(rt, "alice");
         auto const dave = register_user(rt, "dave");
         auto const room = create_room(rt, alice, "public_chat");
+        // The sync that fixes `since` is taken before dave is in the room, so he holds none of its state.
         auto const before = sync(rt, dave, k_no_filter, {}, k_state_after);
+        // A topic set before his join is state he is entitled to read, and the one a delta would wrongly leave out.
         set_topic(rt, alice, room, "before dave");
         room_post(rt, dave, room, "join");
         say(rt, dave, room, "hello and goodbye");
         room_post(rt, dave, room, "leave");
+        // A change after the leave is beyond what he may read (ADR-0357), so it must not appear in his state_after.
         set_topic(rt, alice, room, "after dave left");
 
         WHEN("dave syncs with use_state_after=true")
@@ -274,14 +281,20 @@ SCENARIO("A room joined and left inside one sync window gives state_after its wh
                 require_state_after_only(left);
                 auto const after = events_of(left, "state_after");
                 auto const types = event_types(after);
+                // The create event, power levels and join rules never changed in the window, so only a whole-state
+                // answer, not a delta, sends them.
                 REQUIRE(types.contains("m.room.create"));
                 REQUIRE(types.contains("m.room.power_levels"));
                 REQUIRE(types.contains("m.room.join_rules"));
+                // The topic is the one in force at his leave: "before dave", not the later "after dave left".
                 REQUIRE(topics_in(after) == std::vector<std::string>{"before dave"});
+                // His own key is the current member event, the leave, and it appears once (ADR-0820).
                 REQUIRE(content_of(after, "m.room.member", user_id("dave"), "membership") == "leave");
                 REQUIRE(member_keys(after).count(user_id("dave")) == 1U);
             }
         }
+        // ADR-0820: a whole-state answer treats the room as new to the client, so lazy-loading does not consult the
+        // tracker and does not send his membership a second time.
         WHEN("dave syncs with lazy-loading and use_state_after=true")
         {
             auto const synced = sync(rt, dave, k_lazy, before.next_batch, k_state_after);
@@ -295,6 +308,8 @@ SCENARIO("A room joined and left inside one sync window gives state_after its wh
             }
         }
     }
+    // The join this leave ended began after `since` although dave had an earlier membership of the room: the rule
+    // reads the join's ordering, not whether the room was ever known to him.
     GIVEN("a room dave left and synced, then rejoined and left again before his next sync")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());
@@ -322,6 +337,8 @@ SCENARIO("A room joined and left inside one sync window gives state_after its wh
             }
         }
     }
+    // The control: he was joined at `since`, so he holds the room's state and a delta is correct. Without this case a
+    // rule that made every left room whole would pass the scenarios above.
     GIVEN("a room dave was joined in at his last sync and left after its topic changed")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());
@@ -347,6 +364,8 @@ SCENARIO("A room joined and left inside one sync window gives state_after its wh
             }
         }
     }
+    // An invitee was never joined, so there is no join to cap the readable state at: the answer is only her own
+    // membership (ADR-0820, a user who never joined), not the private room's state.
     GIVEN("a private room erin was invited to and declined inside one window")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());

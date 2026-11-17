@@ -535,8 +535,14 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 // response." Lazy-loading room members: "servers MUST include the syncing user's own membership event ... when the full
 // state of rooms is requested". Redundancy follows ADR-0450; a timeline event is not state here, so ADR-0819 forces
 // every change.
+//
+// The scenario has four GIVENs: a joined room seen through lazy-loading (initial, acknowledged and lost-response
+// incrementals, a display-name change, a kick, a limited gap, `full_state`), a departed member's own view, a user who
+// joins, speaks and leaves inside one window, and a user banned after a later joiner arrived.
 SCENARIO("Lazy-loading selects the members of state_after", "[conformance][client-server][sync][state-after]")
 {
+    // Bob and carol have both spoken, but a one-event timeline holds only bob's message, so a lazy-loaded answer must
+    // name bob and leave carol out until she is in a timeline.
     GIVEN("a room of alice, bob and carol, in which bob and carol have spoken")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());
@@ -578,6 +584,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(member_keys(events_of(joined, "state")) == Keys{user_id("alice"), user_id("bob")});
             }
         }
+        // The tracker (ADR-0450) records that the client was sent carol's membership once the next request proves it
+        // arrived, so the later sync repeats nothing it was told.
         WHEN("carol speaks in two incremental syncs, each acknowledging the last")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -596,6 +604,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(member_keys(after).empty());
             }
         }
+        // Two events about bob in one window must not produce two member events: state_after is the state at the end
+        // of the timeline, so only the later one is sent.
         WHEN("bob speaks and then changes his display name in the same window")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -610,6 +620,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(content_of(after, "m.room.member", user_id("bob"), "displayname") == "Bobby");
             }
         }
+        // A timeline event is not state to a `use_state_after` client, so lazy-loading cannot drop a change merely
+        // because its subject is not a sender (ADR-0819 forces every change).
         WHEN("the timeline carries a membership change about someone who did not speak")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -622,6 +634,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(content_of(after, "m.room.member", user_id("carol"), "membership") == "leave");
             }
         }
+        // With a one-event timeline limit the leave falls before the timeline's start; the client cannot read it from
+        // the timeline, so state_after must carry it, while unchanged state (the topic) stays out.
         WHEN("a membership change falls in the gap of a limited sync")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -637,6 +651,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(topics_in(after).empty());
             }
         }
+        // The spec requires the syncing user's own membership "when the full state of rooms is requested"; carol, who
+        // is not in the timeline, is not sent.
         WHEN("alice asks for the full state with lazy-loading and use_state_after=true")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -656,6 +672,7 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
             }
         }
     }
+    // A left room takes the same lazy-loading rule: the sender (bob) and the user's own leave are sent, nobody else.
     GIVEN("a room of alice and dave that dave leaves after bob spoke")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());
@@ -685,6 +702,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(content_of(after, "m.room.member", user_id("dave"), "membership") == "leave");
             }
         }
+        // An initial sync with include_leave reports the left room as new to the client, so the other state is sent but
+        // members are still limited to his own.
         WHEN("dave makes an initial sync with include_leave, lazy-loading and use_state_after=true")
         {
             constexpr auto lazy = std::string_view{
@@ -702,6 +721,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
             }
         }
     }
+    // Dave is a sender in his own timeline, so the sender rule and the own-membership rule both name him: his member
+    // key must still appear once, as the leave, not as the earlier join the timeline also carries.
     GIVEN("a room dave joins, speaks in and leaves, all after his last sync")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());
@@ -727,6 +748,8 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
             }
         }
     }
+    // What a departed user may learn is capped at his leave (ADR-0820): the ban is his own membership and may be told,
+    // but erin's join after he left may not.
     GIVEN("a room dave left and synced, which erin then joined, and from which dave was then banned")
     {
         auto started = merovingian::homeserver::start_client_server(state_after_config());

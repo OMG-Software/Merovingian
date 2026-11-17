@@ -46,8 +46,13 @@ constexpr auto room = "!room:example.org";
 
 } // namespace
 
+// `state_anchor_event` finds the newest accepted event at or below a stream position, the event whose state a
+// state_after delta is read from. It must be a bounded lookup, not a scan of every newer event, and it must never
+// anchor on an event that was rejected or soft-failed. `state_anchor_rows_examined` counts the rows it looks at, so a
+// scan shows up as a number, not as a slow test.
 SCENARIO("The state anchor of a room is found without visiting the rows above the position", "[sync][state-anchor]")
 {
+    // 3000 events lie above the position and only one below it, so a scan from the newest end would examine them all.
     GIVEN("a room with an old event and thousands of newer ones")
     {
         auto store = PersistentStore{};
@@ -71,6 +76,7 @@ SCENARIO("The state anchor of a room is found without visiting the rows above th
             }
         }
 
+        // The control: with no position the newest event is the anchor, so the bound above is the position's doing.
         WHEN("the anchor is read with no position")
         {
             auto const* const anchor =
@@ -84,6 +90,8 @@ SCENARIO("The state anchor of a room is found without visiting the rows above th
         }
     }
 
+    // Two events can share one ordering; the choice among them must be stable and must not pick the rejected row,
+    // which was added last.
     GIVEN("rows sharing the newest ordering at the position, the newest added row being withheld")
     {
         auto store = PersistentStore{};
@@ -104,6 +112,7 @@ SCENARIO("The state anchor of a room is found without visiting the rows above th
         }
     }
 
+    // A soft-failed event is not part of the room's state, so the walk steps over it to the accepted row below.
     GIVEN("a withheld event at the position and an accepted one below it")
     {
         auto store = PersistentStore{};
@@ -122,6 +131,7 @@ SCENARIO("The state anchor of a room is found without visiting the rows above th
         }
     }
 
+    // A position before the room's first event anchors nothing, rather than the first event above the position.
     GIVEN("a room whose events all lie above the position")
     {
         auto store = PersistentStore{};
