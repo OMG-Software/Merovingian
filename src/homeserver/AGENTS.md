@@ -1249,6 +1249,9 @@ The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call t
   percent-decoded too) is answered by `delayed_query_form` before the idempotency lookup, `?ts=` and anything that could
   send. A repeated, empty or non-digit value, `0`, or one over 64 bits is `400 M_INVALID_PARAM`; a disabled server is
   `403 M_FORBIDDEN` first. No error of such a request may reach the ordinary send.
+- **Every other route that sends a room event from the caller's body** (`POST .../send`, `PUT .../redact/...`) answers a
+  request carrying the parameter `400 M_INVALID_PARAM` through `delay_parameter_refusal`, before anything is sent and
+  whether or not the feature is on; a new such route calls it too.
 - **The dedicated routes (S1, S2) are matched before the room routes**, whose `/send/` and `/state/` markers would
   otherwise find them inside the path. Disabled is answered before any body error (`delayed_events_disabled_refusal`
   calls the service with an empty request, so the text is written once); then `parse_delayed_schedule_body`.
