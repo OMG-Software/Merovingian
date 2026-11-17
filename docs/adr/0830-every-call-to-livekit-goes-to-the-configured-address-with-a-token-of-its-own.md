@@ -71,4 +71,4 @@ owner's decision first.
 
 * Refined by [ADR-0832](0832-a-delegated-delayed-leave-is-restarted-while-livekit-shows-the-participant-and-sent-once-it-does-not.md)
 * Refines [ADR-0829](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md)
-* [ADR-0079](0079-cap-client-triggered-outbound-proxying.md)
+* [ADR-0079](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md)
