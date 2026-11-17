@@ -35,7 +35,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 1.1.1 adds `use_state_after` to `/sync`, `server.turn.uris` and MatrixRTC transport discovery. The new keys
 (`server.turn.uris`, `server.rtc.livekit.service_url`) are optional; no configuration change is needed. Group calls
-still need your own LiveKit SFU and `lk-jwt-service`, and delayed events (MSC4140) are not implemented.
+still need your own LiveKit SFU and `lk-jwt-service`, and delayed events (MSC4140) are not implemented. Known limit
+of `use_state_after`: after a state fork at the client's `since`, a key that state resolution later flips back to the
+value recorded at `since` is not sent in `state_after`; a client repairs itself with `full_state=true` (ADR-0819).
 
 # Version 1.1.0
 
