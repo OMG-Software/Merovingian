@@ -38,6 +38,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>
@@ -643,6 +644,7 @@ struct FixtureView final
     Response media{};
     Response device_keys{};
     Response sync_since_old_token{};
+    Response initial_sync{};
     Response replay_old_transaction{};
     Response send_into_old_room{};
     Response read_new_event{};
@@ -675,6 +677,8 @@ struct FixtureView final
                                R"({"device_keys":{")" + expected.alice.user_id + R"(":[]}})");
     view.sync_since_old_token =
         request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&since=" + expected.next_batch, alice);
+    // The control: a sync with no token, which must replay the room's timeline.
+    view.initial_sync = request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0", alice);
     // The old release sent the first fixture message as `upgrade-txn-1` from this
     // device, so repeating it must replay that event, not create one.
     view.replay_old_transaction = request(runtime, "PUT", private_room + "/send/m.room.message/upgrade-txn-1", alice,
@@ -727,8 +731,25 @@ auto require_fixture_served(FixtureView const& view, FixtureExpectations const& 
     REQUIRE(sha256_hex(view.media.body) == expected.media_sha256);
     REQUIRE(view.device_keys.status == 200U);
     REQUIRE(view.device_keys.body.find(expected.device_ed25519_key) != std::string::npos);
-    // A client that synced against the old release carries on from its token.
+    // A client that synced against the old release carries on from its token. A token whose epoch is not the
+    // store's is served as an initial sync, also with a 200 (src/sync/AGENTS.md), so the status alone would pass a
+    // migration that replaced the stream token epoch. Prove the answer is incremental and the epoch survived.
     REQUIRE(view.sync_since_old_token.status == 200U);
+    REQUIRE(view.initial_sync.status == 200U);
+    for (auto const& message : expected.messages)
+    {
+        INFO("message " << message.event_id);
+        // The control replays what the old release had already delivered; the answer to the old token must not.
+        REQUIRE(view.initial_sync.body.find(message.event_id) != std::string::npos);
+        REQUIRE(view.sync_since_old_token.body.find(message.event_id) == std::string::npos);
+    }
+    auto const old_token = merovingian::sync::decode_stream_token(expected.next_batch);
+    REQUIRE(old_token.has_value());
+    REQUIRE(old_token->epoch != 0U);
+    auto const new_token =
+        merovingian::sync::decode_stream_token(json_string_field(view.sync_since_old_token.body, "next_batch"));
+    REQUIRE(new_token.has_value());
+    REQUIRE(new_token->epoch == old_token->epoch);
     // The old release's transaction IDs still deduplicate: a retried send replays its event.
     REQUIRE(view.replay_old_transaction.status == 200U);
     REQUIRE(json_string_field(view.replay_old_transaction.body, "event_id") == expected.messages.front().event_id);
