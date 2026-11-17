@@ -21,8 +21,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * LiveKit's webhook is believed only when signed with the API secret for its exact body and recent, and even then only
   brings a check forward: it never sends or restarts an event (ADR-0833).
 * The federation worker refuses to start if a Landlock rule would let it read the LiveKit API secret file (ADR-0062).
-* A LiveKit call's host lookup counts against the call's deadline, so a slow resolver cannot hold a request thread
-  past it (ADR-0830).
+* A LiveKit call's host lookup counts against the call's deadline: the exchange gets only the time the lookup left,
+  and none starts once the deadline has passed (ADR-0830).
 
 ## Bug fixes
 

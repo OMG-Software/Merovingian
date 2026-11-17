@@ -21,8 +21,10 @@ call is added here.
 * `perform_livekit_request` resolves the host with `discovery.upstream().lookup_addresses`, the operator-trusted lookup
   the application service client uses (ADR-0515). The connection is pinned to the addresses found.
   * The lookup and the exchange draw from one `OutboundDeadline` of the call's `timeout_seconds`: the exchange gets
-    only what the lookup left, and none is started once it is spent (a timeout). A slow resolver therefore cannot hold
-    the request thread, the ADR-0079 slot or the job past the call's bound.
+    only what the lookup left, and none is started once it is spent (a timeout). A slow lookup therefore never adds a
+    whole exchange to the call. The lookup itself is a blocking `getaddrinfo` that the deadline cannot interrupt: a
+    resolver slower than the whole budget still holds the thread, the ADR-0079 slot or the job until it answers, as
+    it does for every other caller of `lookup_addresses`.
   * The SSRF-filtered lookup is not used: the operator chose the address, and LiveKit commonly runs on the same host or
     LAN.
 * TLS verification is always on and redirects are refused (`http::OutboundClient`).

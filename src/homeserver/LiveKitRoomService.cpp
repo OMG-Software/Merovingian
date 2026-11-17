@@ -122,8 +122,8 @@ auto perform_livekit_request(http::OutboundRequest request, http::OutboundClient
     {
         return failed(http::OutboundError::timeout, "deadline exceeded");
     }
-    // One deadline for the lookup and the exchange: a slow lookup shortens the exchange rather than adding to it, so
-    // the call never holds its thread or its outbound slot past `timeout_seconds`.
+    // One deadline for the lookup and the exchange: a slow lookup shortens the exchange rather than adding to it, and
+    // no exchange starts once it is spent. The lookup itself is a blocking call this cannot interrupt.
     auto const deadline = OutboundDeadline{timeout_seconds};
     auto const limit_to = [&request](std::uint32_t const seconds) {
         request.total_timeout_seconds = seconds;
