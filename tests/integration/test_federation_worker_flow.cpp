@@ -12,6 +12,7 @@
 #include "../support/EduRelayContext.hpp"
 #include "../support/IngestedStateFixture.hpp"
 #include "../support/JoiningThreads.hpp"
+#include "../support/LiveKitTestSupport.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/MembershipFixtureSupport.hpp"
 #include "../support/RemoteRoomFixture.hpp"
@@ -3265,6 +3266,82 @@ SCENARIO("main admits a worker's LiveKit token relay only as the verified reques
             {
                 INFO("reply: " << reply);
                 CHECK(status_of(reply) == 403U);
+            }
+        }
+    }
+}
+
+SCENARIO("main issues a token for a worker's verified LiveKit relay when the token service is on and the user joined",
+         "[integration][federation-worker][query-relay][ghsa-3p5v][livekit]")
+{
+    // The token service is configured here (LiveKit is a mock and never called), so a relay admitted by its permit
+    // reaches a real decision: a subscribe-only token for a user main finds joined, a refusal for one it does not.
+    GIVEN("alice's room, the token service on, and a verified request from remote.example.org with its permit")
+    {
+        auto fixture = merovingian::tests::livekit::LiveKitFixture{};
+        auto& homeserver = fixture.runtime().homeserver;
+        constexpr auto origin = std::string_view{"remote.example.org"};
+        auto const user_id = std::string{"@carol:remote.example.org"};
+        auto const body = std::string{R"({"url":")"} + std::string{merovingian::tests::livekit::sfu_url} +
+                          R"(","room_id":")" + fixture.room_id +
+                          R"(","slot_id":"m.call#room","member_id":"DEVICEID_member","user_id":")" + user_id + R"("})";
+        auto const permit =
+            merovingian::federation::worker_relay_digest(merovingian::federation::WorkerRelayKind::livekit_token, body);
+        REQUIRE(permit.has_value());
+
+        auto channels = merovingian::tests::make_edu_relay_channels();
+        auto context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+
+        WHEN("carol of that server has joined the room")
+        {
+            auto& store = homeserver.database.persistent_store;
+            auto const event_id = std::string{"$join-of-carol"};
+            auto const join_json = R"({"content":{"membership":"join"},"event_id":")" + event_id + R"(","room_id":")" +
+                                   fixture.room_id + R"(","sender":")" + user_id + R"(","state_key":")" + user_id +
+                                   R"(","type":"m.room.member"})";
+            store.events.push_back({event_id, fixture.room_id, user_id, join_json, 9U, 0U, {}, {}, {}});
+            store.state.push_back({fixture.room_id, "m.room.member", user_id, event_id});
+            store.memberships.push_back({fixture.room_id, user_id, "join", 0U});
+            auto* room = merovingian::homeserver::find_local_room(homeserver.database, fixture.room_id);
+            REQUIRE(room != nullptr);
+            std::ignore = room->members.add(user_id);
+
+            REQUIRE(context.establish(std::string{origin}, {}, {*permit}));
+            auto const reply = merovingian::homeserver::handle_livekit_token_ingest_request(
+                homeserver,
+                context.frame(merovingian::federation::WorkerRelayKind::livekit_token, body, std::string{origin}),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("main answers 200 with a token, and LiveKit is not called")
+            {
+                INFO("reply: " << reply);
+                CHECK(merovingian::ipc::ipc_json_get_str(reply, "type") == "livekit_token_ingest_result");
+                CHECK(merovingian::ipc::ipc_json_get_u64(reply, "status") == 200U);
+                auto const response_body = merovingian::ipc::ipc_json_get_str(reply, "response_body");
+                CHECK(response_body.starts_with(R"({"jwt":")"));
+                CHECK(response_body.find("carol") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+
+        WHEN("carol has not joined the room")
+        {
+            REQUIRE(context.establish(std::string{origin}, {}, {*permit}));
+            auto const reply = merovingian::homeserver::handle_livekit_token_ingest_request(
+                homeserver,
+                context.frame(merovingian::federation::WorkerRelayKind::livekit_token, body, std::string{origin}),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("main refuses with 403 M_FORBIDDEN and no token")
+            {
+                INFO("reply: " << reply);
+                CHECK(merovingian::ipc::ipc_json_get_u64(reply, "status") == 403U);
+                auto const response_body = merovingian::ipc::ipc_json_get_str(reply, "response_body");
+                CHECK(response_body.find("M_FORBIDDEN") != std::string::npos);
+                CHECK(response_body.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
             }
         }
     }

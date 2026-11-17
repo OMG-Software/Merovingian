@@ -23,6 +23,7 @@
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/crypto/LiveKitToken.hpp"
 #include "merovingian/crypto/VerifiedHs256Token.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
@@ -31,6 +32,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LiveKitNames.hpp"
 #include "merovingian/homeserver/LiveKitTokenService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
@@ -961,6 +963,175 @@ SCENARIO("A token for another server's SFU is relayed to that server, and only i
                 CHECK(answer.body.find("secret-detail") == std::string::npos);
                 CHECK(answer.body.find("jwt") == std::string::npos);
                 CHECK(fixture.runtime().homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("The federation token provider main wires answers as the federation response",
+         "[homeserver][livekit][rtc][federation]")
+{
+    GIVEN("alice's room and the callbacks main wires for inbound federation")
+    {
+        auto fixture = LiveKitFixture{};
+        hs::wire_federation_callbacks(fixture.runtime().homeserver);
+        auto const& provider = fixture.runtime().homeserver.federation.livekit_token_provider;
+        REQUIRE(provider);
+
+        WHEN("the provider is asked for a user of the origin who has joined the room")
+        {
+            seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+            auto const response = provider(remote_server, federation_body(fixture.room_id, carol));
+
+            THEN("it is 200 with the token as the body")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                REQUIRE(body.size() == 1U);
+                auto const* jwt = string_member(body, "jwt");
+                REQUIRE(jwt != nullptr);
+                std::ignore = verified_payload(*jwt);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+
+        WHEN("the provider is asked for a user who has not joined the room")
+        {
+            auto const response = provider(remote_server, federation_body(fixture.room_id, carol));
+
+            THEN("the status and errcode of the refusal pass through, with no token")
+            {
+                CHECK(response.status == 403U);
+                auto const body = parse_object(response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                CHECK(*errcode == "M_FORBIDDEN");
+                CHECK(response.body.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+
+        WHEN("the provider is given a body that is not JSON")
+        {
+            auto const response = provider(remote_server, "not json");
+
+            THEN("it is the 400 M_BAD_JSON the service refused with")
+            {
+                CHECK(response.status == 400U);
+                auto const body = parse_object(response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                CHECK(*errcode == "M_BAD_JSON");
+            }
+        }
+    }
+}
+
+SCENARIO("A token request this server cannot carry out is refused before LiveKit or another server is called",
+         "[homeserver][livekit][rtc][negative]")
+{
+    GIVEN("alice in a room, with this server unable to make outbound requests")
+    {
+        auto fixture = LiveKitFixture{};
+        fixture.runtime().homeserver.cached_discovery.reset();
+
+        WHEN("alice asks for a token for this server's SFU")
+        {
+            auto const answer = request(fixture.runtime(), "POST", std::string{stable_path}, fixture.alice_token,
+                                        token_body(fixture.room_id));
+
+            THEN("it is 502 M_UNKNOWN with no token, and LiveKit is not called")
+            {
+                CHECK(answer.status == 502U);
+                CHECK(errcode_of(answer) == "M_UNKNOWN");
+                CHECK(answer.body.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+
+        WHEN("alice asks for a token for a server that has a member in the room")
+        {
+            seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+            auto const answer = request(fixture.runtime(), "POST", std::string{stable_path}, fixture.alice_token,
+                                        relay_body(fixture.room_id));
+
+            THEN("it is 502 M_UNKNOWN with no token, and LiveKit is not called")
+            {
+                CHECK(answer.status == 502U);
+                CHECK(errcode_of(answer) == "M_UNKNOWN");
+                CHECK(answer.body.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+    }
+
+    GIVEN("alice in a room that carol of remote.example.org has joined, and every client outbound slot taken")
+    {
+        auto fixture = LiveKitFixture{};
+        seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+        fixture.runtime().homeserver.client_outbound_proxy_policy.global_cap = 1U;
+        auto const held = hs::admit_client_outbound_proxy(fixture.runtime().homeserver, "another-client");
+        REQUIRE(held.has_value());
+
+        WHEN("alice asks for a token for remote.example.org's SFU")
+        {
+            auto const answer = request(fixture.runtime(), "POST", std::string{stable_path}, fixture.alice_token,
+                                        relay_body(fixture.room_id));
+
+            THEN("it is 429 M_LIMIT_EXCEEDED with retry_after_ms, and nothing is relayed or called")
+            {
+                CHECK(answer.status == 429U);
+                CHECK(errcode_of(answer) == "M_LIMIT_EXCEEDED");
+                auto const body = parse_object(answer.body);
+                CHECK(int_member(body, "retry_after_ms") != nullptr);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+    }
+
+    GIVEN("alice in a room that carol of remote.example.org has joined, and a signing key this server cannot use")
+    {
+        auto fixture = LiveKitFixture{};
+        seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+        auto& homeserver = fixture.runtime().homeserver;
+        // The newest key holding a secret is the one chosen; its secret is not 32 bytes, so no key can be loaded.
+        REQUIRE(merovingian::database::store_server_signing_key(
+            homeserver.database.persistent_store,
+            {homeserver.config.server().server_name, "ed25519:unusable", "AAAA", 4102444800000U, "AAAA"}));
+
+        WHEN("alice asks for a token for remote.example.org's SFU")
+        {
+            auto const answer = request(fixture.runtime(), "POST", std::string{stable_path}, fixture.alice_token,
+                                        relay_body(fixture.room_id));
+
+            THEN("it is 500 M_UNKNOWN with no token, and nothing is sent or called")
+            {
+                CHECK(answer.status == 500U);
+                CHECK(errcode_of(answer) == "M_UNKNOWN");
+                CHECK(answer.body.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+                CHECK(homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+
+    GIVEN("carol of remote.example.org joined to alice's room, and an API secret this server cannot read")
+    {
+        auto fixture = LiveKitFixture{"/nonexistent/merovingian-livekit-secret"};
+        seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+
+        WHEN("remote.example.org asks for a token for carol")
+        {
+            auto const answer = federated(fixture.runtime(), remote_server, federation_body(fixture.room_id, carol));
+
+            THEN("it is 500 M_UNKNOWN with no token, and LiveKit is not called")
+            {
+                CHECK_FALSE(answer.ok);
+                CHECK(answer.status == 500U);
+                CHECK(answer.errcode == "M_UNKNOWN");
+                CHECK(answer.reason == "LiveKit tokens are unavailable");
+                CHECK(answer.value.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
             }
         }
     }
