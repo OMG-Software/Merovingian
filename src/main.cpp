@@ -1275,6 +1275,13 @@ struct ListenerBinding final
         LOG_WARNING("delayed_events.rows_skipped_at_load: " + std::to_string(skipped) +
                     " delayed event rows were not read and stay in the database");
     }
+    // Likewise for LiveKit delegation rows (ADR-0832): the count only, never a row's columns.
+    if (auto const skipped = runtime.homeserver.database.persistent_store.livekit_delegation_rows_skipped_at_load;
+        skipped != 0U)
+    {
+        LOG_WARNING("livekit_delegations.rows_skipped_at_load: " + std::to_string(skipped) +
+                    " LiveKit delegation rows were not read and stay in the database");
+    }
     // Wire federation callbacks and start the outbound dispatch worker now that
     // the runtime is in its final stable location (no further moves). Doing this
     // eagerly means thread-creation failure surfaces at startup with a clear log

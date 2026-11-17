@@ -9,6 +9,7 @@
 #include "merovingian/database/ConnectionPool.hpp"
 #include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/LiveKitDelegationRowText.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -792,6 +793,38 @@ namespace
                          });
     }
 
+    // Migration 004 (ADR-0832): LiveKit delegations. A row with an empty or over-long field, a created_ms that is not
+    // digits, or a duplicate delay ID or key is skipped and counted, never repaired. Skipped for a profile that does
+    // not include the table, as PostgreSQL does.
+    [[nodiscard]] auto load_livekit_delegation_rows(sqlite3& connection, PersistentStore& store,
+                                                    TableLoadProfile profile) -> bool
+    {
+        if (!table_load_profile_includes("livekit_delegations", profile))
+        {
+            return true;
+        }
+        return load_rows(connection,
+                         "SELECT delay_id, user_id, room_id, slot_id, member_id, created_ms FROM livekit_delegations "
+                         "ORDER BY delay_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto columns = std::array<std::string, livekit_delegation_row_columns>{};
+                             for (auto index = std::size_t{0U}; index < columns.size(); ++index)
+                             {
+                                 columns[index] = column_text(row, static_cast<int>(index));
+                             }
+                             auto parsed = parse_livekit_delegation_row(columns);
+                             if (!parsed.has_value())
+                             {
+                                 ++store.livekit_delegation_rows_skipped_at_load;
+                                 return;
+                             }
+                             if (!store.livekit_delegations.insert(std::move(*parsed)))
+                             {
+                                 ++store.livekit_delegation_rows_skipped_at_load;
+                             }
+                         });
+    }
+
     // Events go to `hydrated_events` rather than `store.events`, for the caller to index in one pass
     // (ADR-0215): the SELECT has no ORDER BY, so adding them one at a time could shift the
     // stream-order index for every row.
@@ -802,6 +835,12 @@ namespace
         // depends on no other table and none depends on it, so it need not be a link of the chain below. A failed
         // SELECT fails the whole load, as a failed link does.
         if (!load_delayed_event_rows(connection, store, profile))
+        {
+            return false;
+        }
+        // Migration 004 (ADR-0832): LiveKit delegations, loaded the same way and for the same reason: the table depends
+        // on no other table and none depends on it.
+        if (!load_livekit_delegation_rows(connection, store, profile))
         {
             return false;
         }

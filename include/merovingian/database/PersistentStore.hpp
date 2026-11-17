@@ -13,6 +13,7 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/ForwardExtremityTable.hpp"
 #include "merovingian/database/KeyBackupDigest.hpp"
+#include "merovingian/database/LiveKitDelegationTable.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
@@ -584,6 +585,14 @@ struct PersistentStore final
     // not digits or is out of range, a boolean that is not "true" or "false", an unknown status, a duplicate key). The
     // rows stay in the database. The homeserver warns once at start-up when this is not zero.
     std::size_t delayed_event_rows_skipped_at_load{0U};
+    // Migration 004 (ADR-0832): `livekit_delegations`, MSC4195 delayed leaves delegated to the LiveKit token service.
+    // Read and write through LiveKitDelegationStore.hpp; it has no lock of its own, so in main `runtime.mutex`
+    // serialises it. The federation worker never holds it.
+    LiveKitDelegationTable livekit_delegations{};
+    // How many `livekit_delegations` rows the last hydration skipped because they were not read exactly (an empty or
+    // over-long field, a `created_ms` that is not digits, a duplicate delay ID or key). The rows stay in the database.
+    // The homeserver warns once at start-up when this is not zero.
+    std::size_t livekit_delegation_rows_skipped_at_load{0U};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
