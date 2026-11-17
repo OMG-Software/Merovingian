@@ -14,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,30 @@ namespace
 {
     return merovingian::config::parse_key_value_config("server.turn.uris=" + uris +
                                                        "\nserver.turn.username=u\nserver.turn.password=p\n");
+}
+
+// Each entry parsed as the whole list, after `prefix`, in order.
+[[nodiscard]] auto parse_each(std::vector<std::string> const& entries, std::string const& prefix = {})
+    -> std::vector<merovingian::config::ConfigParseResult>
+{
+    auto results = std::vector<merovingian::config::ConfigParseResult>{};
+    for (auto const& entry : entries)
+    {
+        results.push_back(parse_uris(prefix + entry));
+    }
+    return results;
+}
+
+// `count` distinct turn: URIs, comma-separated.
+[[nodiscard]] auto numbered_uris(int count) -> std::string
+{
+    auto list = std::string{};
+    for (int i = 0; i < count; ++i)
+    {
+        list += (i == 0 ? "" : ",");
+        list += "turn:t" + std::to_string(i) + ".example.org";
+    }
+    return list;
 }
 
 } // namespace
@@ -101,67 +126,87 @@ SCENARIO("server.turn.uris accepts the RFC 7065 forms and refuses everything els
 {
     GIVEN("entries that follow the TURN URI grammar")
     {
-        THEN("each is accepted")
+        auto const good_entries = std::vector<std::string>{"turn:turn.example.org",
+                                                           "turn:turn.example.org:3478",
+                                                           "turn:turn.example.org:3478?transport=udp",
+                                                           "turns:turn.example.org:5349?transport=tcp",
+                                                           "turn:192.0.2.1:3478",
+                                                           "turn:[2001:db8::1]:3478",
+                                                           "turn:[::1]",
+                                                           "turn:[::ffff:192.0.2.1]:3478?transport=tcp",
+                                                           "turn:[2001:db8::1]",
+                                                           "turn:a-b.example.org:65535",
+                                                           "turn:turn.example.org:1?transport=tcp"};
+
+        WHEN("each is parsed as the whole list")
         {
-            for (auto const* good :
-                 {"turn:turn.example.org", "turn:turn.example.org:3478", "turn:turn.example.org:3478?transport=udp",
-                  "turns:turn.example.org:5349?transport=tcp", "turn:192.0.2.1:3478", "turn:[2001:db8::1]:3478",
-                  "turn:[::1]", "turn:[::ffff:192.0.2.1]:3478?transport=tcp", "turn:[2001:db8::1]",
-                  "turn:a-b.example.org:65535", "turn:turn.example.org:1?transport=tcp"})
+            auto const parsed = parse_each(good_entries);
+
+            THEN("each is accepted")
             {
-                INFO(good);
-                auto const parsed = parse_uris(good);
-                REQUIRE(merovingian::config::is_valid(parsed.config));
-                REQUIRE_FALSE(has_finding(parsed.findings, "server.turn.uris"));
+                REQUIRE(parsed.size() == good_entries.size());
+                for (auto index = std::size_t{0U}; index < good_entries.size(); ++index)
+                {
+                    INFO(good_entries[index]);
+                    REQUIRE(merovingian::config::is_valid(parsed[index].config));
+                    REQUIRE_FALSE(has_finding(parsed[index].findings, "server.turn.uris"));
+                }
             }
         }
     }
 
     GIVEN("entries with no host, or that leave the grammar")
     {
-        THEN("each is refused")
+        auto const bad_entries = std::vector<std::string>{"turn:?transport=udp",
+                                                          "turn::3478",
+                                                          "turn:@x",
+                                                          "turns:/x",
+                                                          "turn:turn.example.org:",
+                                                          "turn:turn.example.org:0",
+                                                          "turn:turn.example.org:65536",
+                                                          "turn:turn.example.org:+3478",
+                                                          "turn:turn.example.org:34a8",
+                                                          "turn:turn.example.org:3478?transport=sctp",
+                                                          "turn:turn.example.org:3478?transport=udp&x=1",
+                                                          "turn:turn.example.org:3478?x=1",
+                                                          "turn:turn.example.org:3478?transport=",
+                                                          "turn:turn.example.org:3478?transport=udp?x",
+                                                          "turn:turn.example.org.",
+                                                          "turn:.example.org",
+                                                          "turn:-example.org",
+                                                          "turn:example.org-",
+                                                          "turn:u@turn.example.org",
+                                                          "turn:turn.example.org/path",
+                                                          "turn:turn.example.org#frag",
+                                                          "turn:turn.example.org:3478#frag",
+                                                          "turn:turn_example.org",
+                                                          "turn:[2001:db8::1",
+                                                          "turn:2001:db8::1]:3478",
+                                                          "turn:[]:3478",
+                                                          "turn:[2001:db8::g]:3478",
+                                                          "turn:[2001:db8::1]x",
+                                                          "turn:[2001:db8::1]:",
+                                                          "turn:[example.org]",
+                                                          "turn:[:]",
+                                                          "turn:[::::]",
+                                                          "turn:[12345::1]",
+                                                          "turn:[]",
+                                                          "turn:[::1",
+                                                          "turn:[fe80::1%eth0]"};
+
+        WHEN("each is parsed after a valid entry")
         {
-            for (auto const* bad : {"turn:?transport=udp",
-                                    "turn::3478",
-                                    "turn:@x",
-                                    "turns:/x",
-                                    "turn:turn.example.org:",
-                                    "turn:turn.example.org:0",
-                                    "turn:turn.example.org:65536",
-                                    "turn:turn.example.org:+3478",
-                                    "turn:turn.example.org:34a8",
-                                    "turn:turn.example.org:3478?transport=sctp",
-                                    "turn:turn.example.org:3478?transport=udp&x=1",
-                                    "turn:turn.example.org:3478?x=1",
-                                    "turn:turn.example.org:3478?transport=",
-                                    "turn:turn.example.org:3478?transport=udp?x",
-                                    "turn:turn.example.org.",
-                                    "turn:.example.org",
-                                    "turn:-example.org",
-                                    "turn:example.org-",
-                                    "turn:u@turn.example.org",
-                                    "turn:turn.example.org/path",
-                                    "turn:turn.example.org#frag",
-                                    "turn:turn.example.org:3478#frag",
-                                    "turn:turn_example.org",
-                                    "turn:[2001:db8::1",
-                                    "turn:2001:db8::1]:3478",
-                                    "turn:[]:3478",
-                                    "turn:[2001:db8::g]:3478",
-                                    "turn:[2001:db8::1]x",
-                                    "turn:[2001:db8::1]:",
-                                    "turn:[example.org]",
-                                    "turn:[:]",
-                                    "turn:[::::]",
-                                    "turn:[12345::1]",
-                                    "turn:[]",
-                                    "turn:[::1",
-                                    "turn:[fe80::1%eth0]"})
+            auto const parsed = parse_each(bad_entries, "turn:ok.example.org,");
+
+            THEN("each is refused")
             {
-                INFO(bad);
-                auto const parsed = parse_uris(std::string{"turn:ok.example.org,"} + bad);
-                REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
-                REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+                REQUIRE(parsed.size() == bad_entries.size());
+                for (auto index = std::size_t{0U}; index < bad_entries.size(); ++index)
+                {
+                    INFO(bad_entries[index]);
+                    REQUIRE_FALSE(merovingian::config::is_valid(parsed[index].config));
+                    REQUIRE(has_finding(parsed[index].findings, "server.turn.uris"));
+                }
             }
         }
     }
@@ -171,38 +216,47 @@ SCENARIO("server.turn.uris uses the config's ordinary comma-separated list synta
 {
     GIVEN("a list with an empty entry between two URIs")
     {
-        auto const parsed = parse_uris("turn:a.example,,turn:b.example");
-
-        THEN("the empty entry is ignored")
+        WHEN("it is parsed")
         {
-            REQUIRE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(parsed.config.server().turn.uris.size() == 2U);
-            CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
-            CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+            auto const parsed = parse_uris("turn:a.example,,turn:b.example");
+
+            THEN("the empty entry is ignored")
+            {
+                REQUIRE(merovingian::config::is_valid(parsed.config));
+                REQUIRE(parsed.config.server().turn.uris.size() == 2U);
+                CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
+                CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+            }
         }
     }
 
     GIVEN("a list with a trailing comma and whitespace around entries")
     {
-        auto const parsed = parse_uris("  turn:a.example ,\tturn:b.example , ");
-
-        THEN("whitespace around an entry and the empty last entry are ignored")
+        WHEN("it is parsed")
         {
-            REQUIRE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(parsed.config.server().turn.uris.size() == 2U);
-            CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
-            CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+            auto const parsed = parse_uris("  turn:a.example ,\tturn:b.example , ");
+
+            THEN("whitespace around an entry and the empty last entry are ignored")
+            {
+                REQUIRE(merovingian::config::is_valid(parsed.config));
+                REQUIRE(parsed.config.server().turn.uris.size() == 2U);
+                CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
+                CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+            }
         }
     }
 
     GIVEN("a value of only a comma")
     {
-        auto const parsed = merovingian::config::parse_key_value_config("server.turn.uris=,\n");
-
-        THEN("the list is empty and TURN is not configured")
+        WHEN("it is parsed")
         {
-            REQUIRE(merovingian::config::is_valid(parsed.config));
-            CHECK(parsed.config.server().turn.uris.empty());
+            auto const parsed = merovingian::config::parse_key_value_config("server.turn.uris=,\n");
+
+            THEN("the list is empty and TURN is not configured")
+            {
+                REQUIRE(merovingian::config::is_valid(parsed.config));
+                CHECK(parsed.config.server().turn.uris.empty());
+            }
         }
     }
 }
@@ -211,45 +265,58 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
 {
     GIVEN("both server.turn.server and server.turn.uris")
     {
-        auto const parsed = merovingian::config::parse_key_value_config(
-            "server.turn.server=turn:a.example.org\nserver.turn.uris=turn:b.example.org\n"
-            "server.turn.username=u\nserver.turn.password=p\n");
-
-        THEN("the configuration is refused naming server.turn.uris")
+        WHEN("the configuration is parsed")
         {
-            REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
-        }
-    }
+            auto const parsed = merovingian::config::parse_key_value_config(
+                "server.turn.server=turn:a.example.org\nserver.turn.uris=turn:b.example.org\n"
+                "server.turn.username=u\nserver.turn.password=p\n");
 
-    GIVEN("an entry with a scheme other than turn: or turns:")
-    {
-        THEN("each is refused")
-        {
-            for (auto const* bad : {"https://t.example.org", "stun:t.example.org", "TURN:t.example.org",
-                                    "turn.example.org:3478", "turn:"})
+            THEN("the configuration is refused naming server.turn.uris")
             {
-                INFO(bad);
-                auto const parsed = parse_uris(std::string{"turn:ok.example.org,"} + bad);
                 REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
                 REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
             }
         }
     }
 
+    GIVEN("an entry with a scheme other than turn: or turns:")
+    {
+        auto const bad_entries = std::vector<std::string>{"https://t.example.org", "stun:t.example.org",
+                                                          "TURN:t.example.org", "turn.example.org:3478", "turn:"};
+
+        WHEN("each is parsed after a valid entry")
+        {
+            auto const parsed = parse_each(bad_entries, "turn:ok.example.org,");
+
+            THEN("each is refused")
+            {
+                REQUIRE(parsed.size() == bad_entries.size());
+                for (auto index = std::size_t{0U}; index < bad_entries.size(); ++index)
+                {
+                    INFO(bad_entries[index]);
+                    REQUIRE_FALSE(merovingian::config::is_valid(parsed[index].config));
+                    REQUIRE(has_finding(parsed[index].findings, "server.turn.uris"));
+                }
+            }
+        }
+    }
+
     GIVEN("an entry holding whitespace or a control character")
     {
-        auto const inner_space = parse_uris("turn:a b.example.org");
-        auto const tab = parse_uris("turn:a\tb.example.org");
-        auto const bell = parse_uris("turn:a\x07.example.org");
-        auto const high = parse_uris("turn:caf\xC3\xA9.example.org");
-
-        THEN("each is refused")
+        WHEN("each is parsed")
         {
-            for (auto const* parsed : {&inner_space, &tab, &bell, &high})
+            auto const inner_space = parse_uris("turn:a b.example.org");
+            auto const tab = parse_uris("turn:a\tb.example.org");
+            auto const bell = parse_uris("turn:a\x07.example.org");
+            auto const high = parse_uris("turn:caf\xC3\xA9.example.org");
+
+            THEN("each is refused")
             {
-                REQUIRE_FALSE(merovingian::config::is_valid(parsed->config));
-                REQUIRE(has_finding(parsed->findings, "server.turn.uris"));
+                for (auto const* parsed : {&inner_space, &tab, &bell, &high})
+                {
+                    REQUIRE_FALSE(merovingian::config::is_valid(parsed->config));
+                    REQUIRE(has_finding(parsed->findings, "server.turn.uris"));
+                }
             }
         }
     }
@@ -259,57 +326,61 @@ SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][t
         auto const longest = "turn:" + std::string(507U, 'a');
         auto const too_long = "turn:" + std::string(508U, 'a');
 
-        THEN("512 bytes is accepted and 513 is refused")
+        WHEN("an entry of 512 bytes and one of 513 bytes are parsed")
         {
-            REQUIRE(merovingian::config::is_valid(parse_uris(longest).config));
-            auto const parsed = parse_uris(too_long);
-            REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+            auto const accepted = parse_uris(longest);
+            auto const refused = parse_uris(too_long);
+
+            THEN("512 bytes is accepted and 513 is refused")
+            {
+                REQUIRE(merovingian::config::is_valid(accepted.config));
+                REQUIRE_FALSE(merovingian::config::is_valid(refused.config));
+                REQUIRE(has_finding(refused.findings, "server.turn.uris"));
+            }
         }
     }
 
     GIVEN("more than 16 entries")
     {
-        auto list = std::string{};
-        auto const build = [&list](int count) {
-            list.clear();
-            for (int i = 0; i < count; ++i)
-            {
-                list += (i == 0 ? "" : ",");
-                list += "turn:t" + std::to_string(i) + ".example.org";
-            }
-        };
-
-        THEN("16 are accepted and 17 are refused")
+        WHEN("a list of 16 and a list of 17 are parsed")
         {
-            build(16);
-            REQUIRE(merovingian::config::is_valid(parse_uris(list).config));
-            build(17);
-            auto const parsed = parse_uris(list);
-            REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+            auto const accepted = parse_uris(numbered_uris(16));
+            auto const refused = parse_uris(numbered_uris(17));
+
+            THEN("16 are accepted and 17 are refused")
+            {
+                REQUIRE(merovingian::config::is_valid(accepted.config));
+                REQUIRE_FALSE(merovingian::config::is_valid(refused.config));
+                REQUIRE(has_finding(refused.findings, "server.turn.uris"));
+            }
         }
     }
 
     GIVEN("the same entry twice")
     {
-        auto const parsed = parse_uris("turn:t.example.org,turns:t.example.org,turn:t.example.org");
-
-        THEN("the configuration is refused")
+        WHEN("the list is parsed")
         {
-            REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
-            REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+            auto const parsed = parse_uris("turn:t.example.org,turns:t.example.org,turn:t.example.org");
+
+            THEN("the configuration is refused")
+            {
+                REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
+                REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+            }
         }
     }
 
     GIVEN("server.turn.uris set but credentials missing")
     {
-        auto const parsed = merovingian::config::parse_key_value_config("server.turn.uris=turn:t.example.org\n");
-
-        THEN("the missing username and password are reported, as for server.turn.server")
+        WHEN("the configuration is parsed")
         {
-            REQUIRE(has_finding(parsed.findings, "server.turn.username"));
-            REQUIRE(has_finding(parsed.findings, "server.turn.password"));
+            auto const parsed = merovingian::config::parse_key_value_config("server.turn.uris=turn:t.example.org\n");
+
+            THEN("the missing username and password are reported, as for server.turn.server")
+            {
+                REQUIRE(has_finding(parsed.findings, "server.turn.username"));
+                REQUIRE(has_finding(parsed.findings, "server.turn.password"));
+            }
         }
     }
 }

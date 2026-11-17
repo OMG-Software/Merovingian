@@ -14,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,24 +46,30 @@ SCENARIO("server.rtc.livekit.service_url accepts an https URL and defaults to no
 {
     GIVEN("a configuration that does not mention the key")
     {
-        auto const parsed = merovingian::config::parse_key_value_config("");
-
-        THEN("no transport is configured and nothing is reported")
+        WHEN("it is parsed")
         {
-            CHECK(parsed.config.server().rtc.livekit_service_url.empty());
-            CHECK_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
+            auto const parsed = merovingian::config::parse_key_value_config("");
+
+            THEN("no transport is configured and nothing is reported")
+            {
+                CHECK(parsed.config.server().rtc.livekit_service_url.empty());
+                CHECK_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
+            }
         }
     }
 
     GIVEN("a valid https URL, with a port and a path")
     {
-        auto const parsed = parse_url("https://livekit-jwt.example.org:8443/lk-jwt-service");
-
-        THEN("it is kept exactly as written")
+        WHEN("it is parsed")
         {
-            CHECK_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
-            CHECK(parsed.config.server().rtc.livekit_service_url ==
-                  "https://livekit-jwt.example.org:8443/lk-jwt-service");
+            auto const parsed = parse_url("https://livekit-jwt.example.org:8443/lk-jwt-service");
+
+            THEN("it is kept exactly as written")
+            {
+                CHECK_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
+                CHECK(parsed.config.server().rtc.livekit_service_url ==
+                      "https://livekit-jwt.example.org:8443/lk-jwt-service");
+            }
         }
     }
 }
@@ -71,16 +78,27 @@ SCENARIO("server.rtc.livekit.service_url accepts a URL a client can append to", 
 {
     GIVEN("URLs that /sfu/get or /get_token can be appended to")
     {
-        THEN("each is accepted: a bare host, a port, an IPv6 literal, a path with no trailing slash")
+        auto const good_urls = std::vector<std::string>{"https://livekit-jwt.example.org",
+                                                        "https://livekit-jwt.example.org:8443", "https://[2001:db8::1]",
+                                                        "https://[2001:db8::1]:8443/jwt", "https://example.org/a/b"};
+
+        WHEN("each is parsed")
         {
-            for (auto const* good :
-                 {"https://livekit-jwt.example.org", "https://livekit-jwt.example.org:8443", "https://[2001:db8::1]",
-                  "https://[2001:db8::1]:8443/jwt", "https://example.org/a/b"})
+            auto parsed = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const& good : good_urls)
             {
-                INFO(good);
-                auto const parsed = parse_url(good);
-                REQUIRE_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
-                REQUIRE(parsed.config.server().rtc.livekit_service_url == good);
+                parsed.push_back(parse_url(good));
+            }
+
+            THEN("each is accepted: a bare host, a port, an IPv6 literal, a path with no trailing slash")
+            {
+                REQUIRE(parsed.size() == good_urls.size());
+                for (auto index = std::size_t{0U}; index < good_urls.size(); ++index)
+                {
+                    INFO(good_urls[index]);
+                    REQUIRE_FALSE(has_finding(parsed[index].findings, "server.rtc.livekit.service_url"));
+                    REQUIRE(parsed[index].config.server().rtc.livekit_service_url == good_urls[index]);
+                }
             }
         }
     }
@@ -114,14 +132,23 @@ SCENARIO("server.rtc.livekit.service_url refuses anything but a plain https URL"
             long_url,
         };
 
-        THEN("each is refused with a finding on the key, and is never repaired")
+        WHEN("each is parsed")
         {
+            auto parsed = std::vector<merovingian::config::ConfigParseResult>{};
             for (auto const& url : bad)
             {
-                INFO(url.substr(0U, 60U));
-                auto const parsed = parse_url(url);
-                REQUIRE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
-                REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
+                parsed.push_back(parse_url(url));
+            }
+
+            THEN("each is refused with a finding on the key, and is never repaired")
+            {
+                REQUIRE(parsed.size() == bad.size());
+                for (auto index = std::size_t{0U}; index < bad.size(); ++index)
+                {
+                    INFO(bad[index].substr(0U, 60U));
+                    REQUIRE(has_finding(parsed[index].findings, "server.rtc.livekit.service_url"));
+                    REQUIRE_FALSE(merovingian::config::is_valid(parsed[index].config));
+                }
             }
         }
     }
