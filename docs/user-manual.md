@@ -844,6 +844,18 @@ entry, which clients built on the Rust SDK fall back to. `/_matrix/client/versio
 and `org.matrix.msc4143.stable` (ADR-0822). The URL is shown to anyone who can read the well-known document, so give
 it only an address you are happy to publish.
 
+##### Delayed events — `server.delayed_events.*`
+
+All four keys require a restart (they are copied into the runtime at start-up). The keys below are checked at
+start-up; anything outside the range, or not a boolean or unsigned integer, refuses the configuration (ADR-0826).
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `server.delayed_events.enabled` | `true` | `true` or `false` | `false` stops new events being scheduled; events already scheduled are still sent and can still be managed. |
+| `server.delayed_events.max_delay_ms` | `86400000` (24 hours) | `1000` to `2678400000` (31 days) | The longest delay accepted, in milliseconds. Element Call needs `3600000` (one hour) or more. |
+| `server.delayed_events.max_scheduled_per_user` | `100` | `1` to `1000` | Scheduled events one user may hold. |
+| `server.delayed_events.max_finalised_per_user` | `100` | `1` to `1000` | Finalised events kept per user (and for at most 7 days). |
+
 Not implemented yet:
 
 - **Delayed events (MSC4140).** A participant whose client vanishes (a crash or lost network) is not removed from the
@@ -1973,6 +1985,7 @@ take effect.
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `server.rtc.*` | Reloadable |
+| `server.delayed_events.*` | Restart required |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |

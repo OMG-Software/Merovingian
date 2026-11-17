@@ -155,6 +155,17 @@ server.http.ipv6_client_prefix_length=64
 # or holding ? is refused. https://host, https://host:8443 and https://host/jwt are fine.
 # server.rtc.livekit.service_url=https://livekit-jwt.example.org/lk-jwt-service
 
+# Delayed events (MSC4140, optional; restart required)
+# On by default: MatrixRTC clients (Element Call) schedule a "leave" that the server sends if the client vanishes.
+# false stops new scheduling; events already scheduled are still sent.
+# server.delayed_events.enabled=true
+# The longest delay accepted, in milliseconds: 1000..2678400000 (31 days). Element Call needs 3600000 or more.
+# server.delayed_events.max_delay_ms=86400000
+# Scheduled events one user may hold: 1..1000.
+# server.delayed_events.max_scheduled_per_user=100
+# Finalised (sent, cancelled or failed) events kept per user: 1..1000.
+# server.delayed_events.max_finalised_per_user=100
+
 # Listener exposure
 # Keep TLS disabled only on loopback binds behind a declared reverse proxy.
 # If binding to a public interface, set tls=true, reverse_proxy=false, and
