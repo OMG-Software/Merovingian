@@ -706,3 +706,4 @@
 * [0825 - A due delayed event is sent by one job through the ordinary send path, never early and at least once](0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)
 * [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
 * [0827 - A state_after delta is measured from an in-memory log of resolved state changes](0827-a-state-after-delta-is-measured-from-an-in-memory-log-of-resolved-state-changes.md)
+* [0828 - LiveKit tokens are signed and verified only through typed HS256 functions in the crypto boundary](0828-livekit-tokens-are-signed-and-verified-only-through-typed-hs256-functions-in-the-crypto-boundary.md)

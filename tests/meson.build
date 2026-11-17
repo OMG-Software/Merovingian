@@ -343,6 +343,7 @@ shell = find_program('sh')
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
+      'unit/test_crypto_livekit_token.cpp',
       'unit/test_crypto_oauth_client_id.cpp',
       'unit/test_crypto_token_key_cache.cpp',
       'unit/test_database_backend_config.cpp',
