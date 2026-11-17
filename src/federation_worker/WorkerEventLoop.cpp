@@ -498,6 +498,20 @@ namespace
         return ipc::ipc_json_get_str(json, "response_body");
     }
 
+    // Deserialize a `livekit_token_ingest_result` JSON frame from main into the status and body to answer. A reply
+    // with no usable status or no body is a 502 `M_UNKNOWN`: main did not answer, and the worker never invents a
+    // token or a refusal of its own (ADR-0831).
+    auto deserialize_livekit_token_ingest_result(std::string_view json) -> federation::FederationResponse
+    {
+        auto const status = ipc::ipc_json_get_u64(json, "status");
+        auto body = ipc::ipc_json_get_str(json, "response_body");
+        if (status < 100U || status > 599U || body.empty())
+        {
+            return {502U, R"({"errcode":"M_UNKNOWN","error":"the token service did not answer"})"};
+        }
+        return {static_cast<std::uint16_t>(status), std::move(body)};
+    }
+
     // Deserialize a `profile_query_ingest_result` JSON frame from main. Uses
     // the same full-JSON-parse approach as deserialize_membership_ingest_result
     // above rather than ipc::ipc_json_get_str, since "found" is a raw bool
@@ -1088,6 +1102,21 @@ auto WorkerEventLoop::run() -> void
             return {};
         }
         return deserialize_device_keys_query_ingest_result(*reply);
+    };
+
+    // POST /rtc/livekit/get_token: the token is signed with the LiveKit secret, which only main holds, so the worker
+    // forwards the verified origin and body and answers what main answers (ADR-0831). Bound to the verified request
+    // like the relays above.
+    runtime.federation.livekit_token_provider =
+        [channel_ptr](std::string_view origin, std::string_view request_body) -> federation::FederationResponse {
+        auto const reply =
+            federation_worker::relay_to_main(*channel_ptr, federation::WorkerRelayKind::livekit_token, request_body,
+                                             current_fed_parent_request_id, std::chrono::seconds{60}, origin);
+        if (!reply.has_value())
+        {
+            return deserialize_livekit_token_ingest_result({});
+        }
+        return deserialize_livekit_token_ingest_result(*reply);
     };
 
     runtime.federation.profile_query_provider =

@@ -6,6 +6,7 @@
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationResponse.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
 #include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/federation/RoomReadResult.hpp"
@@ -63,6 +64,12 @@ using ProfileQueryProvider = std::function<FederationProfile(std::string_view us
 using DeviceKeysQueryProvider = std::function<std::string(std::string_view request_body)>;
 using OneTimeKeysClaimProvider = std::function<std::string(std::string_view request_body)>;
 using UserDevicesProvider = std::function<std::string(std::string_view user_id)>;
+
+// `POST /_matrix/federation/{v1,unstable/io.element.msc4195}/rtc/livekit/get_token` (ADR-0831). Takes the verified
+// `origin` and the request body and returns the HTTP status and body to answer, a refusal included: the token
+// service judges the request, the federation layer only carries it. Optional: an unset hook makes the route respond
+// 501 Not Implemented.
+using LiveKitTokenProvider = std::function<FederationResponse(std::string_view origin, std::string_view request_body)>;
 
 // Inbound event-graph query hooks. Each takes the parsed path component (and
 // for `get_missing_events`, the request body) plus the X-Matrix-authenticated

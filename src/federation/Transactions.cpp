@@ -125,6 +125,8 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "media_thumbnail";
     case FederationEndpoint::exchange_third_party_invite:
         return "exchange_third_party_invite";
+    case FederationEndpoint::livekit_token:
+        return "livekit_token";
     }
 
     return "unknown";
@@ -153,6 +155,8 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     case FederationEndpoint::claim_keys:
     case FederationEndpoint::query_user_devices:
     case FederationEndpoint::query_event:
+    // Mints a token with the LiveKit secret, which only main holds (ADR-0831).
+    case FederationEndpoint::livekit_token:
         return true;
     case FederationEndpoint::make_leave:
     case FederationEndpoint::make_knock:
@@ -210,6 +214,9 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("GET", "/_matrix/federation/v1/media/thumbnail/{mediaId}", FederationEndpoint::media_thumbnail),
         route("PUT", "/_matrix/federation/v1/exchange_third_party_invite/{roomId}",
               FederationEndpoint::exchange_third_party_invite),
+        route("POST", "/_matrix/federation/v1/rtc/livekit/get_token", FederationEndpoint::livekit_token),
+        route("POST", "/_matrix/federation/unstable/io.element.msc4195/rtc/livekit/get_token",
+              FederationEndpoint::livekit_token),
     };
 }
 

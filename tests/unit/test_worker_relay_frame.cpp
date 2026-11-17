@@ -98,6 +98,49 @@ SCENARIO("a worker's bound relay frame names its kind, its parent request and it
     }
 }
 
+SCENARIO("a worker's LiveKit token relay frame also names the verified origin",
+         "[unit][ghsa-3p5v][relay-frame][livekit]")
+{
+    GIVEN("a request body and a verified origin holding characters JSON must escape")
+    {
+        auto const body = std::string{R"({"room_id":"!r:hs","member":{"id":"a\"b"}})"};
+        auto const origin = std::string{"remote.example:8448"};
+
+        WHEN("the frame is built under parent request 42")
+        {
+            auto const frame = worker_relay_frame(WorkerRelayKind::livekit_token, body, 42U, origin);
+
+            THEN("main reads back the type, the parent, the body and the origin unchanged")
+            {
+                REQUIRE(frame.has_value());
+                INFO("frame: " << *frame);
+                CHECK(merovingian::ipc::ipc_json_get_str(*frame, "type") == "livekit_token_ingest");
+                CHECK(merovingian::ipc::ipc_json_get_u64(*frame, "parent_request_id") == 42U);
+                CHECK(merovingian::ipc::ipc_json_get_str(*frame, "request_body") == body);
+                CHECK(merovingian::ipc::ipc_json_get_str(*frame, "origin") == origin);
+            }
+        }
+        WHEN("the frame is built with no parent request, or with no origin")
+        {
+            THEN("there is no frame")
+            {
+                CHECK_FALSE(worker_relay_frame(WorkerRelayKind::livekit_token, body, 0U, origin).has_value());
+                CHECK_FALSE(worker_relay_frame(WorkerRelayKind::livekit_token, body, 42U, "").has_value());
+            }
+        }
+        WHEN("another kind's frame is built with an origin")
+        {
+            auto const frame = worker_relay_frame(WorkerRelayKind::device_keys_query, body, 42U, origin);
+
+            THEN("the origin is not put in it")
+            {
+                REQUIRE(frame.has_value());
+                CHECK(merovingian::ipc::ipc_json_get_str(*frame, "origin").empty());
+            }
+        }
+    }
+}
+
 SCENARIO("a worker sends a bound relay to main only under a parent request", "[unit][ghsa-3p5v][relay-frame]")
 {
     GIVEN("a worker channel whose main end records the frame it receives and answers it")

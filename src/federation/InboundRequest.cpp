@@ -1879,6 +1879,17 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // The provider judges the request and answers its own refusals; this only carries the verified origin and body.
+    [[nodiscard]] auto handle_livekit_token(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.livekit_token_provider)
+        {
+            return {501U, "livekit_token not implemented"};
+        }
+        return runtime.livekit_token_provider(request.origin, request.body);
+    }
+
     [[nodiscard]] auto handle_user_devices(FederationRuntimeState& runtime, SignedFederationRequest const& request)
         -> FederationResponse
     {
@@ -2353,6 +2364,8 @@ namespace
             return handle_claim_keys(runtime, request);
         case FederationEndpoint::query_user_devices:
             return handle_user_devices(runtime, request);
+        case FederationEndpoint::livekit_token:
+            return handle_livekit_token(runtime, request);
         case FederationEndpoint::query_event:
             return handle_query_event(runtime, request);
         case FederationEndpoint::query_state:
