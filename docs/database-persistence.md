@@ -98,11 +98,15 @@ value. Test fixtures that do not exercise persistence select it through
     delay_ms`, then delay ID, so the earliest due is O(1)), by (user, device, room, event type, transaction ID) for
     idempotency, by event ID for sent rows, and every finalised row by finalised time for the age prune. A memory-only
     "being sent" mark hides a row from the due order while a send is in progress. No reader scans the table. A row
-    whose `status` text is not one of the four is skipped when hydrating, never repaired.
+    the loader cannot read is skipped when hydrating, never repaired and never guessed: the three numeric columns must
+    be decimal digits, `status` and the two booleans exactly the texts the store writes, a scheduled row's delay within
+    1 to the maximum, and a `sent` row's event ID not already claimed by another row. The count skipped is logged once
+    at start-up. A number read as 0 would make a scheduled row due at once, which is sending early.
   - Rows leave in four ways, all in one transaction: the user's cancel and the outcome of a send each evict that
     user's oldest finalised rows beyond `server.delayed_events.max_finalised_per_user`; the age prune deletes
     finalised rows older than 7 days (oldest first, at most 500 a transaction); and account deactivation deletes all
-    of a user's rows (`DELETE ... WHERE user_id = $1`). Logout and device deletion delete nothing.
+    of a user's rows (`DELETE ... WHERE user_id = $1`, always run in the database, so a skipped row does not outlive its
+    account). Logout and device deletion delete nothing.
   - The one place memory changes without a commit: `record_delayed_event_outcome`. The event was already sent, so
     memory is finalised even when the finalising commit fails (the function says so), and the database row still
     reads `scheduled`, so the next start-up sends it again (at least once, ADR-0825). Every other function changes

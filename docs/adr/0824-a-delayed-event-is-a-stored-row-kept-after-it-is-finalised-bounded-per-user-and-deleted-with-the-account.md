@@ -39,10 +39,15 @@ survives restarts with one mechanism.
   per user by `max_finalised_per_user` (default 100): when a row is finalised and the user is at the bound, that
   user's oldest finalised rows are deleted in the same transaction. They are bounded in age by a fixed 7 days, pruned
   by the delayed-events job, at most 500 rows per transaction, oldest first.
+* A row the loader cannot read is skipped, never repaired and never guessed: the three numeric columns must be decimal
+  digits, the status and the two booleans exactly the texts the store writes, a scheduled row's delay within 1 to the
+  maximum, and a `sent` row's event ID not already claimed by another row. The number of rows skipped is logged once
+  at start-up. A number read as 0 would make a scheduled row due at once, which is sending early.
 * A restart of a scheduled event is persisted: it updates `delayed_since_ms`.
 * Deactivating an account deletes all of the user's rows, scheduled and finalised, in one transaction, as a step of
   `deactivate_user_account` beside the pusher cleanup. A failure is logged and deactivation continues; the check at
-  send time (ADR-0825) is the guarantee.
+  send time (ADR-0825) is the guarantee. The delete always runs in the database, so that a skipped row does not
+  outlive its account.
 * Logout and device deletion do not cancel. A delayed event belongs to the user; any of their devices, or an
   application service acting for them, may manage it.
 * The federation worker never reads the table. It is classified in the never-reads set of
@@ -87,6 +92,7 @@ Persist only the schedule, not the postponement.
 * The federation worker does not read the table; a change that makes it read the table must change its
   classification deliberately.
 * A new code path that deletes an account's data must delete these rows too.
+* A new column gets its check in both loaders.
 
 ## Links
 

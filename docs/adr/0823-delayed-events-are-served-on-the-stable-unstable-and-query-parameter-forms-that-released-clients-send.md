@@ -55,6 +55,13 @@ route's idempotency lookup and before any send. It never falls through to an imm
 feature is disabled (then it is `403 M_FORBIDDEN`). A delay that is not a decimal integer of at least 1, or is
 repeated, is `400 M_INVALID_PARAM`.
 
+The parameter is honoured only on `PUT .../send/{eventType}/{txnId}` and `PUT .../state/...`. Every other client
+route that sends a room event from the caller's body (`POST /_matrix/client/v3/rooms/{roomId}/send` and
+`PUT .../redact/{eventId}/{txnId}`) answers `400 M_INVALID_PARAM` when the parameter is present, before anything is
+sent and whether or not the feature is enabled, so that no route can send at once a request that asked for a delay.
+The parameter's name is percent-decoded before it is compared, so an encoded spelling is recognised. The
+application-service `?ts=` parameter is ignored on a delayed request; the event is stamped with the time it is sent.
+
 Management looks an event up by the authenticated user and the delay ID. A delay ID that does not exist and one that
 belongs to another user get the same answer, byte for byte: `404 M_NOT_FOUND`, `Delayed event not found.`
 
@@ -129,6 +136,7 @@ Earlier drafts did this. Synapse stopped in 1.127 and 1.164.
 * The listing endpoint and sticky events (MSC4354) remain out of scope; the sticky member of the dedicated body is
   ignored.
 * Application-service masquerade on the management routes must keep working.
+* A new route that sends an event from the caller's body must refuse the delay parameter the same way.
 * The user manual tells operators to keep the maximum delay at one hour or more.
 
 ## Links

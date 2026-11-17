@@ -58,7 +58,8 @@ retry is skipped because the gateway's circuit is open; the skipped notification
 half the total timeout, counted against the circuit (ADR-0409); `push.delivery.deferred` (warning,
 `recipient`) marks a pusher a batch queued unattempted after its deadline;
 `account.deactivated.pusher_removal_failed` (warning, `user_id`) a pusher of a deactivated account that
-could not be deleted (ADR-0411).
+could not be deleted (ADR-0411); `account.deactivated.delayed_events_removal_failed` (warning, `user_id`) the
+delayed events of a deactivated account that could not be deleted (ADR-0824).
 
 Email pushers (ADR-0219, ADR-0220) log under the `rooms` logger with `recipient` (the user ID),
 never the email address, the relay URL or credentials: `push.email.sent` (debug, with `unread`);
@@ -633,8 +634,11 @@ The delayed-events handlers and the `delayed-events` job log under the `delayed_
 `delay_id`, `user_id`, `room_id` and `event_type`, never the content and never the state key (a call membership's state
 key holds a device ID): `delayed_event.scheduled` (info, with `delay_ms`), `delayed_event.restarted` (info),
 `delayed_event.cancelled` (info), `delayed_event.sent` (info, with `event_id`), `delayed_event.failed` (warning, with
-`status` and `errcode`; error, with `status` and the exception's `type`, when the job's send threw), `delayed_event.prune_failed` (warning, no row fields: the age prune's commit failed and the rows stay for the next run) and `delayed_event.finalise_commit_failed` (error, with `outcome`, `refused` or `commit_failed`:
-the event was sent but its row could not be recorded, so it is sent again after a restart).
+`status` and `errcode`; error, with `status` and the exception's `type`, when the job's send threw), `delayed_event.prune_failed` (warning, no row fields: the age prune's commit failed and the rows stay for the next run),
+`delayed_events.rows_skipped_at_load` (warning, once per start-up when rows were skipped, with the count only: the
+loader skips a row it cannot read and never repairs it, ADR-0824) and `delayed_event.finalise_commit_failed` (error,
+with `outcome`, `commit_failed`, `refused` or `exception`: the event was sent but its row could not be recorded, so it
+is sent again after a restart).
 
 ## Registration token file diagnostics
 

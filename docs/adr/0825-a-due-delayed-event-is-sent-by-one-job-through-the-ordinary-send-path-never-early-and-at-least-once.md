@@ -20,11 +20,13 @@ and its authorisation, and the job machinery already sleeps until a deadline.
   hardening, stopped on shutdown in the same sequence as the other jobs, and refuses to serve if its thread cannot
   start. `HomeserverRuntime::delayed_events_wake` (null in tests, installed and removed under the runtime lock like
   `typing_expiry_wake`) is called when an event is scheduled. A restart only moves a deadline later and needs no wake.
-* The body is a function taking the runtime, `now_ms` and the stop flag. Per run: take the runtime lock, ask the table
-  for the earliest-due scheduled row with due time at or before `now_ms`, send it, release the lock; one send per
-  lock hold, the stop flag checked between items, at most 100 sends per run (then it runs again at once). One age
-  prune batch, in its own lock hold. It returns the time until the next due row, clamped to 0 to 60 seconds, and 60
-  seconds when nothing is scheduled.
+* The body is a function taking the runtime, `now_ms` and the stop flag. Each run sends at most one due event: take
+  the runtime lock, ask the table for the earliest-due scheduled row with due time at or before `now_ms`, send it,
+  release the lock. Then one age prune batch, in its own lock hold. While another event is already due the job
+  returns a pace of 5 ms with the lock free (the profile propagation job's pace,
+  [ADR-0353](0353-a-profile-change-holds-the-runtime-lock-for-a-fixed-share-of-the-users-rooms.md)), so a backlog
+  cannot starve requests of a lock that is not fair. Otherwise it returns the time to the next deadline, at most 60
+  seconds, and 60 seconds when nothing is scheduled. It never returns 0.
 * Time is wall-clock milliseconds, because the due time is persisted and must mean the same after a restart. Handlers
   and the job take "now" from one function that honours a `HomeserverRuntime` test seam. Tests drive the job body with
   a chosen `now_ms` and never sleep; no test depends on a wall-clock margin.
@@ -44,6 +46,13 @@ and its authorisation, and the job machinery already sleeps until a deadline.
   under it. The row is also marked "being sent" (memory only) before `send_event_as_user` is called and unmarked when
   it returns, and while it is marked the row is out of the due order and a second send, restart or cancel answers
   409.
+* The "being sent" mark is held by a scope guard, so it is cleared on every path. In the job, an exception from the
+  send is recorded as a failed send (500, `M_UNKNOWN`) and logged by type only, because a job that throws is run
+  again a few seconds later and an unrecorded attempt would be repeated; if recording the outcome itself throws, the
+  mark is kept so the row is not sent again by this process. In a `send` request there is no catch: the exception
+  reaches the dispatch boundary's backstop (500) and the event stays scheduled, so if the exception came after the
+  event was stored the event can be sent again later. That is the at-least-once rule applying inside one process, in
+  this one case.
 * At least once: the order is send, then finalise. The event's commit and the row's update are two transactions; a
   crash between them sends the event again after restart. For a call membership leave a duplicate is harmless and a
   lost one is the bug being fixed.
@@ -53,6 +62,11 @@ and its authorisation, and the job machinery already sleeps until a deadline.
   without a successful commit, and the code says why in a comment.
 
 ## Pros and Cons of the Options
+
+### Send every due event in one run, back to back
+
+* Bad, because each send releases the lock, but the mutex is not fair and the job thread retakes it at once, so a
+  backlog after downtime could hold requests off for its whole length.
 
 ### Record as sent, then send (at most once)
 
@@ -99,6 +113,8 @@ Compose and sign, then discard.
 ## Consequences
 
 * The delayed-events job is the only background sender of delayed events.
+* A `send` request that throws after the event was stored leaves the row scheduled, so the event can be sent again
+  later: the at-least-once rule applying inside one process, in this one case.
 * Anything inside the send path that releases the runtime lock is covered by the "being sent" mark. A change that
   makes the send path release the lock for a new event type must keep the mark set across it.
 * A clock stepped backwards delays sends; stepped forwards, it brings them forward by the step. The server has no
