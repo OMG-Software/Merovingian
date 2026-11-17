@@ -8,7 +8,9 @@
 #include "../support/JsonTestSupport.hpp"
 #include "../support/LiveKitTestSupport.hpp"
 #include "merovingian/database/DelayedEventStatus.hpp"
+#include "merovingian/database/LiveKitDelegationStore.hpp"
 #include "merovingian/database/LiveKitDelegationTable.hpp"
+#include "merovingian/database/PersistentLiveKitDelegation.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
@@ -482,6 +484,99 @@ SCENARIO("The job sends a delegated leave once LiveKit no longer shows a partici
                 CHECK(status_in_grace == merovingian::database::DelayedEventStatus::scheduled);
                 REQUIRE(row != nullptr);
                 CHECK(row->status == merovingian::database::DelayedEventStatus::sent);
+            }
+        }
+    }
+}
+
+SCENARIO("A delegation stored again while a check was in flight is not given that check's answer",
+         "[homeserver][livekit][rtc][delegation]")
+{
+    GIVEN("alice's delegated leave, and LiveKit answering that she is connected")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"identity":"x","state":"ACTIVE"})";
+
+        WHEN("while LiveKit is asked, with the lock free, she delegates the same delay ID for another member")
+        {
+            auto const answer_connected = fixture.runtime().homeserver.test_livekit_perform;
+            auto redelegated = Answer{};
+            fixture.runtime().homeserver.test_livekit_perform =
+                [&](merovingian::http::OutboundRequest const& outbound) {
+                    redelegated = delegate(
+                        fixture, fixture.alice_token,
+                        delegation_body(fixture.room_id, delegated.delay_id, sfu_url, "m.call#room", "OTHER_member"));
+                    return answer_connected(outbound);
+                };
+            std::ignore = run_job(fixture, t0_ms);
+            fixture.runtime().homeserver.test_livekit_perform = answer_connected;
+            auto const& progress = fixture.runtime().homeserver.livekit_delegation_progress;
+            auto const entry = progress.find(delegated.delay_id);
+
+            THEN("the new delegation is stored, and the old member's answer does not count as seeing the new one")
+            {
+                CHECK(redelegated.status == 200U);
+                auto const* row = delegations(fixture).find(delegated.delay_id);
+                REQUIRE(row != nullptr);
+                CHECK(row->member_id == "OTHER_member");
+                REQUIRE(entry != progress.end());
+                CHECK(entry->second.last_seen_connected_ms == 0U);
+            }
+
+            AND_WHEN("a minute later LiveKit does not know the new member")
+            {
+                fixture.mock().get_participant_status = 404U;
+                fixture.mock().get_participant_body = R"({"code":"not_found","msg":"participant not found"})";
+                std::ignore = run_job(fixture, t0_ms + 60'000U);
+
+                THEN("the leave is not sent: the new member is still inside its time to connect")
+                {
+                    auto const* event = delayed_row(fixture, delegated.delay_id);
+                    REQUIRE(event != nullptr);
+                    CHECK(event->status == merovingian::database::DelayedEventStatus::scheduled);
+                    CHECK(delegations(fixture).size() == 1U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("One run drops a bounded number of delegations, and the rest soon after",
+         "[homeserver][livekit][rtc][delegation]")
+{
+    GIVEN("alice's delegated leave, and 70 stored delegations whose events are not scheduled")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        auto& store = fixture.runtime().homeserver.database.persistent_store;
+        constexpr auto stale = std::size_t{70U};
+        for (auto index = std::size_t{0U}; index < stale; ++index)
+        {
+            auto row = merovingian::database::PersistentLiveKitDelegation{};
+            row.delay_id = "stale-" + std::to_string(index);
+            row.user_id = "@stale" + std::to_string(index / 20U) + ":example.org";
+            row.room_id = fixture.room_id;
+            row.slot_id = "m.call#room";
+            row.member_id = "member-" + std::to_string(index);
+            row.created_ms = t0_ms;
+            REQUIRE(merovingian::database::store_livekit_delegation(store, std::move(row)));
+        }
+        REQUIRE(delegations(fixture).size() == stale + 1U);
+
+        WHEN("the job runs once, then again")
+        {
+            auto const first_wait = run_job(fixture, t0_ms);
+            auto const after_first = delegations(fixture).size();
+            std::ignore = run_job(fixture, t0_ms + 1'000U);
+
+            THEN("the first run drops 64 and asks to run again soon; the second drops the rest and keeps alice's")
+            {
+                CHECK(after_first == stale + 1U - hs::livekit_delegation_drops_per_run);
+                CHECK(first_wait < hs::livekit_delegation_check_interval);
+                CHECK(delegations(fixture).size() == 1U);
+                CHECK(delegations(fixture).find(delegated.delay_id) != nullptr);
             }
         }
     }

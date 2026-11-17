@@ -42,11 +42,14 @@ On this server, inbound federation is parsed by the federation worker. The worke
    cannot change the origin or the body, or replay a frame.
 4. Main judges the request with `issue_federation_livekit_token`, holding `runtime.mutex`, by its own state:
    * this server is in the room (`room_state_is_current`: the create event is held and a local user is joined);
+   * the room's current `m.room.server_acl` allows the origin (`room_server_acl_allows`). The room is named in the
+     body, not the path, so the route-level ACL check in `InboundRequest.cpp` never sees it, and an ACL does not change
+     a membership: without this check a denied server whose user is still joined would get a token for the call;
    * `user_id`'s server is the origin;
    * the user's current `m.room.member` state is `join`;
    * `url` is `server.rtc.livekit.url`, byte for byte.
 
-   The first three are one 403 `M_FORBIDDEN`, "No token can be issued for this user in this room.", so a server learns
+   The first four are one 403 `M_FORBIDDEN`, "No token can be issued for this user in this room.", so a server learns
    nothing about a room it has no member in. The last is 400 `M_INVALID_PARAM`. A body naming a `server_name` other
    than this server's is 400 too.
 5. The token is signed in main and returned to the worker, which answers it. The worker answers a refused frame
@@ -68,7 +71,7 @@ When `server_name` is not this server's, `issue_client_livekit_token`:
 
 1. Requires the caller joined here (the same 403 as for this server's SFU).
 2. Requires the named server to have a member joined by this server's roster (`RoomMembers::has_member_of_server`),
-   else 403 `M_FORBIDDEN` (MSC4195).
+   and the room's server ACL to allow it, else 403 `M_FORBIDDEN` (MSC4195). A server the room denies is not asked.
 3. Takes an ADR-0079 slot (429 without one) and one deadline of 10 seconds, clamped by `remote_timeout`.
 4. Sends `{member_id, room_id, slot_id, url, user_id}` over signed federation (`perform_outbound_call`,
    `OutboundAnswerTrust::unverified`, at most 8 KiB of answer) to the stable path only, with `runtime.mutex` released

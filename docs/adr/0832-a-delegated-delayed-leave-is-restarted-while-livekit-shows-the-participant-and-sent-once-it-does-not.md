@@ -56,11 +56,17 @@ start.
 A job in the main process, `livekit-delegations`, checks each delegation about every 30 seconds with LiveKit's
 `GetParticipant` for the delegation's room name and identity (MSC4195 names, ADR-0829), at most 16 calls a run, with
 `runtime.mutex` released for the calls (ADR-0830). Under the lock, before any call, a delegation is dropped (its row
-deleted, the event left as it is) when:
+deleted, the event left as it is), at most 64 a run so that one lock hold stays bounded (each drop is a commit, and
+erasing from the in-memory table costs its size; the rest go on the next run, soon after), when:
 
 * its delayed event is no longer scheduled (sent, cancelled or failed);
 * the user is no longer joined to the room;
 * the token service is no longer configured.
+
+After a call, under the lock again, an answer is applied only to the delegation it was asked for: the same delay ID,
+user, room, slot, member and creation time, with the same LiveKit room name and identity. A delegation stored again
+while the lock was free (another member for the same delay ID, say) is a different participant, and the answer is
+dropped rather than recorded as seeing it.
 
 After a call:
 

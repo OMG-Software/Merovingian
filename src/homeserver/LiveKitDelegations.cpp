@@ -192,6 +192,9 @@ namespace
         std::string delay_id;
         std::string user_id;
         std::string room_id;
+        std::string slot_id;
+        std::string member_id;
+        std::uint64_t created_ms{0U};
         std::string room_name;
         std::string identity;
         Observation observation{Observation::unknown};
@@ -208,12 +211,19 @@ namespace
     {
         auto& runtime = rt.homeserver;
         auto const& store = runtime.database.persistent_store;
+        // The whole delegation, not only its delay ID: one stored again while the lock was free (another slot or
+        // member, or the same anew) is not the participant this answer is about.
         auto const* row = store.livekit_delegations.find(check.delay_id);
-        if (row == nullptr || row->user_id != check.user_id || row->room_id != check.room_id)
+        if (row == nullptr || row->user_id != check.user_id || row->room_id != check.room_id ||
+            row->slot_id != check.slot_id || row->member_id != check.member_id || row->created_ms != check.created_ms)
         {
             return; // dropped or replaced while the lock was free
         }
         auto* progress = progress_of(runtime, *row);
+        if (progress != nullptr && (progress->room_name != check.room_name || progress->identity != check.identity))
+        {
+            return;
+        }
         auto const* event = store.delayed_events.find_owned(row->user_id, row->delay_id);
         if (progress == nullptr || event == nullptr || event->status != database::DelayedEventStatus::scheduled)
         {
@@ -364,12 +374,20 @@ auto run_livekit_delegations(ClientServerRuntime& rt, std::uint64_t const now_ms
     {
         auto const guard = RuntimeLock{runtime.mutex};
         service = runtime.config.server().rtc.token_service;
-        // A copy: drop() changes the table.
+        // A copy: drop() changes the table. Each drop is a commit and costs the table's size (an erase renumbers its
+        // indexes), so one run drops at most `livekit_delegation_drops_per_run`; the rest go on the next, soon after.
         auto const rows = runtime.database.persistent_store.livekit_delegations.rows();
+        auto drops = std::size_t{0U};
         for (auto const& row : rows)
         {
             if (auto const reason = drop_reason(runtime, row); !reason.empty())
             {
+                if (drops == livekit_delegation_drops_per_run)
+                {
+                    next_ms = now_ms;
+                    continue;
+                }
+                ++drops;
                 if (drop(runtime, row.delay_id))
                 {
                     log_delegation("livekit.delegation.dropped", row.user_id, row.room_id, reason);
@@ -384,8 +402,8 @@ auto run_livekit_delegations(ClientServerRuntime& rt, std::uint64_t const now_ms
             }
             if (progress->next_check_ms <= now_ms && checks.size() < livekit_delegation_checks_per_run)
             {
-                checks.push_back(Check{row.delay_id, row.user_id, row.room_id, progress->room_name, progress->identity,
-                                       Observation::unknown});
+                checks.push_back(Check{row.delay_id, row.user_id, row.room_id, row.slot_id, row.member_id,
+                                       row.created_ms, progress->room_name, progress->identity, Observation::unknown});
             }
             else
             {

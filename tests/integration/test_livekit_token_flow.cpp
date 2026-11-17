@@ -88,6 +88,19 @@ auto seed_remote_join(hs::ClientServerRuntime& runtime, std::string const& room_
     std::ignore = room->members.add(std::string{user_id});
 }
 
+// Makes the room's current `m.room.server_acl` allow every server but `denied`.
+auto seed_server_acl(hs::ClientServerRuntime& runtime, std::string const& room_id, std::string_view const denied)
+    -> void
+{
+    auto& store = runtime.homeserver.database.persistent_store;
+    auto const event_id = std::string{"$server-acl"};
+    auto const json = R"({"content":{"allow":["*"],"allow_ip_literals":false,"deny":[")" + std::string{denied} +
+                      R"("]},"event_id":")" + event_id + R"(","room_id":")" + room_id +
+                      R"(","sender":"@alice:example.org","state_key":"","type":"m.room.server_acl"})";
+    store.events.push_back({event_id, room_id, "@alice:example.org", json, 11U, 0U, {}, {}, {}});
+    store.state.push_back({room_id, "m.room.server_acl", "", event_id});
+}
+
 // MSC4195's federation body, as `origin` would send it.
 [[nodiscard]] auto federation_body(std::string_view const room_id, std::string_view const user_id,
                                    std::string_view const url = sfu_url) -> std::string
@@ -753,6 +766,23 @@ SCENARIO("A federated request is refused unless this server's own state shows th
             }
         }
 
+        WHEN("the room's server ACL denies remote.example.org, though carol is still joined")
+        {
+            seed_server_acl(fixture.runtime(), fixture.room_id, remote_server);
+            auto const denied = federated(fixture.runtime(), remote_server, federation_body(fixture.room_id, carol));
+            auto const unknown_origin =
+                federated(fixture.runtime(), "other.example.net", federation_body(fixture.room_id, carol));
+
+            THEN("it is the same 403 M_FORBIDDEN, and nothing is signed or called")
+            {
+                CHECK(denied.status == 403U);
+                CHECK(denied.errcode == "M_FORBIDDEN");
+                CHECK(denied.reason == unknown_origin.reason);
+                CHECK(denied.value.find("jwt") == std::string::npos);
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+
         WHEN("carol leaves")
         {
             auto& store = fixture.runtime().homeserver.database.persistent_store;
@@ -865,6 +895,26 @@ SCENARIO("A token for another server's SFU is relayed to that server, and only i
                     seen.substr(body_start + 4U) ==
                     R"({"member_id":"DEVICEID_member","room_id":")" + fixture.room_id +
                         R"(","slot_id":"m.call#room","url":"wss://sfu.remote.example.org","user_id":"@alice:example.org"})");
+                CHECK(fixture.mock().requests.empty());
+            }
+        }
+    }
+
+    GIVEN("alice's room, which carol of remote.example.org has joined, and a server ACL denying remote.example.org")
+    {
+        auto fixture = LiveKitFixture{};
+        seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+        seed_server_acl(fixture.runtime(), fixture.room_id, remote_server);
+
+        WHEN("alice asks for a token for remote.example.org's SFU")
+        {
+            auto const answer = request(fixture.runtime(), "POST", std::string{stable_path}, fixture.alice_token,
+                                        relay_body(fixture.room_id));
+
+            THEN("it is 403 M_FORBIDDEN without a request to that server, as for a server not in the room")
+            {
+                CHECK(answer.status == 403U);
+                CHECK(errcode_of(answer) == "M_FORBIDDEN");
                 CHECK(fixture.mock().requests.empty());
             }
         }

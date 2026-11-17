@@ -3385,8 +3385,10 @@ worker never reads the configuration or the secret.
 (b) A token for someone who should not have one. A token goes only to a caller this server authenticated (access token,
 account gate) and finds joined by its own current room state, never by the request: a user not joined, and a room that
 does not exist, get the same 403. A federated request is judged by main, for the origin main verified, and needs the
-user to be of that origin and joined by this server's state; the three refusals are one 403, so a server learns nothing
-about a room it has no member in (ADR-0831).
+user to be of that origin and joined by this server's state, and the room's server ACL to allow the origin (the room is
+named in the body, so the route-level ACL check does not cover it, and an ACL leaves a denied server's users joined); the
+four refusals are one 403, so a server learns nothing about a room it has no member in (ADR-0831). A relay goes only to a
+server the room's ACL allows.
 
 (c) More rights than a call needs. A local user's token joins one room and may publish and subscribe; another
 server's user's token may only subscribe. Lifetime is 60 to 3600 seconds. The room name and identity are MSC4195's

@@ -15,6 +15,7 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/homeserver/BoundedOutboundLimits.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -213,7 +214,10 @@ namespace
                                                   RuntimeLock& guard) -> OperationResult
     {
         auto const* room = find_local_room(rt.homeserver.database, request.room_id);
-        if (room == nullptr || !room->members.has_member_of_server(request.server_name))
+        // A server the room's ACL denies is not one this server deals with in the room, joined members or not.
+        if (room == nullptr || !room->members.has_member_of_server(request.server_name) ||
+            !federation::room_server_acl_allows(rt.homeserver.database.persistent_store, request.room_id,
+                                                request.server_name))
         {
             log_refusal("livekit.relay.refused", user_id, request.room_id, "server not in room");
             return livekit_refusal(403U, "M_FORBIDDEN", "That server is not in this room.");
@@ -440,7 +444,8 @@ auto issue_federation_livekit_token(HomeserverRuntime& runtime, std::string_view
     auto const& store = runtime.database.persistent_store;
     // MSC4195, in its order: this server joined to the room, the user of the origin, the user joined; each 403
     // M_FORBIDDEN with one text, so the answer tells a server nothing about a room it has no member in. All judged by
-    // this server's own current state (ADR-0831).
+    // this server's own current state (ADR-0831). The room is named in the body, not the path, so the route-level
+    // server ACL check never sees it: the room's ACL is checked here, and a denied origin is refused like any other.
     auto const forbidden = [&](std::string_view const reason) {
         log_refusal("livekit.federation.refused", request.user_id, request.room_id, reason);
         return livekit_refusal(403U, "M_FORBIDDEN", "No token can be issued for this user in this room.");
@@ -448,6 +453,10 @@ auto issue_federation_livekit_token(HomeserverRuntime& runtime, std::string_view
     if (!room_state_is_current(store, request.room_id, our_server))
     {
         return forbidden("this server is not in the room");
+    }
+    if (!federation::room_server_acl_allows(store, request.room_id, origin))
+    {
+        return forbidden("the room's server ACL denies the origin");
     }
     if (auth::user_id_server_name(request.user_id) != origin)
     {

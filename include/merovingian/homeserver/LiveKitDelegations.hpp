@@ -30,6 +30,8 @@ inline constexpr auto livekit_delegation_check_interval = std::chrono::milliseco
 inline constexpr auto livekit_delegation_connect_grace_ms = std::uint64_t{120'000U};
 // GetParticipant calls made by one run of the job, so one run's lock-free stretch stays bounded.
 inline constexpr auto livekit_delegation_checks_per_run = std::size_t{16U};
+// At most this many delegations are dropped in one run, each a commit under the lock; the rest wait for the next run.
+inline constexpr auto livekit_delegation_drops_per_run = std::size_t{64U};
 // The webhook body and the event `id` LiveKit sends, at most.
 inline constexpr auto livekit_webhook_max_body_bytes = std::size_t{64U * 1024U};
 inline constexpr auto livekit_webhook_max_event_id_bytes = std::size_t{128U};
