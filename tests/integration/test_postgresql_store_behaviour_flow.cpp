@@ -1697,6 +1697,9 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
 {
     GIVEN("a scheduled state event, a sent row, a cancelled row and a failed row of two users")
     {
+        // This scenario needs a live PostgreSQL server. With no URI configured it ends here with a message. That is one
+        // passing assertion and no test of the store, so only a run that sets the URI, as the PostgreSQL CI job does,
+        // proves anything about the loader.
         auto const uri = postgresql_uri();
         if (uri.empty())
         {
@@ -1710,6 +1713,8 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
         auto const alice = "@delayed-a-" + suffix + ":example.org";
         auto const bob = "@delayed-b-" + suffix + ":example.org";
         auto const room_id = "!delayed-" + suffix + ":example.org";
+        // Every row here differs only in its ID and its owner, so one builder fills the other columns. A case that
+        // cares about a column sets it on the row the builder returns.
         auto const make = [&](std::string id, std::string const& user) {
             auto row = db::PersistentDelayedEvent{};
             row.delay_id = "d-" + id + "-" + suffix;
