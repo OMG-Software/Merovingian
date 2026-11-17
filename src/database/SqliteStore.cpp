@@ -798,6 +798,13 @@ namespace
     auto load_persistent_rows(sqlite3& connection, PersistentStore& store, TableLoadProfile profile,
                               std::vector<PersistentEvent>& hydrated_events) -> bool
     {
+        // Migration 003 (ADR-0824): delayed events, loaded by the helper above as a statement of its own. The table
+        // depends on no other table and none depends on it, so it need not be a link of the chain below. A failed
+        // SELECT fails the whole load, as a failed link does.
+        if (!load_delayed_event_rows(connection, store, profile))
+        {
+            return false;
+        }
         // Tables load in dependency order and the chain short-circuits: the first failed SELECT
         // fails the whole load, so a partially read store is never served.
         return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
@@ -1219,8 +1226,6 @@ namespace
                                                                        column_text(row, 2), column_text(row, 3),
                                                                        parse_u64(column_text(row, 4))});
                          }) &&
-               // Migration 003 (ADR-0824): delayed events, loaded by the helper above.
-               load_delayed_event_rows(connection, store, profile) &&
                // Application service delivery state: transaction cursors, the outbox and the directory mapping.
                load_rows(connection,
                          "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "

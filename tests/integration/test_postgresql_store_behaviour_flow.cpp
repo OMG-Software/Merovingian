@@ -1687,6 +1687,57 @@ SCENARIO("PostgreSQL OAuth clients and sessions survive a reopen and a session g
     }
 }
 
+namespace
+{
+
+// A scheduled message row with the ID "d-<id>-<suffix>" for `user`. Every row of the reopen scenario below starts as
+// this row, and a case that cares about another column sets it on the row returned.
+[[nodiscard]] auto delayed_event_row(std::string const& suffix, std::string const& room_id, std::string const& id,
+                                     std::string const& user) -> db::PersistentDelayedEvent
+{
+    auto row = db::PersistentDelayedEvent{};
+    row.delay_id = "d-" + id + "-" + suffix;
+    row.user_id = user;
+    row.device_id = "DEVICE";
+    row.room_id = room_id;
+    row.event_type = "m.room.message";
+    row.content_json = R"({"body":"two words \"quoted\""})";
+    row.delay_ms = 60'000U;
+    row.delayed_since_ms = 1'000U;
+    return row;
+}
+
+// Writes one row of each status through the store functions: a scheduled state event and a scheduled message with a
+// transaction ID for `alice`, a sent and a cancelled row for `alice`, and a failed row for `bob`. The state event takes
+// the largest delay and a large `delayed_since_ms`, so the numbers are proved to come back as the same values, and its
+// state key and appservice flag fill the columns that a message leaves empty.
+auto store_delayed_events_of_every_status(db::PersistentStore& store, std::string const& suffix,
+                                          std::string const& alice, std::string const& bob,
+                                          std::string const& room_id) -> void
+{
+    auto state = delayed_event_row(suffix, room_id, "state", alice);
+    state.is_state = true;
+    state.state_key = alice;
+    state.via_appservice = true;
+    state.delay_ms = db::max_delayed_event_delay_ms;
+    state.delayed_since_ms = 123'456'789U;
+    auto message = delayed_event_row(suffix, room_id, "message", alice);
+    message.txn_id = "txn-" + suffix;
+    REQUIRE(db::store_delayed_event(store, state));
+    REQUIRE(db::store_delayed_event(store, message));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "sent", alice)));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "cancelled", alice)));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "failed", bob)));
+    REQUIRE(db::record_delayed_event_outcome(store, "d-sent-" + suffix, db::DelayedEventStatus::sent, 2000U,
+                                             "$sent-" + suffix, {}, 10U) == db::DelayedEventOutcomeResult::recorded);
+    REQUIRE(db::cancel_delayed_event(store, "d-cancelled-" + suffix, 2001U, 10U));
+    REQUIRE(db::record_delayed_event_outcome(store, "d-failed-" + suffix, db::DelayedEventStatus::failed, 2002U, {},
+                                             R"({"errcode":"M_FORBIDDEN","error":"nope"})",
+                                             10U) == db::DelayedEventOutcomeResult::recorded);
+}
+
+} // namespace
+
 // A delayed event must survive a restart, or a call's scheduled leave is lost (ADR-0824). This is the PostgreSQL twin
 // of the SQLite reopen scenario in `test_delayed_event_store.cpp`: PostgreSQL has its own loader, and its own text
 // columns and bound parameters, so the same round trip must be proved on it. One row of each status is written through
@@ -1713,42 +1764,9 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
         auto const alice = "@delayed-a-" + suffix + ":example.org";
         auto const bob = "@delayed-b-" + suffix + ":example.org";
         auto const room_id = "!delayed-" + suffix + ":example.org";
-        // Every row here differs only in its ID and its owner, so one builder fills the other columns. A case that
-        // cares about a column sets it on the row the builder returns.
-        auto const make = [&](std::string id, std::string const& user) {
-            auto row = db::PersistentDelayedEvent{};
-            row.delay_id = "d-" + id + "-" + suffix;
-            row.user_id = user;
-            row.device_id = "DEVICE";
-            row.room_id = room_id;
-            row.event_type = "m.room.message";
-            row.content_json = R"({"body":"two words \"quoted\""})";
-            row.delay_ms = 60'000U;
-            row.delayed_since_ms = 1'000U;
-            return row;
-        };
-        auto state = make("state", alice);
-        state.is_state = true;
-        state.state_key = alice;
-        state.via_appservice = true;
-        // The largest delay and a large `delayed_since_ms` check that the numbers come back as the same values, and the
-        // state key and appservice flag fill the columns that a message leaves empty.
-        state.delay_ms = db::max_delayed_event_delay_ms;
-        state.delayed_since_ms = 123'456'789U;
-        auto message = make("message", alice);
-        message.txn_id = "txn-" + suffix;
-        REQUIRE(db::store_delayed_event(opened.store, state));
-        REQUIRE(db::store_delayed_event(opened.store, message));
-        REQUIRE(db::store_delayed_event(opened.store, make("sent", alice)));
-        REQUIRE(db::store_delayed_event(opened.store, make("cancelled", alice)));
-        REQUIRE(db::store_delayed_event(opened.store, make("failed", bob)));
-        REQUIRE(db::record_delayed_event_outcome(opened.store, "d-sent-" + suffix, db::DelayedEventStatus::sent, 2000U,
-                                                 "$sent-" + suffix, {},
-                                                 10U) == db::DelayedEventOutcomeResult::recorded);
-        REQUIRE(db::cancel_delayed_event(opened.store, "d-cancelled-" + suffix, 2001U, 10U));
-        REQUIRE(db::record_delayed_event_outcome(opened.store, "d-failed-" + suffix, db::DelayedEventStatus::failed,
-                                                 2002U, {}, R"({"errcode":"M_FORBIDDEN","error":"nope"})",
-                                                 10U) == db::DelayedEventOutcomeResult::recorded);
+        // The rows are written by a helper so that this scenario reads as what it proves: the write, the reopen, then
+        // every column and index read back.
+        store_delayed_events_of_every_status(opened.store, suffix, alice, bob, room_id);
 
         // The first store is discarded before the second is opened, so every value below was read from the database and
         // none from the memory that wrote it.
