@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/DeferredPduRetryJob.hpp"
+#include "merovingian/homeserver/DelayedEvents.hpp"
 #include "merovingian/homeserver/EmailPushJob.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
@@ -931,6 +932,24 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sends the delayed events (MSC4140, ADR-0825) that have fallen due, one send per hold of the runtime lock, and
+    // ages out finalised ones. It sleeps until the earliest deadline and is woken when an earlier one is scheduled.
+    // It only ever touches `runtime`, which outlives this function. Declared after the pools so it is stopped and
+    // joined before them.
+    auto delayed_events_job = merovingian::homeserver::PeriodicJob{
+        "delayed-events", [&runtime](merovingian::homeserver::StopFlag const& stop) {
+            return merovingian::homeserver::send_due_delayed_events(
+                runtime, merovingian::homeserver::delayed_event_now_ms(runtime.homeserver), stop);
+        }};
+    if (!delayed_events_job.start())
+    {
+        LOG_CRITICAL("Delayed events thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Sends a profile change to the rooms its request left (F-11, ADR-0353), taking the runtime lock
     // per room. It only ever touches `runtime`, which outlives this function. Declared after the
     // pools so it is stopped and joined before them.
@@ -1037,6 +1056,9 @@ struct ListenerBinding final
         runtime.homeserver.profile_propagation_wake = [&profile_propagation_job]() {
             profile_propagation_job.wake();
         };
+        runtime.homeserver.delayed_events_wake = [&delayed_events_job]() {
+            delayed_events_job.wake();
+        };
     }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
@@ -1109,8 +1131,12 @@ struct ListenerBinding final
         auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;
         runtime.homeserver.profile_propagation_wake = nullptr;
+        runtime.homeserver.delayed_events_wake = nullptr;
     }
     typing_expiry_job.stop();
+    // The wake hook is cleared above; a send in progress ends first (it makes no network call). Events still
+    // scheduled stay in the database and are sent by the next start (ADR-0825).
+    delayed_events_job.stop();
     // Rooms still queued are left for the user's next profile change (ADR-0353). One room's send ends
     // first; it makes no network call.
     profile_propagation_job.stop();

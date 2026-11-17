@@ -5,6 +5,9 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/database/DelayedEventTable.hpp"
+#include "merovingian/database/PersistentDelayedEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -106,6 +109,16 @@ auto ViewerEventUnsigned::apply(database::PersistentEvent const& event, canonica
     if (auto transaction = transaction_id_of(event); transaction.has_value())
     {
         added.push_back(canonicaljson::make_member("transaction_id", canonicaljson::Value{std::move(*transaction)}));
+    }
+    // MSC4140 (ADR-0824): the user who scheduled the delayed event this event became is told its delay ID, under the
+    // stable name and the unstable one, for as long as the finalised record is kept. Nobody else is. One hash lookup
+    // by event ID; no scan.
+    if (auto const* delayed = store_.delayed_events.find_sent_by_event_id(event.event_id);
+        delayed != nullptr && delayed->user_id == user_id_)
+    {
+        added.push_back(canonicaljson::make_member("delay_id", canonicaljson::Value{std::string{delayed->delay_id}}));
+        added.push_back(canonicaljson::make_member("org.matrix.msc4140.delay_id",
+                                                   canonicaljson::Value{std::string{delayed->delay_id}}));
     }
     if (auto membership = visibility_.membership_at(event); membership.has_value())
     {
