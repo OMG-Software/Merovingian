@@ -6053,6 +6053,11 @@ namespace
     return result;
 }
 
+auto room_operation_response(OperationResult const& result) -> LocalHttpResponse
+{
+    return response_from_room_operation(result);
+}
+
 auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id) -> bool
 {
     auto const guard = RuntimeLock{runtime.mutex};

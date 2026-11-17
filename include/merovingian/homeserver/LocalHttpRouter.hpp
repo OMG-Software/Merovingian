@@ -7,6 +7,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
 
 #include <cstdint>
@@ -39,6 +40,11 @@ namespace merovingian::homeserver
 // peer is 127.0.0.1.
 [[nodiscard]] auto rate_limit_client_key(LocalHttpRequest const& request, config::ServerConfig const& server)
     -> std::string;
+
+// The response the local router gives a room operation's result: a failure with no status is a 403, and the errcode
+// travels with it (`LocalHttpResponse::errcode`). It is the function `PUT /send` and `PUT /state` answers go through,
+// shared so a delayed event's failed `send` action answers what an ordinary send would (ADR-0823).
+[[nodiscard]] auto room_operation_response(OperationResult const& result) -> LocalHttpResponse;
 
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
