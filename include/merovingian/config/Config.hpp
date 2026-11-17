@@ -32,6 +32,11 @@ namespace merovingian::config
 inline constexpr std::uint32_t min_audit_log_retention_days = 30U;
 inline constexpr std::uint32_t max_audit_log_retention_days = 3650U;
 
+// server.delayed_events.* ranges (ADR-0826).
+inline constexpr std::uint64_t min_delayed_event_delay_ms = 1'000U;
+inline constexpr std::uint64_t max_delayed_event_delay_ms = 2'678'400'000U; // 31 days
+inline constexpr std::uint32_t max_delayed_events_per_user = 1'000U;
+
 class Config final
 {
 public:

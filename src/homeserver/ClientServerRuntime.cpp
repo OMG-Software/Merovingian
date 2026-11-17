@@ -15001,6 +15001,10 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
     rt.limits.sliding_sync_connections_per_device = client_api.sliding_sync_connections_per_device;
+    rt.limits.delayed_events_enabled = config.server().delayed_events.enabled;
+    rt.limits.max_delayed_event_delay_ms = config.server().delayed_events.max_delay_ms;
+    rt.limits.max_scheduled_delayed_events_per_user = config.server().delayed_events.max_scheduled_per_user;
+    rt.limits.max_finalised_delayed_events_per_user = config.server().delayed_events.max_finalised_per_user;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.

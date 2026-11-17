@@ -83,6 +83,15 @@ struct ClientApiLimits final
     // at most 16 KiB stay small in memory. At the cap a new registration first evicts idle clients, least recently
     // used first; tests lower it.
     std::size_t max_oauth_clients{10000U};
+    // ADR-0826 (copied from server.delayed_events.*): whether new delayed events may be scheduled; scheduled ones are
+    // still sent when this is false.
+    bool delayed_events_enabled{true};
+    // The longest delay, in milliseconds, a delayed event may be scheduled with.
+    std::uint64_t max_delayed_event_delay_ms{86'400'000U};
+    // The scheduled delayed events one user may hold.
+    std::uint32_t max_scheduled_delayed_events_per_user{100U};
+    // The finalised delayed events kept per user.
+    std::uint32_t max_finalised_delayed_events_per_user{100U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

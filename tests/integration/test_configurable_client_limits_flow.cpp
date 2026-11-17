@@ -98,3 +98,29 @@ SCENARIO("client API runtime limits are copied from the server configuration", "
         }
     }
 }
+
+SCENARIO("delayed-event runtime limits are copied from server.delayed_events", "[homeserver][limits][delayed-events]")
+{
+    GIVEN("an operator configuration with non-default delayed-event settings")
+    {
+        auto config = make_client_api_config();
+        config.server().delayed_events.enabled = false;
+        config.server().delayed_events.max_delay_ms = 3'600'000U;
+        config.server().delayed_events.max_scheduled_per_user = 7U;
+        config.server().delayed_events.max_finalised_per_user = 9U;
+
+        WHEN("the client server runtime starts")
+        {
+            auto const started = merovingian::homeserver::start_client_server(config);
+
+            THEN("the runtime limits hold the configured values")
+            {
+                REQUIRE(started.started);
+                REQUIRE_FALSE(started.runtime.limits.delayed_events_enabled);
+                REQUIRE(started.runtime.limits.max_delayed_event_delay_ms == 3'600'000U);
+                REQUIRE(started.runtime.limits.max_scheduled_delayed_events_per_user == 7U);
+                REQUIRE(started.runtime.limits.max_finalised_delayed_events_per_user == 9U);
+            }
+        }
+    }
+}
