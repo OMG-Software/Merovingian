@@ -45,10 +45,20 @@ namespace
         return value.size() <= cap;
     }
 
+    // PostgreSQL TEXT cannot hold a NUL byte and the table's transaction key joins its parts with one, so a field
+    // holding one is refused, never stored.
+    [[nodiscard]] auto has_nul(std::string_view value) noexcept -> bool
+    {
+        return value.find('\0') != std::string_view::npos;
+    }
+
     [[nodiscard]] auto row_is_storable(PersistentDelayedEvent const& row) noexcept -> bool
     {
-        return !row.delay_id.empty() && !row.user_id.empty() && !row.room_id.empty() && !row.event_type.empty() &&
-               !row.content_json.empty() && within(row.delay_id, max_delayed_event_id_bytes) &&
+        return !has_nul(row.delay_id) && !has_nul(row.user_id) && !has_nul(row.device_id) && !has_nul(row.room_id) &&
+               !has_nul(row.event_type) && !has_nul(row.state_key) && !has_nul(row.txn_id) &&
+               !has_nul(row.content_json) && !row.delay_id.empty() && !row.user_id.empty() && !row.room_id.empty() &&
+               !row.event_type.empty() && !row.content_json.empty() &&
+               within(row.delay_id, max_delayed_event_id_bytes) &&
                within(row.content_json, max_delayed_event_content_bytes) &&
                within(row.user_id, max_delayed_event_field_bytes) &&
                within(row.device_id, max_delayed_event_field_bytes) &&

@@ -195,6 +195,38 @@ SCENARIO("A delayed event is stored once, within its caps, and refused outside t
                  [](PersistentDelayedEvent& r) {
                      r.device_id = std::string(db::max_delayed_event_field_bytes, 'v');
                  }, true },
+                {"delay id with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.delay_id += std::string{'\0'} + "x";
+                 }, false},
+                {"user id with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.user_id += std::string{'\0'} + "x";
+                 }, false},
+                {"device id with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.device_id += std::string{'\0'} + "x";
+                 }, false},
+                {"room id with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.room_id += std::string{'\0'} + "x";
+                 }, false},
+                {"event type with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.event_type += std::string{'\0'} + "x";
+                 }, false},
+                {"state key with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.state_key += std::string{'\0'} + "x";
+                 }, false},
+                {"txn id with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.txn_id += std::string{'\0'} + "x";
+                 }, false},
+                {"content json with a NUL byte",
+                 [](PersistentDelayedEvent& r) {
+                     r.content_json += std::string{'\0'} + "x";
+                 }, false},
                 {"device id over cap",
                  [](PersistentDelayedEvent& r) {
                      r.device_id = std::string(db::max_delayed_event_field_bytes + 1U, 'v');
