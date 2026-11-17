@@ -30,9 +30,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0820).
 * The sync row of `docs/todos/capability-gaps.md` no longer says a limited sync gives no gap state, and tracks the
   `state_after` limit after a state fork (ADR-0819).
-* Tests: the upgrade fixture scenarios now prove the 1.0.3 sync token stays incremental and its stream token epoch
-  survives migration; scratch files are uniquely named and their writes checked; the RTC and TURN URI tests fail one
-  scenario, not the binary, on a missing field.
+* Tests: the upgrade fixture scenarios prove the 1.0.3 sync token stays incremental and its epoch survives
+  migration; scratch files are uniquely named; a missing JSON field fails one scenario, not the binary.
 
 ## Release notes
 
