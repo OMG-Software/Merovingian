@@ -359,6 +359,27 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json, std::optional<std::int64_t> origin_server_ts = std::nullopt)
     -> OperationResult;
+// The five functions below are module-internal: `DelayedEvents.cpp` (delayed events, MSC4140, ADR-0825) is their only
+// caller. The caller holds runtime.mutex.
+//
+// `send_event`'s core with the sender already known: `event_json` is a `{"type", "content", "state_key"?}` body, and
+// the event is stamped with the event clock's reading (never a caller's `origin_server_ts`). `via_appservice` is set
+// when an application service asserted the sender (ADR-0628).
+[[nodiscard]] auto send_event_as_resolved_user(HomeserverRuntime& runtime, std::string const& user_id,
+                                               std::string_view room_id, std::string_view event_json,
+                                               bool via_appservice) -> OperationResult;
+// What `send_event_as_resolved_user` answers, with the same logging, when the room is not held (404 shape, reason
+// "unknown room") or `user_id` is not joined to it (403, "not joined"); nullopt when neither. The same function
+// `send_event_as_resolved_user` itself asks.
+[[nodiscard]] auto room_send_refusal(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id)
+    -> std::optional<OperationResult>;
+// 403 "event authorization or signing failed": what an event the room's auth rules refuse is answered, shared with
+// the delayed events' schedule-time power check.
+[[nodiscard]] auto event_authorization_refusal() -> OperationResult;
+// 413 M_TOO_LARGE for an event over the Matrix size limits (CSAZ-9), and 400 M_INVALID_PARAM for a state key holding a
+// NUL byte: the answers `send_event_as_resolved_user` gives, for a request checked before the send.
+[[nodiscard]] auto event_too_large_refusal() -> OperationResult;
+[[nodiscard]] auto invalid_state_key_refusal() -> OperationResult;
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,

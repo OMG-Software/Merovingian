@@ -9629,15 +9629,13 @@ namespace
         return state_content_refusal_result(*refusal);
     }
 
-    // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
-    // `via_appservice` is set when an application service asserted the sender: the server-administrator override of
-    // a redaction is then not applied (ADR-0628).
-    [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
-                                          std::string_view room_id, std::string_view event_json,
-                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false)
-        -> OperationResult
+    // The refusal send_event_as_user gives when `room_id` is not a room this server holds or `user_id` is not joined to
+    // it (logged as room.event.rejected), or nullopt when the room can be sent to. Shared with the delayed events'
+    // schedule-time check (`room_send_refusal`), so the two answer alike. Caller holds runtime.mutex.
+    [[nodiscard]] auto unsendable_room_refusal(HomeserverRuntime& runtime, std::string const& user_id,
+                                               std::string_view room_id) -> std::optional<OperationResult>
     {
-        auto* room = find_room(runtime.database, room_id);
+        auto const* room = find_room(runtime.database, room_id);
         if (room == nullptr)
         {
             log_diagnostic("room.event.rejected", {
@@ -9655,6 +9653,26 @@ namespace
                                                       {"reason",  "not joined",         false}
             });
             return make_operation_result(false, {}, "not joined", 403U);
+        }
+        return std::nullopt;
+    }
+
+    // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
+    // `via_appservice` is set when an application service asserted the sender: the server-administrator override of
+    // a redaction is then not applied (ADR-0628).
+    [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
+                                          std::string_view room_id, std::string_view event_json,
+                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false)
+        -> OperationResult
+    {
+        if (auto refusal = unsendable_room_refusal(runtime, user_id, room_id); refusal.has_value())
+        {
+            return std::move(*refusal);
+        }
+        auto* room = find_room(runtime.database, room_id);
+        if (room == nullptr)
+        {
+            return make_operation_result(false, {}, "unknown room");
         }
         if (event_json.empty())
         {
@@ -9710,7 +9728,7 @@ namespace
                                                       {"status",  "403",                                   false},
                                                       {"reason",  "event authorization or signing failed", false}
             });
-            return make_operation_result(false, {}, "event authorization or signing failed", 403U);
+            return event_authorization_refusal();
         }
         // CSAZ-11. Spec (Client-Server API, PUT /redact): a user may redact their own events, another
         // user's only with the `redact` level, and a server administrator any event sent by a user on
@@ -9838,6 +9856,33 @@ namespace
                               appservice::decode_masquerade_token(access_token).has_value());
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+auto send_event_as_resolved_user(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id,
+                                 std::string_view event_json, bool via_appservice) -> OperationResult
+{
+    return send_event_as_user(runtime, user_id, room_id, event_json, std::nullopt, via_appservice);
+}
+
+auto room_send_refusal(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id)
+    -> std::optional<OperationResult>
+{
+    return unsendable_room_refusal(runtime, user_id, room_id);
+}
+
+auto event_authorization_refusal() -> OperationResult
+{
+    return make_operation_result(false, {}, "event authorization or signing failed", 403U);
+}
+
+auto event_too_large_refusal() -> OperationResult
+{
+    return event_too_large_result();
+}
+
+auto invalid_state_key_refusal() -> OperationResult
+{
+    return invalid_state_key_result();
+}
 
 namespace
 {

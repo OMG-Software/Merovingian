@@ -27,6 +27,8 @@ This is the largest and most complex module — read this file carefully before 
 | `AppserviceDelivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, OAuth 2.0 session rows whose device holds no live access or refresh token (judged again in the hold that deletes them, ADR-0808), and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `DelayedEvents.cpp` | Delayed events (MSC4140, ADR-0823 to ADR-0826): `schedule_delayed_event`, `manage_delayed_event` (send, cancel, restart), `delayed_event_lookup`, the clock `delayed_event_now_ms` (and its seam `test_delayed_event_clock_ms`), `wake_delayed_events`, and `send_due_delayed_events`, the body of the `delayed-events` `PeriodicJob` in `main.cpp`. The caller holds `runtime.mutex` for all but the job body, which takes it for one send at a time |
+| `ClientServerRuntimeInternal.hpp` | Call-throughs from `ClientServerRuntime.cpp`'s anonymous namespace that `DelayedEvents.cpp` shares with the `/send` and `/state` routes: `rate_limit_route_template` (`normalized_target`), `route_event_body` (`event_body_from_content`), `event_txn_part_is_too_long`, `errcode_for_refusal_status`, and the two reasons the `/send` route gives for a too-long type or transaction ID. Not public API |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
 | `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response` / `oauth_empty_response`: every OAuth JSON (or empty) answer, with `no-store` (ADR-0781) |
 | `OAuthTokenEndpoint.cpp` | `POST /_merovingian/oauth2/token` (`handle_oauth_token`): the authorization code grant, the refresh grant (ADR-0791 to ADR-0793) and the device code grant (ADR-0804) |
@@ -1199,6 +1201,40 @@ event type, before anything is created. Membership alone is not enough. Alias `P
 `LocalRoom` has no list of events. Read a room's events, and take an event ID, from `PersistentStore::events` or the
 room's forward extremities (`last_known_event_id` in `ClientServerRuntime.cpp` is the model). A redacted event is served
 from the table's redacted JSON; do not add a second copy.
+
+## Delayed events (ADR-0823 to ADR-0826)
+
+`DelayedEvents.cpp` schedules, manages, looks up and sends an event a user asked to have sent later; the routes (the
+next layer) only parse a request and call it. Invariants a change must keep:
+
+- **One sender at a time, marked.** A send takes `runtime.mutex` for one event, marks the row as being sent
+  (`DelayedEventTable::mark_being_sent`, memory only) before `send_event_as_resolved_user`, and finalising clears the
+  mark. A marked row is offered by nobody: restart, cancel and send answer 409 "being sent". The job sends ONE event per
+  hold and at most 100 a run; it checks its `StopFlag` between events. A record the store refuses leaves the row
+  marked, so it is never sent again by that process; never clear the mark to retry.
+- **Never early.** The job sends only a row whose `delayed_event_due_ms` is at or before the `now_ms` it was given,
+  re-read under the lock it sends under. "Now" is `delayed_event_now_ms` (production and handlers) or the job's
+  parameter (tests); never read the clock anywhere else, and never sleep in a test.
+- **Authorised when sent.** The send is the ordinary `send_event_as_user`, so the room's auth rules judge the event
+  against the state NOW, after the account check (unknown or deactivated 403 `M_USER_DEACTIVATED`, locked 401
+  `M_USER_LOCKED`, suspended 403 `M_USER_SUSPENDED`) and the send-time rate limit (`RateLimitEngine::check` with an empty
+  address bucket, and the user bucket and policy target an ordinary PUT of that event would have). Any failure of
+  the job's send is recorded `failed` with the standard error object and is never retried. A failed `send` action
+  returns the send's own result and leaves the row scheduled, timer unchanged. Never add a copy of a send-path check;
+  call the shared function.
+- **No `origin_server_ts` and no `client_txn_ids` row** for a delayed event: it is stamped when it is sent and carries
+  no `unsigned.transaction_id`. `unsigned.delay_id` (and the unstable name) is added by `ViewerEventUnsigned` for the
+  scheduling user only, by one `find_sent_by_event_id`.
+- **Every path that deactivates an account deletes its rows** (`delete_delayed_events_of_user`, in
+  `deactivate_user_account`, a failure logged and not fatal). Logout and device deletion do not. A new path that closes
+  an account does it too.
+- **Lookup is by `find_owned` only**, and an unknown, another user's, empty or over-long ID is the one 404 `M_NOT_FOUND`
+  "Delayed event not found.", byte for byte.
+- **Logging** is under `delayed_events` (`delayed_event.scheduled`, `.restarted`, `.cancelled`, `.sent`, `.failed`,
+  `.finalise_commit_failed`) with `delay_id`, `user_id`, `room_id`, `event_type`, and `event_id`, `status`, `errcode`
+  where they apply. NEVER log `content_json` or a state key (a call-membership state key holds a device ID).
+- `send_event_as_user`'s room and membership refusal is `room_send_refusal`, and its power refusal
+  `event_authorization_refusal`, both shared with the schedule-time check; change them, not a copy.
 
 ## Typing expiry (R13, ADR-0199)
 

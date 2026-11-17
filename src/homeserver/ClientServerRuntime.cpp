@@ -86,6 +86,7 @@
 #include "merovingian/homeserver/ClientDeviceSessions.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntimeInternal.hpp"
 #include "merovingian/homeserver/ClientServerStartOptions.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
@@ -14759,6 +14760,27 @@ namespace
 
 } // namespace
 
+auto event_txn_part_is_too_long(std::string_view part) noexcept -> bool
+{
+    return client_txn_part_is_too_long(part);
+}
+
+auto rate_limit_route_template(std::string_view target) -> std::string
+{
+    return normalized_target(target);
+}
+
+auto route_event_body(std::string_view event_type, std::string_view content, std::optional<std::string> state_key)
+    -> std::optional<std::string>
+{
+    return event_body_from_content(event_type, content, std::move(state_key));
+}
+
+auto errcode_for_refusal_status(std::uint16_t status) -> std::string_view
+{
+    return error_code_for_status(status);
+}
+
 auto remember_signed_in_device(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id,
                                std::string_view display_name, SignedInDevice kind) -> void
 {
@@ -20618,11 +20640,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // A room event's type is under the size limits, answered as they all are, 413 M_TOO_LARGE.
                 if (client_txn_part_is_too_long(path->event_type))
                 {
-                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "the event type is at most 255 bytes");
+                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", event_type_too_long_reason);
                 }
                 if (client_txn_part_is_too_long(path->txn_id))
                 {
-                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", txn_id_too_long_reason);
                 }
                 // CS API §10.5.1: idempotent send — replay the original response to the same device (F-52,
                 // ADR-0380): a transaction ID is scoped to a device, so another device's is another request.
