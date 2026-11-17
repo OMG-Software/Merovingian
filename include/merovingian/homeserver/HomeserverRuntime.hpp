@@ -343,6 +343,10 @@ struct HomeserverRuntime final
     // play a compromised worker, and count the calls that reach one, without a worker process. An
     // unverified call never reaches it. Always empty in production.
     std::function<http::OutboundResult(http::OutboundRequest const&)> test_worker_outbound_route{};
+    // Test-only (ADR-0830): stands in for the operator's LiveKit server. When set, every call to LiveKit's room service
+    // (perform_livekit_request) hands it the finished request, token and body included, in place of resolving the
+    // API host and connecting, and uses what it returns as LiveKit's answer. Always empty in production.
+    std::function<http::OutboundResult(http::OutboundRequest const&)> test_livekit_perform{};
     // Owned implementation of the runtime signing provider: the production
     // multi-key provider in main, or the refusing provider in the federation
     // worker (RuntimeStartOptions::signing_disabled, ADR-0078).

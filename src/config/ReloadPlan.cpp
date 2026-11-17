@@ -586,6 +586,29 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.rtc.livekit.service_url");
     }
+    // The built-in token service: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
+    auto const& current_token_service = current.server().rtc.token_service;
+    auto const& next_token_service = next.server().rtc.token_service;
+    if (current_token_service.url != next_token_service.url)
+    {
+        add_change(plan, "server.rtc.livekit.url");
+    }
+    if (current_token_service.api_url != next_token_service.api_url)
+    {
+        add_change(plan, "server.rtc.livekit.api_url");
+    }
+    if (current_token_service.api_key != next_token_service.api_key)
+    {
+        add_change(plan, "server.rtc.livekit.api_key");
+    }
+    if (current_token_service.api_secret_file != next_token_service.api_secret_file)
+    {
+        add_change(plan, "server.rtc.livekit.api_secret_file");
+    }
+    if (current_token_service.token_lifetime_seconds != next_token_service.token_lifetime_seconds)
+    {
+        add_change(plan, "server.rtc.livekit.token_lifetime");
+    }
 
     // Delayed events: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
     if (current.server().delayed_events.enabled != next.server().delayed_events.enabled)

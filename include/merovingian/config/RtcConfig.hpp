@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/config/LiveKitTokenServiceConfig.hpp"
+
 #include <string>
 
 namespace merovingian::config
 {
 
-// MatrixRTC transport discovery (MSC4143, MSC4195; ADR-0822). This server never fetches or proxies anything here: it
-// only tells authenticated clients where the operator's own MatrixRTC authorisation service is.
+// MatrixRTC (MSC4143, MSC4195). Either this server tells clients where the operator's own external authorisation
+// service is (`livekit_service_url`, ADR-0822), or it issues LiveKit tokens itself (`token_service`, ADR-0829); never
+// both.
 struct RtcConfig final
 {
     // The HTTPS URL of an external MatrixRTC authorisation service (Element's `lk-jwt-service`) that the operator
@@ -18,6 +21,8 @@ struct RtcConfig final
     // control character and at most 2048 bytes, or whose path ends in `/`. A URL with no path (`https://host`,
     // `https://host:8443`) is accepted.
     std::string livekit_service_url{};
+    // The built-in token service.
+    LiveKitTokenServiceConfig token_service{};
 };
 
 } // namespace merovingian::config

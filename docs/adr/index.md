@@ -707,3 +707,6 @@
 * [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
 * [0827 - A state_after delta is measured from an in-memory log of resolved state changes](0827-a-state-after-delta-is-measured-from-an-in-memory-log-of-resolved-state-changes.md)
 * [0828 - LiveKit tokens are signed and verified only through typed HS256 functions in the crypto boundary](0828-livekit-tokens-are-signed-and-verified-only-through-typed-hs256-functions-in-the-crypto-boundary.md)
+* [0829 - The built-in LiveKit token service issues tokens only to users this server finds joined](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md)
+* [0830 - Every call to LiveKit goes to the configured address with a token of its own](0830-every-call-to-livekit-goes-to-the-configured-address-with-a-token-of-its-own.md)
+* [0831 - A federated LiveKit token request is judged by main and answered subscribe-only](0831-a-federated-livekit-token-request-is-judged-by-main-and-answered-subscribe-only.md)

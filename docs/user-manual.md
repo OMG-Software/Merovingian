@@ -825,17 +825,64 @@ support.
 
 #### Voice and video calls — `server.rtc.*` and `server.turn.*`
 
-Merovingian does not carry call media. A call needs a service you run beside it:
+Merovingian does not carry call media. A call needs a media service you run beside it:
 
 - **1:1 calls** need a TURN server such as coturn. Configure it with `server.turn.*` (above).
-- **Group calls (MatrixRTC)** need a LiveKit SFU plus Element's `lk-jwt-service`, the authorisation service that
-  hands a caller a LiveKit token. `lk-jwt-service` checks who is calling through this server's existing OpenID
-  endpoints (`/_matrix/client/v3/user/{userId}/openid/request_token` and the federation `openid/userinfo`), so it must
-  be able to reach this server over HTTPS. Merovingian only tells clients where it is.
+- **Group calls (MatrixRTC)** need a LiveKit SFU, and something that hands each caller a LiveKit token. Choose one:
+  - **The built-in token service** (`server.rtc.livekit.url` and the keys beside it). This server issues the tokens
+    itself (MSC4195), to users it finds joined to the room. You run LiveKit only.
+  - **An external `lk-jwt-service`** (`server.rtc.livekit.service_url`). Element's service issues the tokens and
+    checks who is calling through this server's OpenID endpoints
+    (`/_matrix/client/v3/user/{userId}/openid/request_token` and the federation `openid/userinfo`), so it must be able
+    to reach this server over HTTPS. Merovingian only tells clients where it is.
+
+  The two cannot be combined: setting `service_url` together with any built-in key refuses the configuration.
+
+##### The built-in token service — `server.rtc.livekit.*`
+
+Set all four of `url`, `api_url`, `api_key` and `api_secret_file`, or none. A partial set refuses the configuration
+(ADR-0829). Every key below requires a restart.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.rtc.livekit.service_url` | (empty) | The HTTPS URL of your `lk-jwt-service`, for example `https://livekit-jwt.example.org/lk-jwt-service`. Empty means no group-call transport is advertised. Clients build `<url>/sfu/get` and `<url>/get_token` by appending to it, so give the address without a trailing `/` and without a query: `https://host`, `https://host:8443` and `https://host/jwt` are accepted, `https://host/` and `https://host/jwt?x=1` are refused. It must be an absolute `https` URL with a host, no user name or password, no `#fragment`, no whitespace and at most 2048 bytes; anything else refuses the configuration. The server never contacts this URL. |
+| `server.rtc.livekit.url` | (empty) | The SFU's WebSocket address that clients connect to, for example `wss://livekit.example.org`. It must be an absolute `wss` URL with a host, no user name or password, no query or `#fragment`, a path that does not end in `/`, and at most 2048 bytes. Clients are told this address, and a token request naming any other `url` for this server is refused. |
+| `server.rtc.livekit.api_url` | (empty) | Where this server calls LiveKit's room service, for example `https://livekit.example.org`. `https`, or `http` only to `127.0.0.1` or `[::1]` when LiveKit runs on the same host; otherwise the same rules as `url`. Only this address is ever called (ADR-0830). |
+| `server.rtc.livekit.api_key` | (empty) | The LiveKit API key, 1 to 128 ASCII letters, digits, `_`, `-` and `.`. |
+| `server.rtc.livekit.api_secret_file` | (empty) | Path to an owner-read-only file (mode `0400`, as every secret file) holding the matching API secret, at least 32 bytes, on its first line. The file is read each time a token is signed and never kept in memory; the server refuses to start if its owner or mode is wrong. |
+| `server.rtc.livekit.token_lifetime` | `3600s` | How long an issued token can be used to join, `60s` to `3600s` (or `1m` to `60m`). A participant already in the call stays in it after the token expires. |
+
+What the service does:
+
+- A client asks `POST /_matrix/client/v1/rtc/livekit/get_token` (or the unstable
+  `/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token`) for a room. The caller must be joined to the
+  room by this server's own current state; anyone else gets 403 `M_FORBIDDEN`, the same answer whether or not the room
+  exists.
+- Before answering, the server asks LiveKit to create the call's room (`CreateRoom`, at most 10 seconds, with a token
+  of its own allowed only to create rooms). If LiveKit cannot be reached, the client gets 502 and no token.
+- The token lets its holder join that one LiveKit room, publish and subscribe. It never grants room creation,
+  administration or hidden participation. The LiveKit room name and participant identity are hashes (MSC4195), so the
+  SFU does not learn Matrix user, device or room IDs.
+- A user of another server joined to the room can get a token from this server for its SFU, through that user's
+  server over federation (`POST /_matrix/federation/v1/rtc/livekit/get_token`). That token may subscribe but not
+  publish, and no LiveKit call is made for it (ADR-0831).
+- When a local user asks for a token for another server's SFU, this server relays the request to that server over
+  federation, but only to a server it finds in the room.
+- Token requests are rate limited per user (60 a minute by default; override with `client_rate_limits.per_user.<path>` for each path)
+  and share the outbound-request budget of other client-triggered calls. Federated requests are limited per server by
+  `security.federation.per_origin_request_rate`.
+- The `livekit` logger records each issued or refused token with the user and room, never the token, the secret or
+  the device.
+
+With the service on, `GET /_matrix/client/v1/rtc/transports` lists `{"type":"livekit","url":"<server.rtc.livekit.url>"}`
+and, on the stable path only, the same with type `m.livekit`. `/_matrix/client/versions` adds `org.matrix.msc4195`
+and `org.matrix.msc4195.stable`. The `.well-known` `org.matrix.msc4143.rtc_foci` member is not served by the built-in
+service, because the older clients that read it expect `lk-jwt-service`'s OpenID flow.
+
+##### An external `lk-jwt-service` — `server.rtc.livekit.service_url`
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.rtc.livekit.service_url` | (empty) | The HTTPS URL of your `lk-jwt-service`, for example `https://livekit-jwt.example.org/lk-jwt-service`. Empty means no external service is advertised. Clients build `<url>/sfu/get` and `<url>/get_token` by appending to it, so give the address without a trailing `/` and without a query: `https://host`, `https://host:8443` and `https://host/jwt` are accepted, `https://host/` and `https://host/jwt?x=1` are refused. It must be an absolute `https` URL with a host, no user name or password, no `#fragment`, no whitespace and at most 2048 bytes; anything else refuses the configuration. The server never contacts this URL. This key is reloadable. |
 
 With the key set, an authenticated client reading `GET /_matrix/client/v1/rtc/transports` (or the older
 `GET /_matrix/client/unstable/org.matrix.msc4143/rtc/transports`) learns a transport of type `livekit` with that
@@ -855,11 +902,6 @@ start-up; anything outside the range, or not a boolean or unsigned integer, refu
 | `server.delayed_events.max_delay_ms` | `86400000` (24 hours) | `1000` to `2678400000` (31 days) | The longest delay accepted, in milliseconds. Element Call needs `3600000` (one hour) or more. |
 | `server.delayed_events.max_scheduled_per_user` | `100` | `1` to `1000` | Scheduled events one user may hold. |
 | `server.delayed_events.max_finalised_per_user` | `100` | `1` to `1000` | Finalised events kept per user (and for at most 7 days). |
-
-Not implemented yet:
-
-- **A built-in token service.** There is no `/_matrix/client/v1/rtc/livekit/*` endpoint and the transport type
-  `m.livekit` is not advertised; you must run `lk-jwt-service` yourself.
 
 ##### Delayed events and call membership
 
@@ -1929,6 +1971,7 @@ Default route-aware policies applied when no override is configured:
 | URL previews (`/_matrix/client/v1/media/preview_url`, `/_matrix/media/v3/preview_url`) | 30/60s per user |
 | Asynchronous upload reservations (`/_matrix/media/v1/create`) | 30/60s per user |
 | Delayed-event scheduling paths (`.../rooms/{roomId}/delayed_event/{eventType}/{txnId}`, both prefixes) | 60/60s per user |
+| LiveKit token requests (`/_matrix/client/v1/rtc/livekit/get_token`, `/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token`) | 60/60s per user |
 | Generic client APIs | 600/60s per IP fallback |
 
 Example overrides:
@@ -2017,7 +2060,8 @@ take effect.
 | `presence.*` | Restart required |
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
-| `server.rtc.*` | Reloadable |
+| `server.rtc.livekit.service_url` | Reloadable |
+| `server.rtc.livekit.*` (the built-in token service) | Restart required |
 | `server.delayed_events.*` | Restart required |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |

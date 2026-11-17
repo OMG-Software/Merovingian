@@ -265,6 +265,17 @@ struct BootstrapConfigResult final
         }
     }
 
+    // server.rtc.livekit.api_secret_file holds the LiveKit API secret (ADR-0829): owner-only like every other secret.
+    if (!config.server().rtc.token_service.api_secret_file.empty())
+    {
+        auto livekit_secret_validation = validate_existing_secret_file_metadata(
+            config.server().rtc.token_service.api_secret_file, "server.rtc.livekit.api_secret_file", false);
+        if (!livekit_secret_validation.parsed.findings.empty())
+        {
+            return livekit_secret_validation;
+        }
+    }
+
     auto database_validation =
         validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
     if (!database_validation.parsed.findings.empty())

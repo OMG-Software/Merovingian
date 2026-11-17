@@ -36,6 +36,8 @@
   SSRF-filtered; namespace matching; masquerading)
 - Identity Service client (outbound `store-invite`/`bind`/`unbind`/`requestToken`)
 - Push gateway delivery (outbound, client-supplied URL, no operator allowlist)
+- The built-in LiveKit token service (1.1.3): the LiveKit API secret, tokens handed to clients, the `CreateRoom` call to
+  the operator's LiveKit, and the federation `rtc/livekit/get_token` route in both directions (see below)
 - Email pushers (outbound SMTP to an operator-configured relay; a client-supplied recipient address)
 - Federation worker IPC channel (local process boundary)
 - MSC4186 sliding-sync connection state (client-chosen `conn_id`)
@@ -3363,3 +3365,45 @@ ever logged; (j) the federation worker: it never reads the table and sends nothi
 after a crash in the window between the send and its record, or when a `send` request throws after the event was stored (it has no catch, the event stays scheduled and can be sent again later); a wall clock stepped forwards brings deadlines forward by
 the step; a suspended account's delayed events fail rather than send, so the server does not end a suspended
 participant's call membership; the feature is on by default.
+
+### The built-in LiveKit token service (1.1.3, ADR-0828 to ADR-0831)
+
+New surface: a long-lived secret, `server.rtc.livekit.api_secret_file`, whose holder can mint any token for the
+operator's LiveKit, including administrative ones; two client routes that hand out tokens; an outbound call to
+LiveKit's room service; and a federation route, served for other servers and called on other servers. Threats and
+mitigations:
+
+(a) The secret leaking. It is a path to an owner-only (`0400`) file, checked at start-up, read into a
+`core::SecretBuffer` for each signature and wiped after, never held for the life of the process, never logged and
+never in a response. Signing is in `src/crypto/` through typed functions only (ADR-0828): the participant grant cannot
+express `roomCreate`, `roomAdmin` or `hidden`, and the one other signer grants `roomCreate` alone. The federation
+worker never reads the configuration or the secret.
+
+(b) A token for someone who should not have one. A token goes only to a caller this server authenticated (access token,
+account gate) and finds joined by its own current room state, never by the request: a user not joined, and a room that
+does not exist, get the same 403. A federated request is judged by main, for the origin main verified, and needs the
+user to be of that origin and joined by this server's state; the three refusals are one 403, so a server learns nothing
+about a room it has no member in (ADR-0831).
+
+(c) More rights than a call needs. A local user's token joins one room and may publish and subscribe; another
+server's user's token may only subscribe. Lifetime is 60 to 3600 seconds. The room name and identity are MSC4195's
+hashes, so the SFU does not learn Matrix IDs.
+
+(d) SSRF and outbound abuse. The `url` in a request is only compared, byte for byte, with the configured SFU and never
+fetched. `CreateRoom` goes only to `server.rtc.livekit.api_url`, which is `https` or loopback `http`, with a token of
+its own lasting 60 seconds, one ADR-0079 outbound slot, one deadline of at most 10 seconds, a 16 KiB answer cap and the
+runtime lock released for the call only (ADR-0830). A relay to another server goes only to one this server's roster
+shows in the room, signed, under the same slot and deadline, with an 8 KiB answer cap; only a well-formed `jwt` is
+passed on, and that server's error text never is.
+
+(e) Cost and flooding. The client routes are limited to 60 a minute per user and share the client outbound budget.
+The federation route is limited per origin by `security.federation.per_origin_request_rate` and costs a secret read and
+a signature, with no network call: a request from another server never makes this server call LiveKit.
+
+(f) The worker forging a request. The inbound route reaches main only through the ADR-0595 relay: a permit over the
+body, bound to the request main authenticated, used once, with the origin checked against the pending request's.
+
+Residual risk: a token stays usable for its lifetime after the user leaves the room, and a participant already
+connected stays in the call until LiveKit removes them (this server does not call `RemoveParticipant`); anyone who can
+read the secret file can mint any LiveKit token; the relay and the inbound route have been tested only against this
+server, never another implementation or a real LiveKit.

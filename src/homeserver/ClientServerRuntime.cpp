@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LegacyAuthPolicy.hpp"
+#include "merovingian/homeserver/LiveKitTokenService.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -867,6 +868,18 @@ namespace
             canonicaljson::Object{
                                   canonicaljson::make_member("type", canonicaljson::Value{std::string{"livekit"}}),
                                   canonicaljson::make_member("livekit_service_url", canonicaljson::Value{service_url}),
+                                  }
+        };
+    }
+
+    // The MatrixRTC transport entry for this server's own SFU (MSC4195; ADR-0829): `type` and `url`, nothing else.
+    [[nodiscard]] auto livekit_sfu_transport_json(std::string const& type, std::string const& sfu_url)
+        -> canonicaljson::Value
+    {
+        return canonicaljson::Value{
+            canonicaljson::Object{
+                                  canonicaljson::make_member("type", canonicaljson::Value{type}),
+                                  canonicaljson::make_member("url", canonicaljson::Value{sfu_url}),
                                   }
         };
     }
@@ -4188,6 +4201,8 @@ namespace
             "/_matrix/client/v3/voip/turnServer",
             "/_matrix/client/v1/rtc/transports",
             "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
+            "/_matrix/client/v1/rtc/livekit/get_token",
+            "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
             "/_matrix/client/v3/devices",
@@ -4293,6 +4308,8 @@ namespace
             {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
             {"/_matrix/client/v1/rtc/transports",                                           "GET"             },
             {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                  "GET"             },
+            {"/_matrix/client/v1/rtc/livekit/get_token",                                    "POST"            },
+            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",           "POST"            },
             {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
             {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
             {"/_matrix/client/v3/devices",                                                  "GET"             },
@@ -15855,6 +15872,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 json_member("org.matrix.msc4186", json_bool(true)),
                                 json_member("org.matrix.msc4143", json_bool(true)),
                                 json_member("org.matrix.msc4143.stable", json_bool(true)),
+                                // MSC4195 (ADR-0829): the token routes are served only with the built-in service.
+                                json_member("org.matrix.msc4195",
+                                            json_bool(!rt.homeserver.config.server().rtc.token_service.url.empty())),
+                                json_member("org.matrix.msc4195.stable",
+                                            json_bool(!rt.homeserver.config.server().rtc.token_service.url.empty())),
                                 // MSC4140 (ADR-0823): both flags say whether scheduling is on.
                                 json_member("org.matrix.msc4140", json_bool(rt.limits.delayed_events_enabled)),
                                 json_member("org.matrix.msc4140.stable", json_bool(rt.limits.delayed_events_enabled)),
@@ -20156,17 +20178,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v1/rtc/transports and its unstable MSC4143 path: where the operator's MatrixRTC
-    // authorisation service is (ADR-0822). The two differ in the property name and in what they answer when no
-    // service is configured, as the reference server's do.
+    // authorisation service is (ADR-0822), or the SFU this server issues tokens for itself (ADR-0829). The two differ
+    // in the property name and in what they answer when nothing is configured, as the reference server's do.
     if (req.method == "GET" && (request_path == "/_matrix/client/v1/rtc/transports" ||
                                 request_path == "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports"))
     {
         auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url;
+        auto const& sfu_url = rt.homeserver.config.server().rtc.token_service.url;
         auto const stable = request_path == "/_matrix/client/v1/rtc/transports";
         auto transports = canonicaljson::Array{};
         if (!service_url.empty())
         {
             transports.push_back(livekit_transport_json(service_url));
+        }
+        else if (!sfu_url.empty())
+        {
+            // A `url` and no `livekit_service_url`: released Element Call then asks this server's get_token route.
+            // MSC4195's stable type `m.livekit` is listed beside it on the stable path only; released clients read
+            // only `livekit`.
+            transports.push_back(livekit_sfu_transport_json("livekit", sfu_url));
+            if (stable)
+            {
+                transports.push_back(livekit_sfu_transport_json("m.livekit", sfu_url));
+            }
         }
         if (!stable && transports.empty())
         {
@@ -20176,6 +20210,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({
                                  json_member(stable ? "transports" : "rtc_transports", json_arr(std::move(transports))),
                              })));
+    }
+
+    // POST /_matrix/client/{v1,unstable/io.element.msc4195}/rtc/livekit/get_token: a LiveKit token for this server's
+    // SFU (MSC4195; ADR-0829). LiveKitTokenService.cpp judges the request; this only answers.
+    if (req.method == "POST" && (request_path == "/_matrix/client/v1/rtc/livekit/get_token" ||
+                                 request_path == "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token"))
+    {
+        auto answer = issue_client_livekit_token(rt, req, *user, guard);
+        if (!answer.ok)
+        {
+            return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+        }
+        return dispatch_resp(req, rt, 200U, std::move(answer.value));
     }
 
     // Delayed events (MSC4140, ADR-0823): S1 and S2 schedule, M1 to M3 manage and G1 and G2 look up. The listing

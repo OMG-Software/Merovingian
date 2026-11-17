@@ -226,6 +226,10 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                              {"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/", {120U, 60U}},
                              {"/_matrix/client/v3/rooms/{roomId}/delayed_event/", {60U, 60U}},
                              {"/_matrix/client/unstable/org.matrix.msc4140/rooms/{roomId}/delayed_event/", {60U, 60U}},
+                             // ADR-0829: a call join asks one token per server in the call, and a reconnect asks
+                // again; each token for this server's SFU may cost a call to LiveKit.
+                {"/_matrix/client/v1/rtc/livekit/get_token", {60U, 60U}},
+                             {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token", {60U, 60U}},
                              },
         .default_per_ip = {600U, 60U},
     };

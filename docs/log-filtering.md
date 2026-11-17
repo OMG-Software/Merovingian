@@ -134,6 +134,7 @@ used as the first argument to `observability::log_diagnostic` and `log_diagnosti
 | `tls` | TLS context set-up and handshake accept or reject |
 | `oauth` | OAuth 2.0 client registration, eviction at the cap, and stored metadata that no longer validates |
 | `delayed_events` | Delayed events: scheduled, restarted, cancelled, sent, failed, a failed outcome write and a failed prune; never event content or a state key. The count of rows skipped at load is a start-up warning from the process entry point, not this module |
+| `livekit` | The built-in LiveKit token service: a token issued or refused, to a local user, to another server's user, or relayed from another server; a failed `CreateRoom` call and an unreadable API secret. Each names the user and room (and the server, for federation); never the token, the API secret, the device or member ID, or the slot |
 
 Unrecognised module names are accepted and the level is recorded —
 there is no error. Restart the server to apply.

@@ -7,11 +7,13 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Features
 
-* None.
+* MatrixRTC calls on LiveKit need no `lk-jwt-service`: `POST .../rtc/livekit/get_token` (MSC4195) issues tokens to
+  joined users, and `server.rtc.livekit.url`, `api_url`, `api_key` and `api_secret_file` turn it on (ADR-0829, ADR-0830).
 
 ## Security Fixes
 
-* None.
+* LiveKit tokens are HS256, signed only by typed functions that cannot grant room creation, administration or hidden
+  participants; the API secret is read per token and never logged (ADR-0828).
 
 ## Bug fixes
 
