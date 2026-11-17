@@ -419,6 +419,7 @@ shell = find_program('sh')
       'unit/test_file_metadata.cpp',
       'unit/test_secure_secret_loading.cpp',
       'unit/test_livekit_names.cpp',
+      'unit/test_livekit_room_service.cpp',
       'unit/test_turn_shared_secret.cpp',
       'unit/test_elf_probe.cpp',
       'unit/test_email.cpp',

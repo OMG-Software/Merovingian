@@ -68,6 +68,12 @@ user, room, slot, member and creation time, with the same LiveKit room name and 
 while the lock was free (another member for the same delay ID, say) is a different participant, and the answer is
 dropped rather than recorded as seeing it.
 
+A run asks the due delegations most overdue first, so with more than 16 due none waits behind the others for ever.
+Each call's token is stamped with the clock when that call is made, not when the run began, so a run made slow by
+LiveKit never sends a token that is about to expire. A checked delegation's next check is 30 seconds after the run's
+calls ended, not after it began: a run that took as long as the interval would otherwise find the same 16 due again,
+and ask them again, while the rest waited.
+
 After a call:
 
 * **Connected** (an answer for the participant in a state other than `DISCONNECTED`): recorded. If less than half the

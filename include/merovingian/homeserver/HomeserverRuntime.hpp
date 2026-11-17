@@ -301,6 +301,10 @@ struct HomeserverRuntime final
     // What the "livekit-delegations" job knows of each stored delegation, by delay ID (ADR-0832). In memory only: after
     // a restart each starts again as never seen and due now. Guarded by `mutex`.
     std::map<std::string, LiveKitDelegationProgress, std::less<>> livekit_delegation_progress{};
+    // The delay IDs in `livekit_delegation_progress` by LiveKit participant (room name, NUL, identity), so a webhook
+    // finds its delegations without scanning everyone's. Kept in step with that map by LiveKitDelegations.cpp, its only
+    // writer. Guarded by `mutex`.
+    std::multimap<std::string, std::string, std::less<>> livekit_delegation_participants{};
     // The `id`s of the last `livekit_webhook_seen_ids` authenticated LiveKit webhook events, oldest first, so a replay
     // inside a token's lifetime prompts nothing (ADR-0833). In memory only. Guarded by `mutex`.
     std::deque<std::string> livekit_webhook_seen_ids{};

@@ -27,6 +27,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <sodium.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -804,6 +805,182 @@ SCENARIO("The webhook route is answered before the access-token gate, and only w
             {
                 CHECK(reply.status == 404U);
                 CHECK(reply.body.find("M_UNRECOGNIZED") != std::string::npos);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The identity GetParticipant asked about in `call`.
+[[nodiscard]] auto asked_identity(merovingian::http::OutboundRequest const& call) -> std::string
+{
+    auto const body = parse_object(call.body);
+    auto const* identity = string_member(body, "identity");
+    REQUIRE(identity != nullptr);
+    return *identity;
+}
+
+// The `exp` of the GetParticipant token in `call`.
+[[nodiscard]] auto token_expiry(merovingian::http::OutboundRequest const& call) -> std::int64_t
+{
+    auto const authorization = header_value(call, "Authorization");
+    REQUIRE(authorization.has_value());
+    REQUIRE(authorization->starts_with("Bearer "));
+    auto const payload = verified_payload(std::string_view{*authorization}.substr(7U));
+    auto const* expiry = int_member(payload, "exp");
+    REQUIRE(expiry != nullptr);
+    return *expiry;
+}
+
+// Delegates one more of alice's one-hour leaves, for member `member`, and returns its delay ID.
+[[nodiscard]] auto delegate_another(LiveKitFixture& fixture, std::string const& member) -> std::string
+{
+    auto const delay_id = schedule_leave(fixture, fixture.alice_token, hour_ms, "call-" + member);
+    auto const answer = delegate(fixture, fixture.alice_token,
+                                 delegation_body(fixture.room_id, delay_id, sfu_url, "m.call#room", member));
+    REQUIRE(answer.status == 200U);
+    return delay_id;
+}
+
+// alice's MSC4195 participant identity for `member`.
+[[nodiscard]] auto identity_of(std::string_view const member) -> std::string
+{
+    auto identity = hs::livekit_participant_identity("@alice:example.org", member);
+    REQUIRE(identity.has_value());
+    return *identity;
+}
+
+} // namespace
+
+SCENARIO("A slow LiveKit does not make the job ask the same delegations again while another waits",
+         "[homeserver][livekit][rtc][delegation]")
+{
+    GIVEN("17 delegations of alice, LiveKit answering that each is connected, and each answer taking 2 seconds")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
+        auto identities = std::vector<std::string>{identity_of("DEVICEID_member")};
+        for (auto index = 0; index < 16; ++index)
+        {
+            auto const member = "member-" + std::to_string(index);
+            std::ignore = delegate_another(fixture, member);
+            identities.push_back(identity_of(member));
+        }
+        REQUIRE(delegations(fixture).size() == 17U);
+        auto const answer = fixture.runtime().homeserver.test_livekit_perform;
+        fixture.runtime().homeserver.test_livekit_perform =
+            [&fixture, answer](merovingian::http::OutboundRequest const& outbound) {
+                auto& clock = fixture.runtime().homeserver.test_delayed_event_clock_ms;
+                clock = clock.value_or(0U) + 2'000U;
+                return answer(outbound);
+            };
+
+        WHEN("the job runs at t0, and again just after the 30-second interval measured from t0")
+        {
+            auto const first_wait = run_job(fixture, t0_ms);
+            auto const first_calls = fixture.mock().requests;
+            std::ignore = run_job(fixture, t0_ms + 33'000U);
+            auto const& calls = fixture.mock().requests;
+
+            THEN("the first run asks 16, each with a token stamped when it was sent, and asks to run again soon")
+            {
+                REQUIRE(first_calls.size() == hs::livekit_delegation_checks_per_run);
+                CHECK(first_wait < hs::livekit_delegation_check_interval);
+                CHECK(token_expiry(first_calls.back()) - token_expiry(first_calls.front()) == 30);
+            }
+
+            THEN("the second asks only the one left waiting: the 16 are next due 30 seconds after their answers")
+            {
+                REQUIRE(calls.size() == hs::livekit_delegation_checks_per_run + 1U);
+                auto asked_first = std::vector<std::string>{};
+                for (auto const& call : first_calls)
+                {
+                    asked_first.push_back(asked_identity(call));
+                }
+                auto const last = asked_identity(calls.back());
+                CHECK(std::ranges::find(asked_first, last) == asked_first.end());
+                CHECK(std::ranges::find(identities, last) != identities.end());
+            }
+        }
+    }
+}
+
+SCENARIO("A webhook prompts only the delegation of the participant it names, as delegations come and go",
+         "[homeserver][livekit][rtc][delegation][webhook]")
+{
+    GIVEN("two delegations of alice, for members A and B, both checked at t0 and seen connected")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
+        auto const delay_b = delegate_another(fixture, "member-B");
+        std::ignore = run_job(fixture, t0_ms);
+        REQUIRE(get_participant_calls(fixture) == 2U);
+        auto const now_s = static_cast<std::int64_t>((t0_ms + 5'000U) / 1000U);
+        auto const room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
+        auto const left = [&](std::string_view const member, std::string_view const id) {
+            return signed_webhook(webhook_event("participant_left", room_name, identity_of(member), id, now_s), now_s);
+        };
+
+        WHEN("LiveKit says B left")
+        {
+            auto const answer = post_webhook(fixture, left("member-B", "EV_B"), now_s);
+            std::ignore = run_job(fixture, t0_ms + 6'000U);
+
+            THEN("the next run asks about B alone")
+            {
+                CHECK(answer.status == 200U);
+                REQUIRE(get_participant_calls(fixture) == 3U);
+                CHECK(asked_identity(fixture.mock().requests.back()) == identity_of("member-B"));
+            }
+        }
+
+        WHEN("A's delay ID is delegated again for member C and C is checked, then LiveKit says A left, then C")
+        {
+            REQUIRE(delegate(fixture, fixture.alice_token,
+                             delegation_body(fixture.room_id, delegated.delay_id, sfu_url, "m.call#room", "member-C"))
+                        .status == 200U);
+            std::ignore = run_job(fixture, t0_ms + 6'000U);
+            auto const after_c_checked = get_participant_calls(fixture);
+            auto const last_checked = asked_identity(fixture.mock().requests.back());
+            auto const for_a = post_webhook(fixture, left("DEVICEID_member", "EV_A"), now_s);
+            std::ignore = run_job(fixture, t0_ms + 7'000U);
+            auto const after_a = get_participant_calls(fixture);
+            auto const for_c = post_webhook(fixture, left("member-C", "EV_C"), now_s);
+            std::ignore = run_job(fixture, t0_ms + 8'000U);
+
+            THEN("the new delegation is checked as C; A's webhook prompts nothing; C's prompts C's check alone")
+            {
+                CHECK(after_c_checked == 3U);
+                CHECK(last_checked == identity_of("member-C"));
+                CHECK(for_a.status == 200U);
+                CHECK(after_a == after_c_checked);
+                CHECK(for_c.status == 200U);
+                REQUIRE(get_participant_calls(fixture) == after_a + 1U);
+                CHECK(asked_identity(fixture.mock().requests.back()) == identity_of("member-C"));
+            }
+        }
+
+        WHEN("B's leave is cancelled, its delegation is dropped, and LiveKit then says B left")
+        {
+            REQUIRE(request(fixture.runtime(), "POST", "/_matrix/client/v1/delayed_events/" + delay_b + "/cancel",
+                            fixture.alice_token, "{}")
+                        .status == 200U);
+            std::ignore = run_job(fixture, t0_ms + 6'000U);
+            REQUIRE(delegations(fixture).find(delay_b) == nullptr);
+            auto const calls_before = get_participant_calls(fixture);
+            auto const answer = post_webhook(fixture, left("member-B", "EV_B2"), now_s);
+            std::ignore = run_job(fixture, t0_ms + 7'000U);
+
+            THEN("the webhook is accepted and prompts no check")
+            {
+                CHECK(answer.status == 200U);
+                CHECK(get_participant_calls(fixture) == calls_before);
             }
         }
     }

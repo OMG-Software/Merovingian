@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -83,6 +84,37 @@ namespace
                                       severity);
     }
 
+    // The key of `livekit_delegation_participants`. MSC4195 names are base64, so they hold no NUL and two keys are
+    // equal only when both names are.
+    [[nodiscard]] auto participant_key(std::string_view const room_name, std::string_view const identity) -> std::string
+    {
+        auto key = std::string{room_name};
+        key += '\0';
+        key += identity;
+        return key;
+    }
+
+    // Removes a delegation's progress and its participant index entry together; the only way either is removed.
+    auto forget_progress(HomeserverRuntime& runtime, std::string_view const delay_id) -> void
+    {
+        auto const found = runtime.livekit_delegation_progress.find(delay_id);
+        if (found == runtime.livekit_delegation_progress.end())
+        {
+            return;
+        }
+        auto& participants = runtime.livekit_delegation_participants;
+        auto [first, last] = participants.equal_range(participant_key(found->second.room_name, found->second.identity));
+        for (auto entry = first; entry != last; ++entry)
+        {
+            if (entry->second == delay_id)
+            {
+                participants.erase(entry);
+                break;
+            }
+        }
+        runtime.livekit_delegation_progress.erase(found);
+    }
+
     // The progress entry of a stored delegation, created (due now, never seen) with its names when missing. nullopt
     // when the names cannot be derived, which a validated row never gives.
     [[nodiscard]] auto progress_of(HomeserverRuntime& runtime, database::PersistentLiveKitDelegation const& row)
@@ -102,6 +134,8 @@ namespace
         auto progress = LiveKitDelegationProgress{};
         progress.room_name = std::move(*room_name);
         progress.identity = std::move(*identity);
+        runtime.livekit_delegation_participants.emplace(participant_key(progress.room_name, progress.identity),
+                                                        row.delay_id);
         return &runtime.livekit_delegation_progress.emplace(row.delay_id, std::move(progress)).first->second;
     }
 
@@ -121,7 +155,7 @@ namespace
         {
             return false;
         }
-        runtime.livekit_delegation_progress.erase(delay_id);
+        forget_progress(runtime, delay_id);
         return true;
     }
 
@@ -352,9 +386,9 @@ auto delegate_livekit_delayed_leave(ClientServerRuntime& rt, std::string_view co
     }
     for (auto const& old : replaced)
     {
-        runtime.livekit_delegation_progress.erase(old);
+        forget_progress(runtime, old);
     }
-    runtime.livekit_delegation_progress.erase(delay_id);
+    forget_progress(runtime, delay_id);
     if (auto const* stored = store.livekit_delegations.find(delay_id); stored != nullptr)
     {
         std::ignore = progress_of(runtime, *stored);
@@ -378,8 +412,12 @@ auto run_livekit_delegations(ClientServerRuntime& rt, std::uint64_t const now_ms
         // indexes), so one run drops at most `livekit_delegation_drops_per_run`; the rest go on the next, soon after.
         auto const rows = runtime.database.persistent_store.livekit_delegations.rows();
         auto drops = std::size_t{0U};
-        for (auto const& row : rows)
+        // Due checks as (next check time, row): the most overdue are asked first, so a run never starves the rows
+        // further down the table.
+        auto due = std::vector<std::pair<std::uint64_t, std::size_t>>{};
+        for (auto position = std::size_t{0U}; position < rows.size(); ++position)
         {
+            auto const& row = rows[position];
             if (auto const reason = drop_reason(runtime, row); !reason.empty())
             {
                 if (drops == livekit_delegation_drops_per_run)
@@ -400,39 +438,70 @@ auto run_livekit_delegations(ClientServerRuntime& rt, std::uint64_t const now_ms
                 std::ignore = drop(runtime, row.delay_id);
                 continue;
             }
-            if (progress->next_check_ms <= now_ms && checks.size() < livekit_delegation_checks_per_run)
+            if (progress->next_check_ms <= now_ms)
+            {
+                due.emplace_back(progress->next_check_ms, position);
+            }
+            else
+            {
+                next_ms = std::min(next_ms, progress->next_check_ms);
+            }
+        }
+        auto const asked = std::min(due.size(), livekit_delegation_checks_per_run);
+        std::ranges::partial_sort(due, due.begin() + static_cast<std::ptrdiff_t>(asked));
+        if (due.size() > asked)
+        {
+            next_ms = now_ms; // more are due than one run asks
+        }
+        for (auto const& [next_check_ms, position] : std::span{due}.first(asked))
+        {
+            auto const& row = rows[position];
+            auto const* progress = progress_of(runtime, row);
+            if (progress != nullptr)
             {
                 checks.push_back(Check{row.delay_id, row.user_id, row.room_id, row.slot_id, row.member_id,
                                        row.created_ms, progress->room_name, progress->identity, Observation::unknown});
             }
-            else
-            {
-                next_ms = std::min(next_ms, std::max(progress->next_check_ms, now_ms));
-            }
         }
         // Progress for a row no longer stored (deleted by deactivation, for one) goes too.
-        std::erase_if(runtime.livekit_delegation_progress, [&](auto const& entry) {
-            return runtime.database.persistent_store.livekit_delegations.find(entry.first) == nullptr;
-        });
+        auto stale = std::vector<std::string>{};
+        for (auto const& [delay_id, progress] : runtime.livekit_delegation_progress)
+        {
+            if (runtime.database.persistent_store.livekit_delegations.find(delay_id) == nullptr)
+            {
+                stale.push_back(delay_id);
+            }
+        }
+        for (auto const& delay_id : stale)
+        {
+            forget_progress(runtime, delay_id);
+        }
     }
     if (checks.empty())
     {
         return wait_until(now_ms, next_ms);
     }
 
-    // The calls, with the lock free. One read of the secret serves this run's tokens.
+    // A run can take a while (each call has its own timeout), so every token and every schedule is stamped with the
+    // time it is made, not the time the run began.
+    // The same clock as the job's `now_ms` (`delayed_event_now_ms`, read without the lock as main.cpp reads it).
+    auto const clock_ms = [&] {
+        return std::max(now_ms, delayed_event_now_ms(runtime));
+    };
+
+    // The calls, with the lock released. One read of the secret serves this run's tokens.
     if (runtime.outbound_client != nullptr && runtime.cached_discovery != nullptr)
     {
         auto const secret = platform::read_secure_secret_line(service.api_secret_file, max_secret_file_bytes);
-        auto const now_seconds = static_cast<std::int64_t>(now_ms / 1000U);
         for (auto& check : checks)
         {
             if (stop.stop_requested() || !secret.has_value())
             {
                 break;
             }
-            auto request = livekit_get_participant_request(service.api_url, service.api_key, secret->bytes(),
-                                                           check.room_name, check.identity, now_seconds);
+            auto request =
+                livekit_get_participant_request(service.api_url, service.api_key, secret->bytes(), check.room_name,
+                                                check.identity, static_cast<std::int64_t>(clock_ms() / 1000U));
             if (!request.has_value())
             {
                 continue;
@@ -449,18 +518,25 @@ auto run_livekit_delegations(ClientServerRuntime& rt, std::uint64_t const now_ms
     }
 
     auto const guard = RuntimeLock{runtime.mutex};
+    // Each answer is applied, and its next check scheduled, from when the calls ended: scheduled from the start of a
+    // long run, the rows just asked would be due again at once and be asked again before the rest.
+    auto const done_ms = clock_ms();
     for (auto const& check : checks)
     {
-        apply(rt, check, now_ms);
+        apply(rt, check, done_ms);
     }
-    // Checks still due (more than one run's worth) run again soon.
+    if (next_ms <= now_ms)
+    {
+        return shortest_wait; // more were due than one run asks, or drops are left
+    }
+    // Checks that fell due while the calls were made run again soon.
     auto more_due = false;
     for (auto const& [delay_id, progress] : runtime.livekit_delegation_progress)
     {
-        more_due = more_due || progress.next_check_ms <= now_ms;
-        next_ms = std::min(next_ms, std::max(progress.next_check_ms, now_ms));
+        more_due = more_due || progress.next_check_ms <= done_ms;
+        next_ms = std::min(next_ms, std::max(progress.next_check_ms, done_ms));
     }
-    return more_due ? shortest_wait : wait_until(now_ms, next_ms);
+    return more_due ? shortest_wait : wait_until(done_ms, next_ms);
 }
 
 namespace
@@ -618,12 +694,21 @@ auto receive_livekit_webhook(ClientServerRuntime& rt, LocalHttpRequest const& re
     {
         return ok_empty();
     }
+    // Only this participant's delegations, through the index: the cost is the matches, not every user's delegations.
     auto const& delegations = runtime.database.persistent_store.livekit_delegations;
-    for (auto& [delay_id, progress] : runtime.livekit_delegation_progress)
+    auto [first, last] = runtime.livekit_delegation_participants.equal_range(participant_key(*room_name, *identity));
+    for (auto entry = first; entry != last; ++entry)
     {
-        if (progress.room_name != *room_name || progress.identity != *identity)
+        auto const& delay_id = entry->second;
+        auto const found = runtime.livekit_delegation_progress.find(delay_id);
+        if (found == runtime.livekit_delegation_progress.end())
         {
             continue;
+        }
+        auto& progress = found->second;
+        if (progress.room_name != *room_name || progress.identity != *identity)
+        {
+            continue; // the index is kept in step with progress; this only refuses to trust it alone
         }
         auto const* row = delegations.find(delay_id);
         if (row == nullptr || static_cast<std::int64_t>(row->created_ms / 1000U) > *created_at)

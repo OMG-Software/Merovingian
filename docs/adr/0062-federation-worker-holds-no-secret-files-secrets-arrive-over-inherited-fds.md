@@ -621,8 +621,9 @@ in the rule set" is not enough: the required read-write grant on the SQLite
 database's *directory* would silently expose a master key an operator placed
 beside the database. At startup, before applying the ruleset, the worker
 checks every rule against `platform::worker_landlock_secret_paths()` (the
-master key, both TLS private keys, both database URI files, and the
-registration token file) with `platform::find_landlock_rule_covering_secret`,
+master key, both TLS private keys, both database URI files, the
+registration token file, the SMTP password file, the TURN shared secret, the LiveKit API secret
+file (ADR-0830) and the appservice registration files) with `platform::find_landlock_rule_covering_secret`,
 and refuses to start if any rule equals or is an ancestor of one. Paths are
 compared by component after `std::filesystem::weakly_canonical`, matching
 how the kernel resolves the rule's path, so a symlink cannot hide an overlap

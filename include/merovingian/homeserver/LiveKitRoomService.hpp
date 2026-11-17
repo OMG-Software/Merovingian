@@ -57,7 +57,9 @@ inline constexpr auto livekit_room_departure_timeout_seconds = std::uint32_t{20U
 // Stands in for LiveKit in tests: it is handed the finished request in place of resolving and connecting.
 using LiveKitTestPerform = std::function<http::OutboundResult(http::OutboundRequest const&)>;
 
-// Sends `request` with `timeout_seconds` for the whole exchange. The host is resolved with the operator-trusted lookup
+// Sends `request` with `timeout_seconds` for the lookup and the exchange together (one `OutboundDeadline`: the
+// exchange gets what the lookup leaves, and none is started once it is spent). The host is resolved with the
+// operator-trusted lookup
 // (`discovery.upstream()`, no private-range filter: the operator chose the address, and LiveKit often runs beside
 // this server) and the connection is pinned to it. Never call with `runtime.mutex` held.
 [[nodiscard]] auto perform_livekit_request(http::OutboundRequest request, http::OutboundClient& client,

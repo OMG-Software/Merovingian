@@ -54,6 +54,9 @@ reason:
   replay within the token's own 5 minutes is caught by the `id`; one after is caught by the token's `exp`.
 * The event must name, by `room.name` and `participant.identity`, a delegation this server recorded, created no later
   than `createdAt`, else ignored. Nothing in the body is used otherwise: no Matrix ID is derived from it.
+  * The match is found through an index by room name and identity (`livekit_delegation_participants`, kept in step
+    with the delegations' progress under `runtime.mutex`), so each signed event costs its matches, never a scan of
+    every user's delegations. Each match is checked again against the progress it names.
 * A match marks that delegation to be checked at the next run of `livekit-delegations` and wakes the job. That is all.
 
 Every authenticated event is answered 200 `{}`.

@@ -5,6 +5,7 @@
 #include "merovingian/crypto/LiveKitToken.hpp"
 #include "merovingian/federation/CachedServerDiscovery.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundHeader.hpp"
@@ -121,8 +122,14 @@ auto perform_livekit_request(http::OutboundRequest request, http::OutboundClient
     {
         return failed(http::OutboundError::timeout, "deadline exceeded");
     }
-    request.total_timeout_seconds = timeout_seconds;
-    request.connect_timeout_seconds = std::min(timeout_seconds, std::uint32_t{10U});
+    // One deadline for the lookup and the exchange: a slow lookup shortens the exchange rather than adding to it, so
+    // the call never holds its thread or its outbound slot past `timeout_seconds`.
+    auto const deadline = OutboundDeadline{timeout_seconds};
+    auto const limit_to = [&request](std::uint32_t const seconds) {
+        request.total_timeout_seconds = seconds;
+        request.connect_timeout_seconds = std::min(seconds, std::uint32_t{10U});
+    };
+    limit_to(timeout_seconds);
     if (test_perform)
     {
         return test_perform(request);
@@ -137,6 +144,12 @@ auto perform_livekit_request(http::OutboundRequest request, http::OutboundClient
     {
         return failed(http::OutboundError::unresolved_host, "failed to resolve the LiveKit API host");
     }
+    auto const remaining = deadline.remaining_seconds();
+    if (remaining == 0U)
+    {
+        return failed(http::OutboundError::timeout, "deadline exceeded while resolving the LiveKit API host");
+    }
+    limit_to(remaining);
     request.pinned_addresses = resolved.addresses;
     return client.perform(request);
 }

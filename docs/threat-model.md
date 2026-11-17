@@ -3380,7 +3380,8 @@ unauthenticated webhook route for LiveKit. Threats and mitigations:
 never in a response. Signing is in `src/crypto/` through typed functions only (ADR-0828): the participant grant cannot
 express `roomCreate`, `roomAdmin` or `hidden`; one other signer grants `roomCreate` alone, and the last `roomAdmin` over
 one named room alone, for `GetParticipant`. The federation
-worker never reads the configuration or the secret.
+worker never reads the configuration or the secret, and its Landlock secret-path guard (`worker_landlock_secret_paths`)
+refuses to start the worker if a rule, such as the SQLite database directory grant, would cover the secret file.
 
 (b) A token for someone who should not have one. A token goes only to a caller this server authenticated (access token,
 account gate) and finds joined by its own current room state, never by the request: a user not joined, and a room that
