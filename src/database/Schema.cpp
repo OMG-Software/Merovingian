@@ -22,7 +22,7 @@ namespace
     // never an edit to core_tables that changes what v1 creates. Each later
     // version's tables and indexes are an array of their own, below core_indexes
     // (ADR-0778).
-    constexpr auto schema_version = std::uint32_t{2U};
+    constexpr auto schema_version = std::uint32_t{3U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -274,6 +274,25 @@ namespace
         SchemaIndexDefinition{"idx_oauth_sessions_client_id", "oauth_sessions", "client_id"},
     };
 
+    // Migration 003 (ADR-0824): MSC4140 delayed events. Every column is TEXT like the rest of the schema: numbers are
+    // decimal text and booleans are 'true' / 'false'. No foreign key: the store keeps its rules in code, and a row
+    // outlives its device (a delayed event belongs to the user, not to the device that scheduled it).
+    constexpr auto delayed_event_tables = std::array{
+        SchemaTableDefinition{"delayed_events",
+                              "delay_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, "
+                              "room_id TEXT NOT NULL, event_type TEXT NOT NULL, is_state TEXT NOT NULL, "
+                              "state_key TEXT NOT NULL, content_json TEXT NOT NULL, txn_id TEXT NOT NULL, "
+                              "via_appservice TEXT NOT NULL, delay_ms TEXT NOT NULL, delayed_since_ms TEXT NOT NULL, "
+                              "status TEXT NOT NULL, finalised_at_ms TEXT NOT NULL, event_id TEXT NOT NULL, "
+                              "error_json TEXT NOT NULL"},
+    };
+
+    // The delete at account deactivation reads a user's rows by user ID; the store answers every other lookup from
+    // memory.
+    constexpr auto delayed_event_indexes = std::array{
+        SchemaIndexDefinition{"idx_delayed_events_user_id", "delayed_events", "user_id"},
+    };
+
     template <typename Definition, std::size_t Size>
     auto append_all(std::vector<Definition>& into, std::array<Definition, Size> const& from) -> void
     {
@@ -285,7 +304,8 @@ namespace
         auto const same = [&index](SchemaIndexDefinition const& known) {
             return known.name == index.name && known.table == index.table && known.columns_sql == index.columns_sql;
         };
-        return std::ranges::any_of(core_indexes, same) || std::ranges::any_of(oauth_indexes, same);
+        return std::ranges::any_of(core_indexes, same) || std::ranges::any_of(oauth_indexes, same) ||
+               std::ranges::any_of(delayed_event_indexes, same);
     }
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)
@@ -327,6 +347,10 @@ auto schema_definitions_added_by(std::uint32_t version) -> std::vector<SchemaTab
     {
         append_all(tables, oauth_tables);
     }
+    else if (version == 3U)
+    {
+        append_all(tables, delayed_event_tables);
+    }
     return tables;
 }
 
@@ -340,6 +364,10 @@ auto schema_indexes_added_by(std::uint32_t version) -> std::vector<SchemaIndexDe
     else if (version == 2U)
     {
         append_all(indexes, oauth_indexes);
+    }
+    else if (version == 3U)
+    {
+        append_all(indexes, delayed_event_indexes);
     }
     return indexes;
 }
@@ -408,6 +436,10 @@ auto schema_table_definition(std::string_view table_name) noexcept -> std::optio
     if (auto const oauth = std::ranges::find_if(oauth_tables, named); oauth != oauth_tables.end())
     {
         return *oauth;
+    }
+    if (auto const delayed = std::ranges::find_if(delayed_event_tables, named); delayed != delayed_event_tables.end())
+    {
+        return *delayed;
     }
     return std::nullopt;
 }

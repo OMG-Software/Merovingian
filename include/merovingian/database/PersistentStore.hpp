@@ -7,6 +7,7 @@
 #include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
+#include "merovingian/database/DelayedEventTable.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
@@ -574,6 +575,10 @@ struct PersistentStore final
     // Migration 002 (ADR-0776, ADR-0777): `oauth_clients` and `oauth_sessions`, with their indexes. Read and write
     // through OAuthStore.hpp; `delete_device` removes a device's session in the transaction that deletes the device.
     OAuthTables oauth{};
+    // Migration 003 (ADR-0824): `delayed_events`, MSC4140 events scheduled to be sent later. Read and write through
+    // DelayedEventStore.hpp; it has no lock of its own, so in main `runtime.mutex` serialises it. The federation worker
+    // never holds it.
+    DelayedEventTable delayed_events{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.

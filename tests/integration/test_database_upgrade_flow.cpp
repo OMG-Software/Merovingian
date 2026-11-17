@@ -826,6 +826,7 @@ SCENARIO("A SQLite schema is built at v1 and stops there", "[database][upgrade][
                 }
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_clients"));
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
+                REQUIRE_FALSE(has_table(migrated.state, "delayed_events"));
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'") == 0);
             }
         }
@@ -991,8 +992,10 @@ SCENARIO("A SQLite database migrated from v1 holds exactly the schema a fresh on
                 REQUIRE(migrated.ok);
                 REQUIRE(fresh.ok);
                 REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
-                REQUIRE(migrated.store.schema.applied_migrations.back().name == "oauth_tables");
-                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM schema_migrations") == 2);
+                REQUIRE(migrated.store.schema.applied_migrations.back().name == "delayed_events");
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM schema_migrations") == 3);
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM delayed_events") == 0);
+                REQUIRE(migrated.store.delayed_events.size() == 0U);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_clients") == 0);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_sessions") == 0);
                 REQUIRE(migrated.store.oauth.client_count() == 0U);
@@ -1106,6 +1109,7 @@ SCENARIO("A PostgreSQL schema is built at v1 and stops there", "[database][upgra
                 }
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_clients"));
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
+                REQUIRE_FALSE(has_table(migrated.state, "delayed_events"));
                 REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
                                                      "table_schema = 'public' AND table_name LIKE 'oauth%'") == 0);
             }
@@ -1240,7 +1244,8 @@ SCENARIO("A PostgreSQL database migrated from v1 holds exactly the schema a fres
                 REQUIRE(migrated.ok);
                 REQUIRE(fresh.ok);
                 REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
-                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM schema_migrations") == 2);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM schema_migrations") == 3);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM delayed_events") == 0);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_clients") == 0);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_sessions") == 0);
                 auto const migrated_shape = pg_schema_shape(migrated_scratch.conninfo());
@@ -1352,6 +1357,8 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
         auto const ledger_rows_before = sqlite_count(path, "SELECT count(*) FROM schema_migrations");
         auto const oauth_objects_before =
             sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'");
+        auto const delayed_objects_before =
+            sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE '%delayed_events%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
@@ -1363,6 +1370,13 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                 sqlite_execute(path, "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
                 sqlite_count(path, "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
                 sqlite_execute(path, "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
+            // Version 3's table takes a row and gives it back the same way.
+            auto const delayed_events_usable =
+                sqlite_execute(path, "INSERT INTO delayed_events VALUES ('upgrade-probe', '@u:x', '', '!r:x', "
+                                     "'m.room.message', 'false', '', '{}', '', 'false', '1000', '0', "
+                                     "'scheduled', '0', '', '')") &&
+                sqlite_count(path, "SELECT count(*) FROM delayed_events WHERE delay_id = 'upgrade-probe'") == 1 &&
+                sqlite_execute(path, "DELETE FROM delayed_events WHERE delay_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 sqlite_fixture_config(path, master_key, expected.server_name));
             REQUIRE(started.started);
@@ -1375,10 +1389,11 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                 REQUIRE(expected.schema_version == 1);
                 REQUIRE(ledger_rows_before == 1);
                 REQUIRE(oauth_objects_before == 0);
+                REQUIRE(delayed_objects_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
                 REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
                 REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
-                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(migrated.state.applied_migrations.back().name == "delayed_events");
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM schema_migrations") ==
                         static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_clients") == 0);
@@ -1386,6 +1401,10 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
                                            "name = 'idx_oauth_sessions_client_id'") == 1);
                 REQUIRE(oauth_tables_usable);
+                REQUIRE(delayed_events_usable);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM delayed_events") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
+                                           "name = 'idx_delayed_events_user_id'") == 1);
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);
@@ -1420,6 +1439,9 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
         auto const oauth_tables_before =
             pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
                                          "table_schema = 'public' AND table_name LIKE 'oauth%'");
+        auto const delayed_tables_before =
+            pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
+                                         "table_schema = 'public' AND table_name = 'delayed_events'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
@@ -1431,6 +1453,13 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
                 pg_count(scratch.conninfo(), "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") ==
                     1 &&
                 pg_execute(scratch.conninfo(), "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
+            auto const delayed_events_usable =
+                pg_execute(scratch.conninfo(), "INSERT INTO delayed_events VALUES ('upgrade-probe', '@u:x', '', "
+                                               "'!r:x', 'm.room.message', 'false', '', '{}', '', 'false', '1000', "
+                                               "'0', 'scheduled', '0', '', '')") &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM delayed_events WHERE delay_id = 'upgrade-probe'") ==
+                    1 &&
+                pg_execute(scratch.conninfo(), "DELETE FROM delayed_events WHERE delay_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 postgresql_fixture_config(uri_file, master_key, expected.server_name));
             REQUIRE(started.started);
@@ -1443,13 +1472,15 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
                 REQUIRE(expected.schema_version == 1);
                 REQUIRE(ledger_rows_before == 1);
                 REQUIRE(oauth_tables_before == 0);
+                REQUIRE(delayed_tables_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
                 REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
                 REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
-                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(migrated.state.applied_migrations.back().name == "delayed_events");
                 REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations") ==
                         static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
                 REQUIRE(oauth_tables_usable);
+                REQUIRE(delayed_events_usable);
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);

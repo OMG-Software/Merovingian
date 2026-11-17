@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/DelayedEventStatusText.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MigrationStep.hpp"
@@ -1181,6 +1182,25 @@ namespace
                              std::ignore = store.oauth.insert_session({column_text(row, 0), column_text(row, 1),
                                                                        column_text(row, 2), column_text(row, 3),
                                                                        parse_u64(column_text(row, 4))});
+                         }) &&
+               // Migration 003 (ADR-0824): delayed events. A row whose status text is not one of the four, or that
+               // duplicates a delay ID or a transaction key, is skipped, never repaired.
+               load_rows(connection,
+                         "SELECT delay_id, user_id, device_id, room_id, event_type, is_state, state_key, content_json, "
+                         "txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, event_id, "
+                         "error_json FROM delayed_events ORDER BY delay_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto const status = parse_delayed_event_status(column_text(row, 12));
+                             if (!status.has_value())
+                             {
+                                 return;
+                             }
+                             std::ignore = store.delayed_events.insert(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
+                                  column_text(row, 4), text_is_true(column_text(row, 5)), column_text(row, 6),
+                                  column_text(row, 7), column_text(row, 8), text_is_true(column_text(row, 9)),
+                                  parse_u64(column_text(row, 10)), parse_u64(column_text(row, 11)), *status,
+                                  parse_u64(column_text(row, 13)), column_text(row, 14), column_text(row, 15)});
                          }) &&
                // Application service delivery state: transaction cursors, the outbox and the directory mapping.
                load_rows(connection,

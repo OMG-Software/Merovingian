@@ -38,6 +38,9 @@ namespace
     // Migration 002 (ADR-0776): migrations/002_oauth_tables.sql records it.
     constexpr auto oauth_tables_version = std::uint32_t{2U};
     constexpr auto oauth_tables_name = std::string_view{"oauth_tables"};
+    // Migration 003 (ADR-0824): migrations/003_delayed_events.sql records it.
+    constexpr auto delayed_events_version = std::uint32_t{3U};
+    constexpr auto delayed_events_name = std::string_view{"delayed_events"};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
         -> std::optional<PreparedStatement>
@@ -333,17 +336,28 @@ auto downgrade_oauth_tables_migration() -> MigrationStep
     return schema_step_dropping(oauth_tables_version, "drop_oauth_tables");
 }
 
-// The next migration is v3: add its upgrade step at the end here, its downgrade
-// (to v2) at the front of the downgrade catalog, and its tables to
+auto delayed_events_migration() -> MigrationStep
+{
+    return schema_step_creating(delayed_events_version, delayed_events_name);
+}
+
+auto downgrade_delayed_events_migration() -> MigrationStep
+{
+    return schema_step_dropping(delayed_events_version, "drop_delayed_events");
+}
+
+// The next migration is v4: add its upgrade step at the end here, its downgrade
+// (to v3) at the front of the downgrade catalog, and its tables to
 // schema_definitions_added_by. Never change an earlier step.
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), oauth_tables_migration()};
+    return {initial_schema_migration(), oauth_tables_migration(), delayed_events_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_oauth_tables_migration(), downgrade_initial_schema_migration()};
+    return {downgrade_delayed_events_migration(), downgrade_oauth_tables_migration(),
+            downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

@@ -7,6 +7,9 @@
 // MEROVINGIAN_TEST_POSTGRESQL_URI is not set; a skip is not a pass.
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/DelayedEventOutcomeResult.hpp>
+#include <merovingian/database/DelayedEventStatus.hpp>
+#include <merovingian/database/DelayedEventStore.hpp>
 #include <merovingian/database/OAuthClientStoreResult.hpp>
 #include <merovingian/database/OAuthStore.hpp>
 #include <merovingian/database/PersistentStore.hpp>
@@ -1676,6 +1679,112 @@ SCENARIO("PostgreSQL OAuth clients and sessions survive a reopen and a session g
                 auto again = reopen(uri);
                 REQUIRE(db::find_oauth_client(again.store, touched_id) == nullptr);
                 REQUIRE(db::find_oauth_client(again.store, client_id) != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL delayed events of every status survive a reopen with every column and index",
+         "[database][postgresql][integration][pg-behaviour][delayed-events]")
+{
+    GIVEN("a scheduled state event, a sent row, a cancelled row and a failed row of two users")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = reopen(uri);
+        auto const suffix = unique_suffix();
+        auto const alice = "@delayed-a-" + suffix + ":example.org";
+        auto const bob = "@delayed-b-" + suffix + ":example.org";
+        auto const room_id = "!delayed-" + suffix + ":example.org";
+        auto const make = [&](std::string id, std::string const& user) {
+            auto row = db::PersistentDelayedEvent{};
+            row.delay_id = "d-" + id + "-" + suffix;
+            row.user_id = user;
+            row.device_id = "DEVICE";
+            row.room_id = room_id;
+            row.event_type = "m.room.message";
+            row.content_json = R"({"body":"two words \"quoted\""})";
+            row.delay_ms = 60'000U;
+            row.delayed_since_ms = 1'000U;
+            return row;
+        };
+        auto state = make("state", alice);
+        state.is_state = true;
+        state.state_key = alice;
+        state.via_appservice = true;
+        state.delay_ms = db::max_delayed_event_delay_ms;
+        state.delayed_since_ms = 123'456'789U;
+        auto message = make("message", alice);
+        message.txn_id = "txn-" + suffix;
+        REQUIRE(db::store_delayed_event(opened.store, state));
+        REQUIRE(db::store_delayed_event(opened.store, message));
+        REQUIRE(db::store_delayed_event(opened.store, make("sent", alice)));
+        REQUIRE(db::store_delayed_event(opened.store, make("cancelled", alice)));
+        REQUIRE(db::store_delayed_event(opened.store, make("failed", bob)));
+        REQUIRE(db::record_delayed_event_outcome(opened.store, "d-sent-" + suffix, db::DelayedEventStatus::sent, 2000U,
+                                                 "$sent-" + suffix, {},
+                                                 10U) == db::DelayedEventOutcomeResult::recorded);
+        REQUIRE(db::cancel_delayed_event(opened.store, "d-cancelled-" + suffix, 2001U, 10U));
+        REQUIRE(db::record_delayed_event_outcome(opened.store, "d-failed-" + suffix, db::DelayedEventStatus::failed,
+                                                 2002U, {}, R"({"errcode":"M_FORBIDDEN","error":"nope"})",
+                                                 10U) == db::DelayedEventOutcomeResult::recorded);
+
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = reopen(uri);
+            auto const& table = reopened.store.delayed_events;
+            auto const* held_state = table.find("d-state-" + suffix);
+            auto const* held_message = table.find("d-message-" + suffix);
+
+            THEN("every column is back and the indexes answer")
+            {
+                REQUIRE(held_state != nullptr);
+                REQUIRE(held_state->user_id == alice);
+                REQUIRE(held_state->device_id == "DEVICE");
+                REQUIRE(held_state->room_id == room_id);
+                REQUIRE(held_state->event_type == "m.room.message");
+                REQUIRE(held_state->is_state);
+                REQUIRE(held_state->state_key == alice);
+                REQUIRE(held_state->content_json == R"({"body":"two words \"quoted\""})");
+                REQUIRE(held_state->txn_id.empty());
+                REQUIRE(held_state->via_appservice);
+                REQUIRE(held_state->delay_ms == db::max_delayed_event_delay_ms);
+                REQUIRE(held_state->delayed_since_ms == 123'456'789U);
+                REQUIRE(held_state->status == db::DelayedEventStatus::scheduled);
+                REQUIRE(held_state->finalised_at_ms == 0U);
+                REQUIRE(held_message != nullptr);
+                REQUIRE_FALSE(held_message->is_state);
+                REQUIRE_FALSE(held_message->via_appservice);
+                REQUIRE(table.find("d-sent-" + suffix)->status == db::DelayedEventStatus::sent);
+                REQUIRE(table.find("d-sent-" + suffix)->event_id == "$sent-" + suffix);
+                REQUIRE(table.find("d-sent-" + suffix)->finalised_at_ms == 2000U);
+                REQUIRE(table.find("d-cancelled-" + suffix)->status == db::DelayedEventStatus::cancelled);
+                REQUIRE(table.find("d-failed-" + suffix)->status == db::DelayedEventStatus::failed);
+                REQUIRE(table.find("d-failed-" + suffix)->error_json == R"({"errcode":"M_FORBIDDEN","error":"nope"})");
+                REQUIRE(table.find_owned(bob, "d-failed-" + suffix) != nullptr);
+                REQUIRE(table.find_owned(alice, "d-failed-" + suffix) == nullptr);
+                REQUIRE(table.scheduled_count(alice) == 2U);
+                REQUIRE(table.finalised_count(alice) == 2U);
+                REQUIRE(table.finalised_count(bob) == 1U);
+                REQUIRE(table.earliest_due_ms_of_user(alice) == std::optional<std::uint64_t>{61'000U});
+                REQUIRE(table.find_by_transaction(alice, "DEVICE", room_id, "m.room.message", "txn-" + suffix) ==
+                        held_message);
+                REQUIRE(table.find_sent_by_event_id("$sent-" + suffix) == table.find("d-sent-" + suffix));
+            }
+
+            AND_THEN("deleting both users' rows removes them from the database as well")
+            {
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, alice));
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, bob));
+                auto again = reopen(uri);
+                REQUIRE(again.store.delayed_events.find("d-state-" + suffix) == nullptr);
+                REQUIRE(again.store.delayed_events.find("d-failed-" + suffix) == nullptr);
+                REQUIRE(again.store.delayed_events.scheduled_count(alice) == 0U);
             }
         }
     }

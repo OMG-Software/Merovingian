@@ -1,5 +1,8 @@
 database_sources = files(
   'Connection.cpp',
+  'DelayedEventStatusText.cpp',
+  'DelayedEventStore.cpp',
+  'DelayedEventTable.cpp',
   'EventTable.cpp',
   'EventStateGroupTable.cpp',
   'ForwardExtremityTable.cpp',

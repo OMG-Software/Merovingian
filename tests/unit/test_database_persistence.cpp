@@ -1332,7 +1332,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies the v1 and v2 schema steps and their explicit downgrades",
+SCENARIO("Database migration runner applies the v1, v2 and v3 schema steps and their explicit downgrades",
          "[database][migration]")
 {
     GIVEN("an empty schema state")
@@ -1348,30 +1348,34 @@ SCENARIO("Database migration runner applies the v1 and v2 schema steps and their
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("v1 then v2 build the whole current schema, and two steps take it away newest first")
+            THEN("v1, v2 then v3 build the whole current schema, and three steps take it away newest first")
             {
-                REQUIRE(merovingian::database::current_schema_version() == 2U);
+                REQUIRE(merovingian::database::current_schema_version() == 3U);
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
-                REQUIRE(upgrade_plan.target_version == 2U);
-                REQUIRE(upgrade_plan.steps.size() == 2U);
+                REQUIRE(upgrade_plan.target_version == 3U);
+                REQUIRE(upgrade_plan.steps.size() == 3U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
                 REQUIRE(upgrade_plan.steps[1].name == "oauth_tables");
+                REQUIRE(upgrade_plan.steps[2].version == 3U);
+                REQUIRE(upgrade_plan.steps[2].name == "delayed_events");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 2U);
-                REQUIRE(upgraded.state.applied_migrations.size() == 2U);
+                REQUIRE(upgraded.state.version == 3U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 3U);
                 REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "delayed_events");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 2U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_oauth_tables");
-                REQUIRE(downgrade_plan.steps[0].version == 1U);
-                REQUIRE(downgrade_plan.steps[1].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 3U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_delayed_events");
+                REQUIRE(downgrade_plan.steps[0].version == 2U);
+                REQUIRE(downgrade_plan.steps[1].name == "drop_oauth_tables");
+                REQUIRE(downgrade_plan.steps[1].version == 1U);
+                REQUIRE(downgrade_plan.steps[2].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1398,8 +1402,8 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
 
             THEN("each v1 table is created whole, by exactly the DDL the registry describes")
             {
-                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 2U);
-                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 2U);
+                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 3U);
+                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 3U);
                 for (auto const& table : tables)
                 {
                     INFO("table " << table.name);
@@ -1410,6 +1414,8 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                 REQUIRE(tables.size() == merovingian::database::schema_definitions_added_by(1U).size());
                 REQUIRE(statement_sql("create_oauth_clients").empty());
                 REQUIRE(statement_sql("create_oauth_sessions").empty());
+                REQUIRE(statement_sql("create_delayed_events").empty());
+                REQUIRE(statement_sql("create_idx_delayed_events_user_id").empty());
             }
 
             AND_THEN("every column the pre-1.0 chain ALTERed on is part of its table's CREATE")
@@ -1508,7 +1514,8 @@ SCENARIO("The v2 schema step adds only the OAuth 2.0 tables and their index", "[
                         "device_id))");
                 REQUIRE(step.statements[2].sql ==
                         "CREATE INDEX idx_oauth_sessions_client_id ON oauth_sessions (client_id)");
-                REQUIRE(current.size() == initial.size() + 2U);
+                // Version 2 adds two tables; version 3 adds one more.
+                REQUIRE(current.size() == initial.size() + 3U);
                 REQUIRE(std::ranges::find(initial, std::string_view{"oauth_clients"}) == initial.end());
                 REQUIRE(std::ranges::find(current, std::string_view{"oauth_clients"}) != current.end());
                 REQUIRE(std::ranges::find(current, std::string_view{"oauth_sessions"}) != current.end());
@@ -1521,6 +1528,61 @@ SCENARIO("The v2 schema step adds only the OAuth 2.0 tables and their index", "[
                 REQUIRE(downgrade.statements.size() == 2U);
                 REQUIRE(downgrade.statements[0].sql.find("oauth_sessions") != std::string::npos);
                 REQUIRE(downgrade.statements[1].sql.find("oauth_clients") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("The v3 schema step adds only the delayed-events table and its user index",
+         "[database][migration][delayed-events]")
+{
+    GIVEN("the v3 schema step, its downgrade and the current table inventory")
+    {
+        auto const step = merovingian::database::delayed_events_migration();
+        auto const downgrade = merovingian::database::downgrade_delayed_events_migration();
+        auto const initial = merovingian::database::initial_schema_tables();
+        auto const current = merovingian::database::current_schema_tables();
+
+        WHEN("its statements are inspected")
+        {
+            auto const names = [&step]() {
+                auto collected = std::vector<std::string>{};
+                for (auto const& statement : step.statements)
+                {
+                    collected.push_back(statement.name);
+                }
+                return collected;
+            }();
+
+            THEN("it creates delayed_events with sixteen TEXT columns and the user index, and nothing else")
+            {
+                REQUIRE(step.version == 3U);
+                REQUIRE(step.name == "delayed_events");
+                REQUIRE(step.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(names ==
+                        std::vector<std::string>{"create_delayed_events", "create_idx_delayed_events_user_id"});
+                REQUIRE(step.statements[0].sql ==
+                        "CREATE TABLE \"delayed_events\" (delay_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, "
+                        "device_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, is_state TEXT "
+                        "NOT NULL, state_key TEXT NOT NULL, content_json TEXT NOT NULL, txn_id TEXT NOT NULL, "
+                        "via_appservice TEXT NOT NULL, delay_ms TEXT NOT NULL, delayed_since_ms TEXT NOT NULL, "
+                        "status TEXT NOT NULL, finalised_at_ms TEXT NOT NULL, event_id TEXT NOT NULL, error_json "
+                        "TEXT NOT NULL)");
+                REQUIRE(step.statements[1].sql ==
+                        "CREATE INDEX idx_delayed_events_user_id ON delayed_events (user_id)");
+                REQUIRE(current.size() == initial.size() + 3U);
+                REQUIRE(std::ranges::find(initial, std::string_view{"delayed_events"}) == initial.end());
+                REQUIRE(std::ranges::find(current, std::string_view{"delayed_events"}) != current.end());
+                REQUIRE(merovingian::database::schema_definitions_added_by(2U).size() == 2U);
+                REQUIRE(merovingian::database::schema_definitions_added_by(3U).size() == 1U);
+            }
+
+            AND_THEN("its downgrade drops only that table, back to version 2")
+            {
+                REQUIRE(downgrade.version == 2U);
+                REQUIRE(downgrade.name == "drop_delayed_events");
+                REQUIRE(downgrade.statements.size() == 1U);
+                REQUIRE(downgrade.statements[0].sql.find("delayed_events") != std::string::npos);
             }
         }
     }
@@ -2420,7 +2482,7 @@ SCENARIO("Checked-in migrations hold exactly the steps this build runs", "[datab
 }
 
 SCENARIO("An offline plan takes only the migration files between its two versions",
-         "[database][migration][files][oauth]")
+         "[database][migration][files][oauth][delayed-events]")
 {
     GIVEN("the repository migration directory and the migration role")
     {
@@ -2431,22 +2493,28 @@ SCENARIO("An offline plan takes only the migration files between its two version
         auto migration_config = merovingian::config::DatabaseConfig{};
         migration_config.role = merovingian::config::DatabaseRole::migration;
 
-        WHEN("plans from v1 to v2 and from nothing to v2 are built from the files")
+        WHEN("plans from v1, from v2 and from nothing to v3 are built from the files")
         {
             auto const from_v1 =
-                merovingian::database::build_offline_migration_plan(migration_config, 1U, 2U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 1U, 3U, loaded.steps);
+            auto const from_v2 =
+                merovingian::database::build_offline_migration_plan(migration_config, 2U, 3U, loaded.steps);
             auto const from_empty =
-                merovingian::database::build_offline_migration_plan(migration_config, 0U, 2U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 0U, 3U, loaded.steps);
             auto const no_op =
-                merovingian::database::build_offline_migration_plan(migration_config, 2U, 2U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 3U, 3U, loaded.steps);
 
-            THEN("a v1 database gets 002 alone, an empty one gets 001 then 002, and a v2 one gets nothing")
+            THEN("a v1 database gets 002 then 003, a v2 one 003 alone, an empty one all three, a v3 one nothing")
             {
                 REQUIRE(from_v1.ok);
-                REQUIRE(from_v1.plan.steps.size() == 1U);
+                REQUIRE(from_v1.plan.steps.size() == 2U);
                 REQUIRE(from_v1.plan.steps.front().name == "oauth_tables");
+                REQUIRE(from_v1.plan.steps.back().name == "delayed_events");
+                REQUIRE(from_v2.ok);
+                REQUIRE(from_v2.plan.steps.size() == 1U);
+                REQUIRE(from_v2.plan.steps.front().name == "delayed_events");
                 REQUIRE(from_empty.ok);
-                REQUIRE(from_empty.plan.steps.size() == 2U);
+                REQUIRE(from_empty.plan.steps.size() == 3U);
                 REQUIRE(from_empty.plan.steps.front().name == "initial_schema");
                 REQUIRE(no_op.ok);
                 REQUIRE(no_op.plan.steps.empty());
@@ -2502,10 +2570,10 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 // The pre-1.0 migration chain collapsed into v1's 64 tables; migration 002 (1.1.0) adds the two
-                // OAuth 2.0 tables.
+                // OAuth 2.0 tables and migration 003 (1.1.2) the delayed-events table.
                 REQUIRE(tables.size() == 64U);
-                REQUIRE(merovingian::database::current_schema_version() == 2U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 66U);
+                REQUIRE(merovingian::database::current_schema_version() == 3U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 67U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

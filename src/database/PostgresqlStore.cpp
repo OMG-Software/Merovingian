@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/DelayedEventStatusText.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
@@ -1416,6 +1417,35 @@ namespace
                 if (row.size() >= 5U)
                 {
                     std::ignore = store.oauth.insert_session({row[0], row[1], row[2], row[3], parse_u64(row[4])});
+                }
+            }
+        }
+
+        // Migration 003 (ADR-0824): delayed events, main only (the federation worker sends no events). A row whose
+        // status text is not one of the four, or that duplicates a delay ID or a transaction key, is skipped.
+        if (table_load_profile_includes("delayed_events", profile))
+        {
+            auto delayed = query_rows(connection, "postgresql_load_delayed_events",
+                                      "SELECT delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
+                                      "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, "
+                                      "finalised_at_ms, event_id, error_json FROM delayed_events ORDER BY delay_id");
+            if (!delayed.ok)
+            {
+                return false;
+            }
+            for (auto const& row : delayed.rows)
+            {
+                if (row.size() < 16U)
+                {
+                    continue;
+                }
+                auto const status = parse_delayed_event_status(row[12]);
+                if (status.has_value())
+                {
+                    std::ignore = store.delayed_events.insert(
+                        {row[0], row[1], row[2], row[3], row[4], text_is_true(row[5]), row[6], row[7], row[8],
+                         text_is_true(row[9]), parse_u64(row[10]), parse_u64(row[11]), *status, parse_u64(row[13]),
+                         row[14], row[15]});
                 }
             }
         }
