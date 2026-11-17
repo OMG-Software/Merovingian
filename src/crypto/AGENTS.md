@@ -15,7 +15,7 @@ or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for b
 | `RefusingEd25519Provider.cpp` | `RefusingEd25519Provider` — the federation worker's provider: refuses every `sign` and `verify` (ADR-0078) |
 | `SigningService.cpp` | Server signing-key selection and delegation to the Ed25519 provider |
 | `HmacSha1.cpp` | `hmac_sha1`: OpenSSL's `HMAC` with SHA-1, for the coturn REST API's TURN password only (ADR-0480). Not for any new use of SHA-1 |
-| `LiveKitToken.cpp` | LiveKit HS256 tokens (ADR-0828): `sign_livekit_participant_token` (grant type cannot express create, admin or hidden), `sign_livekit_room_create_token` (`roomCreate` only) and `verify_hs256_token` (webhooks; never reads `alg`). libsodium HMAC-SHA256 stays internal: there is no general HMAC-SHA256 or "sign these bytes" function |
+| `LiveKitToken.cpp` | LiveKit HS256 tokens (ADR-0828): `sign_livekit_participant_token` (grant type cannot express create, admin or hidden), `sign_livekit_room_create_token` (`roomCreate` only), `sign_livekit_room_admin_token` (`roomAdmin` for one named room, for `GetParticipant`) and `verify_hs256_token` (webhooks; never reads `alg`). libsodium HMAC-SHA256 stays internal: there is no general HMAC-SHA256 or "sign these bytes" function |
 | `ConstantTime.cpp` | Constant-time byte comparison (wraps `sodium_memcmp`) |
 | `Random.cpp` | Bounded random byte generation (wraps `randombytes_buf`) |
 | `GenericHash.cpp` | Domain-separated BLAKE2b hashing helpers |

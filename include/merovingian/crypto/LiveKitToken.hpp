@@ -16,7 +16,7 @@ namespace merovingian::crypto
 {
 
 // LiveKit's tokens are JWTs signed with HMAC-SHA256 under the API secret (ADR-0828). The MAC is libsodium's
-// `crypto_auth_hmacsha256` and is not exposed: this file signs exactly two kinds of token, each built here from typed
+// `crypto_auth_hmacsha256` and is not exposed: this file signs exactly three kinds of token, each built here from typed
 // claims, and verifies one. There is no function that signs bytes a caller chose.
 
 // The shortest API secret accepted. LiveKit refuses shorter secrets itself.
@@ -46,6 +46,14 @@ inline constexpr auto hs256_token_max_bytes = std::size_t{4096U};
 [[nodiscard]] auto sign_livekit_room_create_token(std::string_view api_key, std::span<std::uint8_t const> api_secret,
                                                   std::int64_t not_before, std::int64_t expires)
     -> std::optional<std::string>;
+
+// The service token for reading one participant of one room (`GetParticipant`, ADR-0830): `video` holds `room`
+// (`room_name`) and `roomAdmin` true and nothing else; `sub` is absent. LiveKit's `roomAdmin` covers only the room
+// named, so this token cannot act on any other room or create one. nullopt on the refusals above, or when
+// `room_name` is not an MSC4195 room name.
+[[nodiscard]] auto sign_livekit_room_admin_token(std::string_view api_key, std::span<std::uint8_t const> api_secret,
+                                                 std::string_view room_name, std::int64_t not_before,
+                                                 std::int64_t expires) -> std::optional<std::string>;
 
 // Verifies that `token` is three unpadded URL-safe base64 segments whose third is the HMAC-SHA256 under `secret` of the
 // first two joined by `.`, compared in constant time, and returns the decoded header and payload. The header's `alg`

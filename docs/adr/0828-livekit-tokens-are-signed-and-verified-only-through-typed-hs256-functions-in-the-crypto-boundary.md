@@ -28,7 +28,7 @@ the SFU.
 Chosen option: typed signers and one verifier over libsodium, because no caller can widen what a token says, and
 libsodium's HMAC-SHA256 is already in the build.
 
-* `crypto/LiveKitToken.hpp` declares exactly three operations:
+* `crypto/LiveKitToken.hpp` declares exactly four operations:
   * `sign_livekit_participant_token(api_key, api_secret, LiveKitParticipantGrant)`. The grant type holds the MSC4195
     identity and room name, one `can_publish` flag (which sets `canPublish` and `canPublishData` together), and
     `nbf`/`exp`. It has no field for `roomCreate`, `roomAdmin`, `roomList`, `roomRecord`, `ingressAdmin`, `hidden`,
@@ -36,6 +36,10 @@ libsodium's HMAC-SHA256 is already in the build.
     `canSubscribe` are always true.
   * `sign_livekit_room_create_token(api_key, api_secret, nbf, exp)`: `video` is `{"roomCreate":true}` and nothing else,
     with no `sub` and no `room`. It is used for `CreateRoom` only.
+  * `sign_livekit_room_admin_token(api_key, api_secret, room_name, nbf, exp)`: `video` is `{"room":<room_name>,
+    "roomAdmin":true}` and nothing else, with no `sub`. LiveKit limits `roomAdmin` to the room named, and the room name
+    must be an MSC4195 name (43 standard base64 characters). It is used for `GetParticipant` only, by MSC4195's
+    delegated delayed leave.
   * `verify_hs256_token(token, secret)`, for LiveKit's webhook requests. It bounds the token at 4,096 bytes, requires
     exactly three non-empty unpadded URL-safe base64 segments, computes HMAC-SHA256 over the first two segments as
     received, and compares it with the third in constant time (`constant_time_equal`, 32 bytes). It decodes the header
@@ -63,8 +67,8 @@ libsodium's HMAC-SHA256 is already in the build.
 
 ### Negative Consequences
 
-* A new LiveKit grant (for example a participant lookup with `roomAdmin`) cannot be added from the homeserver module
-  alone. That is the point.
+* A new LiveKit grant cannot be added from the homeserver module alone. That is the point: the one-room `roomAdmin`
+  token for `GetParticipant` was added here, with its own vector, when the delegated delayed leave needed it.
 
 ## Pros and Cons of the Options
 

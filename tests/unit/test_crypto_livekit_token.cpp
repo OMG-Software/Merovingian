@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// LiveKit's HS256 tokens (ADR-0828): the two typed signers and the verifier. The signed vectors were computed apart from
-// this code with Python's `hmac` and `hashlib`; the verifier's vector is RFC 7515 Appendix A.1.
+// LiveKit's HS256 tokens (ADR-0828): the three typed signers and the verifier. The signed vectors were computed apart
+// from this code with Python's `hmac` and `hashlib`; the verifier's vector is RFC 7515 Appendix A.1.
 
 #include "merovingian/crypto/LiveKitToken.hpp"
 
@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -50,9 +51,9 @@ constexpr auto rfc7515_key = std::array<std::uint8_t, 64U>{
     0x5aU, 0xb3U, 0x28U, 0xe6U, 0xf0U, 0x54U, 0xc9U, 0x28U, 0xa9U, 0x0fU, 0x84U, 0xb2U, 0xd2U, 0x50U, 0x2eU, 0xbfU,
     0xd3U, 0xfbU, 0x5aU, 0x92U, 0xd2U, 0x06U, 0x47U, 0xefU, 0x96U, 0x8aU, 0xb4U, 0xc3U, 0x77U, 0x62U, 0x3dU, 0x22U,
     0x3dU, 0x2eU, 0x21U, 0x72U, 0x05U, 0x2eU, 0x4fU, 0x08U, 0xc0U, 0xcdU, 0x9aU, 0xf5U, 0x67U, 0xd0U, 0x80U, 0xa3U};
-constexpr auto rfc7515_token =
-    "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9p"
-    "c19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+constexpr auto rfc7515_token = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9."
+                               "eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9p"
+                               "c19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
 [[nodiscard]] auto payload_segment(std::string const& token) -> std::string
 {
@@ -122,7 +123,8 @@ SCENARIO("A signed participant token verifies and says nothing beyond its grant"
                 REQUIRE(verified.has_value());
                 CHECK(verified->header_json == R"({"alg":"HS256","typ":"JWT"})");
                 CHECK(verified->payload_json ==
-                      R"({"exp":1700003600,"iss":"APIkey_1.x-","nbf":1700000000,"sub":")" + std::string{alice_identity} +
+                      R"({"exp":1700003600,"iss":"APIkey_1.x-","nbf":1700000000,"sub":")" +
+                          std::string{alice_identity} +
                           R"(","video":{"canPublish":true,"canPublishData":true,"canSubscribe":true,"room":")" +
                           std::string{slot_room} + R"(","roomJoin":true}})");
                 CHECK(verified->payload_json.find("roomCreate") == std::string::npos);
@@ -147,9 +149,64 @@ SCENARIO("A room-creation token grants roomCreate and nothing else", "[crypto][l
             THEN("it is byte for byte the token computed independently")
             {
                 REQUIRE(token.has_value());
+                CHECK(*token ==
+                      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+                      "eyJleHAiOjE3MDAwMDAwNjAsImlzcyI6IkFQSWtleV8xLngtIiwibmJmIjoxNzAwMDAwMDAwLCJ2aWRlbyI6eyJy"
+                      "b29tQ3JlYXRlIjp0cnVlfX0.H8s0R8qoKX-6VA99JYKgYg0WktDfwQ-zfAuzjRi8j6M");
+            }
+        }
+    }
+}
+
+SCENARIO("A room-administration token names one room and grants roomAdmin and nothing else", "[crypto][livekit][rtc]")
+{
+    GIVEN("a 32-byte secret, an API key and an MSC4195 room name")
+    {
+        auto const secret = counting_secret();
+
+        WHEN("a room-administration token is signed for one minute")
+        {
+            auto const token = merovingian::crypto::sign_livekit_room_admin_token(api_key, secret, slot_room,
+                                                                                  1'700'000'000, 1'700'000'060);
+
+            THEN("it is byte for byte the token computed independently")
+            {
+                REQUIRE(token.has_value());
                 CHECK(*token == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-                                "eyJleHAiOjE3MDAwMDAwNjAsImlzcyI6IkFQSWtleV8xLngtIiwibmJmIjoxNzAwMDAwMDAwLCJ2aWRlbyI6eyJy"
-                                "b29tQ3JlYXRlIjp0cnVlfX0.H8s0R8qoKX-6VA99JYKgYg0WktDfwQ-zfAuzjRi8j6M");
+                                "eyJleHAiOjE3MDAwMDAwNjAsImlzcyI6IkFQSWtleV8xLngtIiwibmJmIjoxNzAwMDAwMDAwLCJ2aWRlbyI6"
+                                "eyJyb29tIjoiTzg0MzdXMytqbXpNVmpvSVAzdE53Ym0rWHhIUWsyaUtwT0E3YXF3M3FTYyIsInJvb21BZG1p"
+                                "biI6dHJ1ZX19.ucjJr3_4DS-WSGjVhhyp9FFvSRBVw5sOduvkke9yApo");
+            }
+
+            THEN("its payload holds the room, roomAdmin, iss and the times, and no sub")
+            {
+                REQUIRE(token.has_value());
+                auto const verified = merovingian::crypto::verify_hs256_token(*token, secret);
+                REQUIRE(verified.has_value());
+                CHECK(verified->payload_json ==
+                      R"({"exp":1700000060,"iss":"APIkey_1.x-","nbf":1700000000,"video":{"room":")" +
+                          std::string{slot_room} + R"(","roomAdmin":true}})");
+            }
+        }
+
+        WHEN("the room is not an MSC4195 name, or the key, secret or times are refused")
+        {
+            auto const short_secret = std::vector<std::uint8_t>(31U, 0x01U);
+            auto const sign = [&secret](std::string_view const room) {
+                return merovingian::crypto::sign_livekit_room_admin_token(api_key, secret, room, 0, 60);
+            };
+
+            THEN("no token is signed")
+            {
+                CHECK_FALSE(sign(""));
+                CHECK_FALSE(sign("!roomid:example.com"));
+                CHECK_FALSE(sign(std::string(42U, 'A') + "\""));
+                CHECK_FALSE(sign(std::string(44U, 'A')));
+                CHECK(sign(slot_room));
+                CHECK_FALSE(
+                    merovingian::crypto::sign_livekit_room_admin_token(api_key, short_secret, slot_room, 0, 60));
+                CHECK_FALSE(merovingian::crypto::sign_livekit_room_admin_token("bad key", secret, slot_room, 0, 60));
+                CHECK_FALSE(merovingian::crypto::sign_livekit_room_admin_token(api_key, secret, slot_room, 60, 60));
             }
         }
     }
@@ -265,8 +322,8 @@ SCENARIO("The verifier refuses a token that is altered, malformed or under anoth
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token(*token + ".", secret));
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token(*token + "." + signature, secret));
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token(header + ".." + signature, secret));
-                CHECK_FALSE(merovingian::crypto::verify_hs256_token(header + "." + payload + "." + signature + "=",
-                                                                    secret));
+                CHECK_FALSE(
+                    merovingian::crypto::verify_hs256_token(header + "." + payload + "." + signature + "=", secret));
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token(header + "." + payload + "." + signature.substr(1U),
                                                                     secret));
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token("", secret));

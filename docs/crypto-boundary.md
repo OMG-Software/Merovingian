@@ -20,6 +20,15 @@ implementing custom cryptographic primitives.
   the coturn REST API defines a TURN password as the base64 of HMAC-SHA1 over the username (ADR-0480). libsodium has no
   SHA-1; OpenSSL is already a required dependency, so no new dependency enters the build, but `merovingian-crypto` now
   links it. No other code may use SHA-1 for a new purpose.
+- LiveKit tokens (`LiveKitToken.cpp`, ADR-0828): HS256 JWTs, signed with libsodium's `crypto_auth_hmacsha256`, which
+  stays inside the file. There is no general "sign this payload" function: `sign_livekit_participant_token` takes a
+  `LiveKitParticipantGrant`, which cannot express `roomCreate`, `roomAdmin` or `hidden` and always writes
+  `canPublish`, `canPublishData` and `canSubscribe` (LiveKit reads an absent `canPublish` as true), and
+  `sign_livekit_room_create_token` grants `roomCreate` alone, and `sign_livekit_room_admin_token` grants `roomAdmin`
+  over one named MSC4195 room alone (for `GetParticipant`). `verify_hs256_token` checks the signature in constant
+  time and never trusts the header's `alg`. The API secret is a `core::SecretBuffer` the caller reads from its file
+  for each signature; the boundary refuses one shorter than 32 bytes. Pinned vectors are in
+  `tests/unit/test_crypto_livekit_token.cpp`.
 - Variable-length comparison uses domain-separated hashing so it does not leak
   input length through a premature length check.
 - Runtime signing secret material uses `core::SecretBuffer`, backed by
