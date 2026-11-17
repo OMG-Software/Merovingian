@@ -92,8 +92,8 @@ value. Test fixtures that do not exercise persistence select it through
     `event_type`, `state_key`, `txn_id` and `event_id`, and `delay_ms` from 1 to 2,678,400,000 (31 days). A row over a
     cap is refused, never truncated. The store does not enforce the per-user cap on scheduled rows: the caller does,
     because it must compute `Retry-After` from the user's rows.
-  - In memory: `PersistentStore::delayed_events` (`DelayedEventTable`), hydrated on both backends, with no lock of
-    its own (`runtime.mutex` serialises it). It indexes the rows by delay ID, by user (the scheduled rows by due
+  - In memory: `PersistentStore::delayed_events` (`DelayedEventTable`), hydrated on both backends (neither loads it for the federation worker
+    profile), with no lock of its own (`runtime.mutex` serialises it). It indexes the rows by delay ID, by user (the scheduled rows by due
     time, the finalised rows by finalised time), every scheduled row not being sent by due time (`delayed_since_ms +
     delay_ms`, then delay ID, so the earliest due is O(1)), by (user, device, room, event type, transaction ID) for
     idempotency, by event ID for sent rows, and every finalised row by finalised time for the age prune. A memory-only

@@ -235,7 +235,9 @@ deletes a user's account removes the user's rows** with `delete_delayed_events_o
 `DELETE` (a row hydration skipped is in the database only) and then erases memory; logout and device deletion do
 not (a call's delayed leave must outlive its device). Hydration counts every row it skips in
 `PersistentStore::delayed_event_rows_skipped_at_load` (a duplicate delay ID, transaction key or sent event ID counts),
-and `main.cpp` logs it once as `delayed_events.rows_skipped_at_load`; never log a skipped row's columns.
+and `main.cpp` logs it once as `delayed_events.rows_skipped_at_load`; never log a skipped row's columns. Both loaders
+read the table only when `table_load_profile_includes("delayed_events", profile)` (the worker profile skips it, counting
+no row), so one backend never loads what the other withholds.
 `store_delayed_event` does not enforce the per-user cap on
 scheduled rows: the caller does, because it computes `Retry-After`. Never log a row's `content_json`. The federation
 worker never reads the table.

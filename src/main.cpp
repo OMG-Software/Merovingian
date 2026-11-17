@@ -935,13 +935,12 @@ struct ListenerBinding final
     // Sends the delayed events (MSC4140, ADR-0825) that have fallen due: at most one send per run, in its own hold of
     // the runtime lock, and a run that left another event due waits `delayed_events_pace` (5 ms) with the lock free,
     // as the profile propagation job does (ADR-0353). It also ages out finalised rows. Otherwise it sleeps until the
-    // earliest deadline (60 s at most) and is woken when an earlier one is scheduled.
+    // earliest deadline (60 s at most, less the time the run took) and is woken when an earlier one is scheduled.
     // It only ever touches `runtime`, which outlives this function. Declared after the pools so it is stopped and
     // joined before them.
     auto delayed_events_job = merovingian::homeserver::PeriodicJob{
         "delayed-events", [&runtime](merovingian::homeserver::StopFlag const& stop) {
-            return merovingian::homeserver::send_due_delayed_events(
-                runtime, merovingian::homeserver::delayed_event_now_ms(runtime.homeserver), stop);
+            return merovingian::homeserver::run_delayed_events_job(runtime, stop);
         }};
     if (!delayed_events_job.start())
     {

@@ -16,6 +16,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
+#include "merovingian/database/TableLoadProfile.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -1115,6 +1116,55 @@ SCENARIO("Hydration skips a second sent row that claims an event ID another row 
                 REQUIRE(reopened.store.delayed_events.find_sent_by_event_id("$sent:example.org") ==
                         reopened.store.delayed_events.find("a-sent"));
                 REQUIRE(reopened.store.delayed_event_rows_skipped_at_load == 1U);
+                REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "2");
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A store opened with the federation worker profile does not load delayed events and leaves them in the file",
+         "[database][delayed-events][delayed-event-store][sqlite]")
+{
+    GIVEN("a SQLite store holding two scheduled events")
+    {
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-delayed-events-profile-" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        {
+            auto opened = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(db::store_delayed_event(opened.store, row("d-one")));
+            REQUIRE(db::store_delayed_event(opened.store, row("d-two", bob)));
+        }
+
+        WHEN("it is opened with the full profile and with the federation worker profile")
+        {
+            auto const full = db::open_sqlite_persistent_store(path.string(), db::TableLoadProfile::full);
+            auto const worker =
+                db::open_sqlite_persistent_store(path.string(), db::TableLoadProfile::federation_worker);
+
+            THEN("the full profile loads both, the worker profile loads none and counts no skipped row")
+            {
+                REQUIRE(full.ok);
+                REQUIRE(full.store.delayed_events.size() == 2U);
+                REQUIRE(worker.ok);
+                REQUIRE(worker.store.delayed_events.size() == 0U);
+                REQUIRE(worker.store.delayed_event_rows_skipped_at_load == 0U);
+            }
+        }
+
+        WHEN("it is opened with the worker profile and then with the full profile")
+        {
+            auto const worker =
+                db::open_sqlite_persistent_store(path.string(), db::TableLoadProfile::federation_worker);
+            auto const again = db::open_sqlite_persistent_store(path.string(), db::TableLoadProfile::full);
+
+            THEN("the rows are still in the file")
+            {
+                REQUIRE(worker.ok);
+                REQUIRE(again.ok);
+                REQUIRE(again.store.delayed_events.size() == 2U);
                 REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "2");
             }
         }

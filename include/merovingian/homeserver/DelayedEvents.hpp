@@ -73,4 +73,18 @@ auto wake_delayed_events(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms, StopFlag const& stop)
     -> std::chrono::milliseconds;
 
+// The wait left once `elapsed_ms` of `wait` has already passed: `wait` less `elapsed_ms`, never under the job's pace
+// (5 ms) and never over its longest wait (60 s). An `elapsed_ms` of 0 returns `wait` unchanged when `wait` is within
+// those bounds; an `elapsed_ms` of `wait` or more returns the pace. Pure; cannot throw.
+[[nodiscard]] auto delayed_events_wait_after(std::chrono::milliseconds wait, std::uint64_t elapsed_ms) noexcept
+    -> std::chrono::milliseconds;
+
+// The "delayed-events" job's whole body (main.cpp calls it; tests too): reads `delayed_event_now_ms`, runs
+// `send_due_delayed_events` with it, reads the clock again and returns that function's wait less the time the run took
+// (`delayed_events_wait_after`; none if the clock went backwards). `PeriodicJob` counts its sleep from the body's
+// return, so the time the body spent, mostly waiting for the runtime lock, must come off the wait or a deadline is
+// overslept by that much. Takes `runtime.homeserver.mutex` itself, as `send_due_delayed_events` does.
+[[nodiscard]] auto run_delayed_events_job(ClientServerRuntime& runtime, StopFlag const& stop)
+    -> std::chrono::milliseconds;
+
 } // namespace merovingian::homeserver

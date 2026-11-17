@@ -44,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -1603,5 +1604,101 @@ SCENARIO("A send action that throws is answered 500 by the backstop and leaves t
             }
         }
         fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = nullptr;
+    }
+}
+
+SCENARIO("The job's next wait has the time the run took taken off it, within the pace and the longest wait",
+         "[homeserver][delayed-events][job][pacing]")
+{
+    using std::chrono::milliseconds;
+
+    GIVEN("a wait of 10 seconds")
+    {
+        auto const wait = milliseconds{10'000};
+
+        WHEN("no time, less, exactly and more than the wait has passed")
+        {
+            auto const none = hs::delayed_events_wait_after(wait, 0U);
+            auto const less = hs::delayed_events_wait_after(wait, 3'000U);
+            auto const equal = hs::delayed_events_wait_after(wait, 10'000U);
+            auto const more = hs::delayed_events_wait_after(wait, 10'001U);
+
+            THEN("the wait shrinks by what passed and never falls under the 5 ms pace")
+            {
+                CHECK(none == milliseconds{10'000});
+                CHECK(less == milliseconds{7'000});
+                CHECK(equal == milliseconds{5});
+                CHECK(more == milliseconds{5});
+            }
+        }
+
+        WHEN("all but 2 ms of it has passed, and a huge time has passed")
+        {
+            auto const under_pace = hs::delayed_events_wait_after(wait, 9'998U);
+            auto const huge = hs::delayed_events_wait_after(wait, std::numeric_limits<std::uint64_t>::max());
+
+            THEN("the result is the pace")
+            {
+                CHECK(under_pace == milliseconds{5});
+                CHECK(huge == milliseconds{5});
+            }
+        }
+    }
+
+    GIVEN("a wait at the 60 second cap")
+    {
+        WHEN("no time and 1 second have passed")
+        {
+            auto const none = hs::delayed_events_wait_after(milliseconds{60'000}, 0U);
+            auto const one = hs::delayed_events_wait_after(milliseconds{60'000}, 1'000U);
+
+            THEN("the wait is 60 seconds and 59 seconds")
+            {
+                CHECK(none == milliseconds{60'000});
+                CHECK(one == milliseconds{59'000});
+            }
+        }
+    }
+}
+
+SCENARIO("The job body returns what the send function returns for the clock's time, and sends a due event",
+         "[homeserver][delayed-events][job][pacing]")
+{
+    GIVEN("a runtime with one event due in 30 seconds and the clock moved to its deadline less 10 seconds")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "a", 30'000U));
+        fixture.runtime().homeserver.test_delayed_event_clock_ms = t0 + 20'000U;
+        auto const expected = hs::send_due_delayed_events(fixture.runtime(), t0 + 20'000U, hs::StopFlag{});
+
+        WHEN("the job body runs")
+        {
+            auto const wait = hs::run_delayed_events_job(fixture.runtime(), hs::StopFlag{});
+
+            THEN("it returns the send function's wait and sends nothing early")
+            {
+                CHECK(wait == expected);
+                CHECK(wait == std::chrono::milliseconds{10'000});
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::scheduled);
+            }
+        }
+    }
+
+    GIVEN("a runtime with an event that is due at the clock's time")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "a", 1'000U));
+        fixture.runtime().homeserver.test_delayed_event_clock_ms = t0 + 1'000U;
+
+        WHEN("the job body runs")
+        {
+            auto const wait = hs::run_delayed_events_job(fixture.runtime(), hs::StopFlag{});
+
+            THEN("the event is sent and nothing else is scheduled, so the wait is 60 seconds")
+            {
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::sent);
+                CHECK(wait == std::chrono::milliseconds{60'000});
+            }
+        }
     }
 }

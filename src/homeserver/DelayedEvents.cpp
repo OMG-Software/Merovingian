@@ -720,4 +720,21 @@ auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms,
     return std::chrono::milliseconds{std::clamp(due_ms - now_ms, delayed_events_pace, max_job_wait_ms)};
 }
 
+auto delayed_events_wait_after(std::chrono::milliseconds wait, std::uint64_t elapsed_ms) noexcept
+    -> std::chrono::milliseconds
+{
+    // Unsigned arithmetic on a non-negative wait, compared before subtracting, so a huge `elapsed_ms` cannot wrap.
+    auto const wait_ms = wait.count() > 0 ? static_cast<std::uint64_t>(wait.count()) : std::uint64_t{0U};
+    auto const left = elapsed_ms >= wait_ms ? std::uint64_t{0U} : wait_ms - elapsed_ms;
+    return std::chrono::milliseconds{std::clamp(left, delayed_events_pace, max_job_wait_ms)};
+}
+
+auto run_delayed_events_job(ClientServerRuntime& runtime, StopFlag const& stop) -> std::chrono::milliseconds
+{
+    auto const earlier = delayed_event_now_ms(runtime.homeserver);
+    auto const wait = send_due_delayed_events(runtime, earlier, stop);
+    auto const later = delayed_event_now_ms(runtime.homeserver);
+    return delayed_events_wait_after(wait, later > earlier ? later - earlier : std::uint64_t{0U});
+}
+
 } // namespace merovingian::homeserver
