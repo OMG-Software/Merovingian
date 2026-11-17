@@ -15,6 +15,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -70,17 +71,20 @@ SCENARIO("server.delayed_events.* default to on with a one-day delay and 100 eve
 {
     GIVEN("a configuration that does not mention the section")
     {
-        auto const parsed = merovingian::config::parse_key_value_config("");
-
-        THEN("delayed events are enabled with the documented limits and nothing is reported")
+        WHEN("it is parsed")
         {
-            auto const& delayed = parsed.config.server().delayed_events;
-            CHECK(delayed.enabled);
-            CHECK(delayed.max_delay_ms == std::uint64_t{86'400'000U});
-            CHECK(delayed.max_scheduled_per_user == 100U);
-            CHECK(delayed.max_finalised_per_user == 100U);
-            CHECK(parsed.findings.empty());
-            CHECK(merovingian::config::is_valid(parsed.config));
+            auto const parsed = merovingian::config::parse_key_value_config("");
+
+            THEN("delayed events are enabled with the documented limits and nothing is reported")
+            {
+                auto const& delayed = parsed.config.server().delayed_events;
+                CHECK(delayed.enabled);
+                CHECK(delayed.max_delay_ms == std::uint64_t{86'400'000U});
+                CHECK(delayed.max_scheduled_per_user == 100U);
+                CHECK(delayed.max_finalised_per_user == 100U);
+                CHECK(parsed.findings.empty());
+                CHECK(merovingian::config::is_valid(parsed.config));
+            }
         }
     }
 }
@@ -89,28 +93,34 @@ SCENARIO("each server.delayed_events.* key is parsed", "[config][delayed-events]
 {
     GIVEN("a configuration that sets every key to a non-default value")
     {
-        auto const parsed = merovingian::config::parse_key_value_config(all_non_default);
-
-        THEN("the values are held and the configuration is valid")
+        WHEN("it is parsed")
         {
-            auto const& delayed = parsed.config.server().delayed_events;
-            CHECK_FALSE(delayed.enabled);
-            CHECK(delayed.max_delay_ms == std::uint64_t{3'600'000U});
-            CHECK(delayed.max_scheduled_per_user == 7U);
-            CHECK(delayed.max_finalised_per_user == 9U);
-            CHECK(parsed.findings.empty());
-            CHECK(merovingian::config::is_valid(parsed.config));
+            auto const parsed = merovingian::config::parse_key_value_config(all_non_default);
+
+            THEN("the values are held and the configuration is valid")
+            {
+                auto const& delayed = parsed.config.server().delayed_events;
+                CHECK_FALSE(delayed.enabled);
+                CHECK(delayed.max_delay_ms == std::uint64_t{3'600'000U});
+                CHECK(delayed.max_scheduled_per_user == 7U);
+                CHECK(delayed.max_finalised_per_user == 9U);
+                CHECK(parsed.findings.empty());
+                CHECK(merovingian::config::is_valid(parsed.config));
+            }
         }
     }
 
     GIVEN("enabled written as true")
     {
-        auto const parsed = parse_key(enabled_key, "true");
-
-        THEN("it is on")
+        WHEN("it is parsed")
         {
-            CHECK(parsed.config.server().delayed_events.enabled);
-            CHECK(parsed.findings.empty());
+            auto const parsed = parse_key(enabled_key, "true");
+
+            THEN("it is on")
+            {
+                CHECK(parsed.config.server().delayed_events.enabled);
+                CHECK(parsed.findings.empty());
+            }
         }
     }
 }
@@ -119,13 +129,23 @@ SCENARIO("server.delayed_events.enabled refuses anything that is not a boolean",
 {
     GIVEN("values that are not true or false")
     {
-        THEN("each is refused with a finding naming the key")
+        auto const values = std::vector<std::string>{"", "yes", "1", "0", "TRUE", "True", "on", "2"};
+
+        WHEN("each is parsed")
         {
-            for (auto const* bad : {"", "yes", "1", "0", "TRUE", "True", "on", "2"})
+            auto parsed = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const& bad : values)
             {
-                INFO(bad);
-                auto const parsed = parse_key(enabled_key, bad);
-                REQUIRE(has_finding(parsed.findings, enabled_key));
+                parsed.push_back(parse_key(enabled_key, bad));
+            }
+
+            THEN("each is refused with a finding naming the key")
+            {
+                for (auto index = std::size_t{0U}; index < values.size(); ++index)
+                {
+                    INFO(values[index]);
+                    REQUIRE(has_finding(parsed[index].findings, enabled_key));
+                }
             }
         }
     }
@@ -135,31 +155,51 @@ SCENARIO("server.delayed_events.max_delay_ms accepts 1000 to 2678400000 millisec
 {
     GIVEN("values at and inside the boundaries")
     {
-        THEN("each is accepted and held exactly")
+        auto const values =
+            std::vector<std::uint64_t>{1'000U, 1'001U, 3'600'000U, 86'400'000U, 2'678'399'999U, 2'678'400'000U};
+
+        WHEN("each is parsed")
         {
-            for (auto const value :
-                 {std::uint64_t{1'000U}, std::uint64_t{1'001U}, std::uint64_t{3'600'000U}, std::uint64_t{86'400'000U},
-                  std::uint64_t{2'678'399'999U}, std::uint64_t{2'678'400'000U}})
+            auto parsed = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const value : values)
             {
-                INFO(value);
-                auto const parsed = parse_key(delay_key, std::to_string(value));
-                REQUIRE_FALSE(has_finding(parsed.findings, delay_key));
-                REQUIRE(parsed.config.server().delayed_events.max_delay_ms == value);
-                REQUIRE(merovingian::config::is_valid(parsed.config));
+                parsed.push_back(parse_key(delay_key, std::to_string(value)));
+            }
+
+            THEN("each is accepted and held exactly")
+            {
+                for (auto index = std::size_t{0U}; index < values.size(); ++index)
+                {
+                    INFO(values[index]);
+                    REQUIRE_FALSE(has_finding(parsed[index].findings, delay_key));
+                    REQUIRE(parsed[index].config.server().delayed_events.max_delay_ms == values[index]);
+                    REQUIRE(merovingian::config::is_valid(parsed[index].config));
+                }
             }
         }
     }
 
     GIVEN("values outside the range, or not an unsigned integer")
     {
-        THEN("each is refused with a finding naming the key")
+        auto const values = std::vector<std::string>{
+            "0",   "1",   "999",   "2678400001", "4294967296", "99999999999999999999", "-1", "-86400000", "", "abc",
+            "1.5", "1e6", "+1000", "0x3e8",      "1h"};
+
+        WHEN("each is parsed")
         {
-            for (auto const* bad : {"0", "1", "999", "2678400001", "4294967296", "99999999999999999999", "-1",
-                                    "-86400000", "", "abc", "1.5", "1e6", "+1000", "0x3e8", "1h"})
+            auto parsed = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const& bad : values)
             {
-                INFO(bad);
-                auto const parsed = parse_key(delay_key, bad);
-                REQUIRE(has_finding(parsed.findings, delay_key));
+                parsed.push_back(parse_key(delay_key, bad));
+            }
+
+            THEN("each is refused with a finding naming the key")
+            {
+                for (auto index = std::size_t{0U}; index < values.size(); ++index)
+                {
+                    INFO(values[index]);
+                    REQUIRE(has_finding(parsed[index].findings, delay_key));
+                }
             }
         }
     }
@@ -169,38 +209,61 @@ SCENARIO("the per-user delayed event counts accept 1 to 1000", "[config][delayed
 {
     GIVEN("values at and inside the boundaries")
     {
-        THEN("each is accepted and held exactly for both counts")
-        {
-            for (auto const value : {1U, 2U, 100U, 999U, 1000U})
-            {
-                INFO(value);
-                auto const scheduled = parse_key(scheduled_key, std::to_string(value));
-                REQUIRE_FALSE(has_finding(scheduled.findings, scheduled_key));
-                REQUIRE(scheduled.config.server().delayed_events.max_scheduled_per_user == value);
-                REQUIRE(merovingian::config::is_valid(scheduled.config));
+        auto const values = std::vector<unsigned>{1U, 2U, 100U, 999U, 1000U};
 
-                auto const finalised = parse_key(finalised_key, std::to_string(value));
-                REQUIRE_FALSE(has_finding(finalised.findings, finalised_key));
-                REQUIRE(finalised.config.server().delayed_events.max_finalised_per_user == value);
-                REQUIRE(merovingian::config::is_valid(finalised.config));
+        WHEN("each is parsed for both counts")
+        {
+            auto scheduled = std::vector<merovingian::config::ConfigParseResult>{};
+            auto finalised = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const value : values)
+            {
+                scheduled.push_back(parse_key(scheduled_key, std::to_string(value)));
+                finalised.push_back(parse_key(finalised_key, std::to_string(value)));
+            }
+
+            THEN("each is accepted and held exactly for both counts")
+            {
+                for (auto index = std::size_t{0U}; index < values.size(); ++index)
+                {
+                    INFO(values[index]);
+                    REQUIRE_FALSE(has_finding(scheduled[index].findings, scheduled_key));
+                    REQUIRE(scheduled[index].config.server().delayed_events.max_scheduled_per_user == values[index]);
+                    REQUIRE(merovingian::config::is_valid(scheduled[index].config));
+
+                    REQUIRE_FALSE(has_finding(finalised[index].findings, finalised_key));
+                    REQUIRE(finalised[index].config.server().delayed_events.max_finalised_per_user == values[index]);
+                    REQUIRE(merovingian::config::is_valid(finalised[index].config));
+                }
             }
         }
     }
 
     GIVEN("values outside the range, or not an unsigned integer")
     {
-        THEN("each is refused with a finding naming its own key")
-        {
-            for (auto const* bad : {"0", "1001", "1000000", "4294967296", "-1", "-100", "", "abc", "1.5"})
-            {
-                INFO(bad);
-                auto const scheduled = parse_key(scheduled_key, bad);
-                REQUIRE(has_finding(scheduled.findings, scheduled_key));
-                REQUIRE_FALSE(has_finding(scheduled.findings, finalised_key));
+        auto const values =
+            std::vector<std::string>{"0", "1001", "1000000", "4294967296", "-1", "-100", "", "abc", "1.5"};
 
-                auto const finalised = parse_key(finalised_key, bad);
-                REQUIRE(has_finding(finalised.findings, finalised_key));
-                REQUIRE_FALSE(has_finding(finalised.findings, scheduled_key));
+        WHEN("each is parsed for both counts")
+        {
+            auto scheduled = std::vector<merovingian::config::ConfigParseResult>{};
+            auto finalised = std::vector<merovingian::config::ConfigParseResult>{};
+            for (auto const& bad : values)
+            {
+                scheduled.push_back(parse_key(scheduled_key, bad));
+                finalised.push_back(parse_key(finalised_key, bad));
+            }
+
+            THEN("each is refused with a finding naming its own key")
+            {
+                for (auto index = std::size_t{0U}; index < values.size(); ++index)
+                {
+                    INFO(values[index]);
+                    REQUIRE(has_finding(scheduled[index].findings, scheduled_key));
+                    REQUIRE_FALSE(has_finding(scheduled[index].findings, finalised_key));
+
+                    REQUIRE(has_finding(finalised[index].findings, finalised_key));
+                    REQUIRE_FALSE(has_finding(finalised[index].findings, scheduled_key));
+                }
             }
         }
     }
@@ -212,10 +275,16 @@ SCENARIO("server.delayed_events.* changes are diffed by the reload plan and need
     {
         auto const before = merovingian::config::parse_key_value_config("");
         auto const after = merovingian::config::parse_key_value_config(all_non_default);
+        auto const keys = std::vector<std::string_view>{enabled_key, delay_key, scheduled_key, finalised_key};
 
-        WHEN("a reload is planned")
+        WHEN("a reload is planned and each key is classified")
         {
             auto const plan = merovingian::config::build_reload_plan(before.config, after.config);
+            auto policies = std::vector<merovingian::config::ReloadPolicy>{};
+            for (auto const key : keys)
+            {
+                policies.push_back(merovingian::config::reload_policy_for_key(key));
+            }
 
             THEN("each key is named and the plan needs a restart")
             {
@@ -228,11 +297,10 @@ SCENARIO("server.delayed_events.* changes are diffed by the reload plan and need
 
             THEN("the policy classifies each key restart-required")
             {
-                for (auto const key : {enabled_key, delay_key, scheduled_key, finalised_key})
+                for (auto index = std::size_t{0U}; index < keys.size(); ++index)
                 {
-                    INFO(key);
-                    CHECK(merovingian::config::reload_policy_for_key(key) ==
-                          merovingian::config::ReloadPolicy::restart_required);
+                    INFO(keys[index]);
+                    CHECK(policies[index] == merovingian::config::ReloadPolicy::restart_required);
                 }
             }
         }
@@ -241,16 +309,25 @@ SCENARIO("server.delayed_events.* changes are diffed by the reload plan and need
     GIVEN("two configurations that differ in one key only")
     {
         auto const before = merovingian::config::parse_key_value_config("");
+        auto const keys = std::vector<std::string_view>{enabled_key, delay_key, scheduled_key, finalised_key};
 
-        THEN("the plan names exactly that key")
+        WHEN("a reload is planned for each key")
         {
-            for (auto const key : {enabled_key, delay_key, scheduled_key, finalised_key})
+            auto plans = std::vector<merovingian::config::ReloadPlan>{};
+            for (auto const key : keys)
             {
-                INFO(key);
                 auto const after = parse_key(key, key == enabled_key ? "false" : "5000");
-                auto const plan = merovingian::config::build_reload_plan(before.config, after.config);
-                REQUIRE(plan.changes().size() == 1U);
-                REQUIRE(reported_in_plan(plan, key));
+                plans.push_back(merovingian::config::build_reload_plan(before.config, after.config));
+            }
+
+            THEN("the plan names exactly that key")
+            {
+                for (auto index = std::size_t{0U}; index < keys.size(); ++index)
+                {
+                    INFO(keys[index]);
+                    REQUIRE(plans[index].changes().size() == 1U);
+                    REQUIRE(reported_in_plan(plans[index], keys[index]));
+                }
             }
         }
     }
