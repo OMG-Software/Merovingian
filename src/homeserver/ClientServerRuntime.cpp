@@ -180,6 +180,7 @@
 #include "merovingian/sync/PreparedRoomEventFilter.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
 #include "merovingian/sync/ReceiptVisibility.hpp"
+#include "merovingian/sync/ResolvedState.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
 #include "merovingian/sync/RoomListResult.hpp"
@@ -5918,60 +5919,46 @@ namespace
         });
     }
 
-    // ADR-0819: the IDs of the state events that make a joined room's state at `position` differ from its state at
-    // `since_ordering`, for `state_after`. A key can change with no event of the window about it (state resolution can
-    // move it back), so this compares the two states; it does not list the window's state events.
+    // ADR-0827: a joined room's resolved state as of `position`, which is what a `state_after` client is told and what
+    // a later delta is measured from. Rebuilt from the current state and the state change log; where the log does not
+    // reach `position` (at or before start-up, or past what it holds for the room) it is the state ADR-0247 reads, and
+    // a delta from such a position is never taken, so the two cannot disagree.
+    [[nodiscard]] auto resolved_state_event_ids_at_position(database::PersistentStore const& store,
+                                                            std::string_view room_id, std::uint64_t position)
+        -> std::vector<std::string>
+    {
+        if (auto ids = sync::resolved_state_at(store, room_id, position); ids.has_value())
+        {
+            return std::move(*ids);
+        }
+        return state_event_ids_at_position(store, room_id, position);
+    }
+
+    // ADR-0827: the IDs of the state events that make a joined room's resolved state at `position` differ from its
+    // resolved state at `since_ordering`, the state the response carrying that token told the client. Both are read
+    // from the one record of changes, so the delta is exact whatever the event graph: a fork at `since`, a key state
+    // resolution moved back, and a backfilled event ordered at or below `since` (its change is filed above every
+    // position already answered) are all found, and a key that changed and changed back is not sent.
     //
-    // Cost: nothing for a room with no event since `since` (one look at the newest row). Otherwise the anchor at
-    // `since` is a binary search of the room's index plus the withheld rows stepped over below it, however many rows
-    // the window holds (`state_anchor_rows_examined`). With an unforked graph, then the state group rows between the
-    // two points, none for a window of messages. Otherwise (a fork, a snapshot between the points, an unreadable chain)
-    // it reads the room's state twice, its own rows only.
+    // Cost: the room's changes above `since` and one lookup by key for each key they name; nothing for a window of
+    // messages. Only a `since` the log does not cover (answered before start-up, or older than what the log holds for
+    // the room) reads the room's whole state, once: an update the client already holds is harmless.
     [[nodiscard]] auto joined_state_changes(database::PersistentStore const& store, std::string_view room_id,
                                             std::uint64_t since_ordering, std::uint64_t position)
         -> std::vector<std::string>
     {
-        auto newest_first = store.events.room_in_stream_order(room_id) | std::views::reverse;
-        if (std::ranges::empty(newest_first) || (*newest_first.begin()).stream_ordering <= since_ordering)
+        if (auto changes = sync::resolved_state_changes(store, room_id, since_ordering, position); changes.has_value())
         {
+            return std::move(*changes);
+        }
+        auto newest_first = store.events.room_in_stream_order(room_id) | std::views::reverse;
+        if ((std::ranges::empty(newest_first) || (*newest_first.begin()).stream_ordering <= since_ordering) &&
+            !store.state_change_log.has_change_after(room_id, since_ordering))
+        {
+            // Nothing happened in the room since `since`, in this process or as far as its events show.
             return {};
         }
-        auto const access = sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U};
-        auto const* const since_anchor = sync::state_anchor_event(store, room_id, access, since_ordering);
-        auto const since_group = since_anchor == nullptr
-                                     ? std::optional<std::string>{}
-                                     : database::find_event_state_group(store, since_anchor->event_id);
-        if (since_group.has_value())
-        {
-            // With one extremity the current state is that event's recorded state (ADR-0064). The forward extremity
-            // index answers for one room: it costs that room's tips.
-            auto const tips = store.forward_extremities.tips_of_room(room_id);
-            if (tips.size() == 1U)
-            {
-                auto const tip = store.events.find(tips.front());
-                auto const tip_group = tip != store.events.end() && tip->stream_ordering <= position
-                                           ? database::find_event_state_group(store, tip->event_id)
-                                           : std::optional<std::string>{};
-                if (tip_group.has_value())
-                {
-                    if (auto changes = sync::state_changes_along_chain(store, *since_group, *tip_group);
-                        changes.has_value())
-                    {
-                        return std::move(*changes);
-                    }
-                }
-            }
-        }
-        auto changes = state_event_ids_at_position(store, room_id, position);
-        // A `since` older than anything recorded here gets all of it: an update the client already holds is harmless.
-        if (since_anchor != nullptr)
-        {
-            if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
-            {
-                remove_state_held(changes, *held);
-            }
-        }
-        return changes;
+        return resolved_state_event_ids_at_position(store, room_id, position);
     }
 
     // Whether a timeline carries the join of `user_id`: the join then tells the client everything the spec's "own
@@ -6049,6 +6036,15 @@ namespace
                                                 std::string_view sender, UnreadableMember unreadable)
         -> std::optional<std::string>
     {
+        // ADR-0827: a joined room's member as of `position` is the resolved one, as its `state_after` delta reads it.
+        if (access.kind == sync::RoomReadKind::current)
+        {
+            if (auto const resolved = sync::resolved_state_event_at(store, room_id, "m.room.member", sender, position);
+                resolved.has_value())
+            {
+                return resolved->empty() ? std::optional<std::string>{} : std::optional<std::string>{*resolved};
+            }
+        }
         auto const current = database::find_current_state_event_id(store, room_id, "m.room.member", sender);
         if (current.has_value())
         {
@@ -6403,8 +6399,9 @@ namespace
     // news was dropped (ADR-0658).
     [[nodiscard]] auto select_sync_rooms(ClientServerRuntime const& rt, database::PersistentStore const& store,
                                          std::string_view user, sync::SyncFilter const& filter, bool incremental,
-                                         std::uint64_t since_ordering, std::uint64_t since_sync_stream_id,
-                                         AccountDataByRoom const& user_account_data) -> std::vector<LocalRoom const*>
+                                         bool use_state_after, std::uint64_t since_ordering,
+                                         std::uint64_t since_sync_stream_id, AccountDataByRoom const& user_account_data)
+        -> std::vector<LocalRoom const*>
     {
         struct Candidate final
         {
@@ -6436,6 +6433,12 @@ namespace
                 auto const& room_id = candidate.room->room_id;
                 if (candidate.activity > since_ordering ||
                     room_typing_stream_id_for(rt.homeserver, room_id) > since_sync_stream_id)
+                {
+                    return false;
+                }
+                // ADR-0827: state resolution can change a room's state with no event above `since` (a backfilled
+                // event's change is filed above every position answered); `state_after` reports it. One lookup.
+                if (use_state_after && store.state_change_log.has_change_after(room_id, since_ordering))
                 {
                     return false;
                 }
@@ -6665,14 +6668,13 @@ namespace
                 {
                     ids->clear();
                 }
-                else if (auto const* const since_anchor =
-                             sync::state_anchor_event(store, request.room_id, request.access, *delta_since);
-                         since_anchor != nullptr)
+                else if (auto const held = sync::resolved_state_at(store, request.room_id, *delta_since);
+                         held.has_value())
                 {
-                    if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
-                    {
-                        remove_state_held(*ids, *held);
-                    }
+                    // ADR-0827: the user was joined at `since`, so the client holds the resolved state it was told
+                    // then. A `since` the log does not cover gets the whole readable state: an update it already
+                    // holds is harmless.
+                    remove_state_held(*ids, *held);
                 }
             }
             auto selector = std::optional<LazyRoomSelector>{};
@@ -7037,6 +7039,9 @@ namespace
         // holds nothing above it, or the next sync, starting from it, would
         // deliver that event again.
         auto const sync_position = visible_stream_position(rt.homeserver.database);
+        // ADR-0827: a state change recorded after this is filed above `sync_position`, so the state a `state_after`
+        // client is told as of it never changes afterwards.
+        store.state_change_log.note_served(sync_position);
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
@@ -7081,8 +7086,9 @@ namespace
         // rows, not by walking every room on the server; an incremental sync leaves out a room that cannot have news
         // without charging it to max_sync_rooms; and when more rooms remain than the cap the most recently active are
         // served.
-        auto const served_rooms = select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state,
-                                                    since_ordering, since_sync_stream_id, user_account_data);
+        auto const served_rooms =
+            select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state, use_state_after,
+                              since_ordering, since_sync_stream_id, user_account_data);
 
         for (auto const* const served_room : served_rooms)
         {
@@ -7200,8 +7206,10 @@ namespace
                 // filter hides lies before `next_batch`, and no later sync would report it.
                 if (state_path)
                 {
-                    state_events =
-                        build_state_events_at_position(store, filter.room.state, room.room_id, sync_position, lazy_ref);
+                    // ADR-0827: the resolved state as of the position, the baseline of the next delta.
+                    state_events = build_state_events_array_for_ids(
+                        store, filter.room.state,
+                        resolved_state_event_ids_at_position(store, room.room_id, sync_position), lazy_ref);
                 }
                 else
                 {

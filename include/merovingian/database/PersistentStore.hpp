@@ -88,6 +88,7 @@
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/StateBeforeMemo.hpp"
+#include "merovingian/database/StateChangeLog.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
@@ -613,6 +614,12 @@ struct PersistentStore final
     // How many times each room's current state, or the status or JSON of one of its events, has changed
     // (`room_state_revision`, ADR-0624). In memory only.
     std::unordered_map<std::string, std::uint64_t> room_state_revisions{};
+    // Every change to a room's current state since start-up, by the sync position from which a client sees it, for
+    // `/sync`'s `state_after` (ADR-0827). In memory only, and inactive until the main process starts it. The four
+    // writers of current state (`apply_store_event_with_state`, `apply_current_state`, `store_state` and
+    // `remove_current_state_rows`) record into it, and `apply_room_snapshot` forgets the room. A new writer of `state`
+    // records too.
+    StateChangeLog state_change_log{};
     // Stored events parsed for state resolution, for tests that prove cost.
     ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
@@ -961,7 +968,10 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
-[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+// `causing_stream_ordering` is the stream ordering of the event whose storing made this change, 0 for none; the state
+// change log files the change there or above (ADR-0827).
+[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state,
+                               std::uint64_t causing_stream_ordering = 0U) -> bool;
 
 // The statements that make `state` current, replacing `previous_event_id`
 // (empty for a key with no current_state row yet), and record the transition.
@@ -970,8 +980,10 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto prepare_current_state(PersistentStateEvent state, std::string previous_event_id)
     -> PreparedCurrentState;
 // Mirrors a committed prepare_current_state into current_state and the
-// state_transitions index.
-auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void;
+// state_transitions index, and records the change in the state change log as made by the event at
+// `causing_stream_ordering` (0 for none, ADR-0827).
+auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared,
+                         std::uint64_t causing_stream_ordering = 0U) -> void;
 // True when `state` names a stored event of that type and state key in that room.
 [[nodiscard]] auto state_matches_stored_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool;
 // With `membership`, also writes that membership row and invite change in the same
@@ -989,9 +1001,11 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
                                                MembershipProjection projection) -> bool;
 // Removes `keys` (event type, state key) from `room_id`'s current state and writes `memberships`, in one transaction,
 // then mirrors both, keeping the state indexes in step (ADR-0615). Costs the rows of the rooms that lose or move a row.
+// Each key removed is recorded in the state change log as made by the event at `causing_stream_ordering` (ADR-0827).
 [[nodiscard]] auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
                                              std::vector<std::pair<std::string, std::string>> const& keys,
-                                             std::vector<MembershipProjection> const& memberships) -> bool;
+                                             std::vector<MembershipProjection> const& memberships,
+                                             std::uint64_t causing_stream_ordering = 0U) -> bool;
 // DB-4: makes each `membership` row agree with its room's current m.room.member
 // state event, which is the user's membership (Matrix v1.19 "m.room.member").
 // A row is rewritten to the event's membership when the row is missing, when it

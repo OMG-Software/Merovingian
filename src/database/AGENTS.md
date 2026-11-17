@@ -31,6 +31,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
 | `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
 | `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
+| `StateChangeLog.cpp` | `StateChangeLog`, every change to a room's resolved current state since start-up, filed at the sync position from which a client sees it and never at or below one already served; bounded per room (1,024) and in all (65,536), in memory only, started by the main process alone (ADR-0827) |
 | `StateBeforeMemo.cpp` | `StateBeforeMemo`, the group holding the state before an event by its distinct prev groups, bounded and in memory only (ADR-0694) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
@@ -135,6 +136,16 @@ state.size()` and the row a position names still matches. Every code path that a
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
 and both hydration paths) or, for a deletion, goes through `remove_current_state_rows` (ADR-0615); a new one must too. Do not scan `state` for one key or one room in a handler.
 Both readers add the rows they look at to `state_rows_examined`; tests prove a handler's state reads with it.
+
+## The state change log (ADR-0827)
+
+`PersistentStore::state_change_log` is what `/sync`'s `state_after` reads (see `src/sync/AGENTS.md`). Every in-memory change
+of `state` in the main process records into it: `apply_store_event_with_state` (at the event's stream ordering),
+`apply_current_state`, `store_state` and `remove_current_state_rows` (each with the causing event's ordering, which state
+resolution passes through, 0 when none), and `apply_room_snapshot` calls `forget_room`. A new writer of `state` records too,
+with the value the mirror held before (not the one a statement was prepared against), or a client is told a delta that is
+wrong. The log is started after hydration and repair, so start-up writes are not changes; the federation worker never starts
+it. It is not thread-safe: every caller holds `runtime.mutex`.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
 

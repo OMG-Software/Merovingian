@@ -366,6 +366,8 @@ shell = find_program('sh')
       'unit/test_join_batch_persistence.cpp',
       'unit/test_room_position_index.cpp',
       'unit/test_state_index.cpp',
+      'unit/test_state_change_log.cpp',
+      'unit/test_resolved_state.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_group_tables.cpp',
       'unit/test_reload_room_state_groups.cpp',

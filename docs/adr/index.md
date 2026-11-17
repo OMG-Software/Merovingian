@@ -705,3 +705,4 @@
 * [0824 - A delayed event is a stored row that is kept after it is finalised, bounded per user, and deleted with the account](0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md)
 * [0825 - A due delayed event is sent by one job through the ordinary send path, never early and at least once](0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)
 * [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
+* [0827 - A state_after delta is measured from an in-memory log of resolved state changes](0827-a-state-after-delta-is-measured-from-an-in-memory-log-of-resolved-state-changes.md)

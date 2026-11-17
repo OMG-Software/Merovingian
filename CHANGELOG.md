@@ -15,12 +15,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
-* None.
+* `use_state_after`: a room forked at `since` now gets exactly what changed since what the client was told, read from an
+  in-memory log of state changes, and so does a left room (ADR-0827).
 
 ## Release notes
 
 Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, and an exact
-`state_after` on `/sync`.
+`state_after` on `/sync`. After a restart, the first `state_after` sync of each room with news carries its whole state
+once.
 
 # Version 1.1.2
 

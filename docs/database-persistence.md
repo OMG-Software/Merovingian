@@ -699,6 +699,12 @@ value. Test fixtures that do not exercise persistence select it through
   memory only: at most 1024 entries, the oldest dropped first, each naming the
   group that holds the state before an event for a room, a resolution context and
   sorted distinct prev groups. The same three writers forget the room.
+  `PersistentStore::state_change_log` is a `StateChangeLog` (ADR-0827), in memory
+  only and started by the main process after hydration: every change to a room's
+  current state, filed at the sync position from which a client sees it, at most
+  1024 per room and 65536 in all, the oldest dropped first. The four writers of
+  `current_state` record into it and `apply_room_snapshot` forgets the room;
+  `/sync`'s `state_after` reads it. No table backs it, so nothing is migrated.
 
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`

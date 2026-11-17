@@ -6,9 +6,7 @@
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/GroupLookupResult.hpp"
 
-#include <set>
 #include <unordered_set>
-#include <utility>
 
 namespace merovingian::sync
 {
@@ -42,35 +40,6 @@ auto lookup_state_in_group(database::PersistentStore const& store, std::string_v
         }
         current = *group->parent_state_group_id;
     }
-}
-
-auto state_changes_along_chain(database::PersistentStore const& store, std::string_view ancestor_id,
-                               std::string_view group_id) -> std::optional<std::vector<std::string>>
-{
-    auto changes = std::vector<std::string>{};
-    auto seen = std::set<std::pair<std::string_view, std::string_view>>{};
-    auto current = group_id;
-    for (auto hops = std::size_t{0U}; hops <= events::max_state_group_delta_depth; ++hops)
-    {
-        if (current == ancestor_id)
-        {
-            return changes;
-        }
-        auto const group = store.state_groups.find(current);
-        if (group == store.state_groups.end() || !group->parent_state_group_id.has_value())
-        {
-            return std::nullopt;
-        }
-        for (auto const& entry : store.state_group_state.entries_of(current))
-        {
-            if (seen.emplace(entry.event_type, entry.state_key).second)
-            {
-                changes.push_back(entry.event_id);
-            }
-        }
-        current = *group->parent_state_group_id;
-    }
-    return std::nullopt;
 }
 
 } // namespace merovingian::sync

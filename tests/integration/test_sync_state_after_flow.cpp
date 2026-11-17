@@ -5,9 +5,18 @@
 // client-server stack (ADR-0818 to ADR-0820). What the spec states is in
 // tests/conformance/test_sync_state_after_conformance.cpp.
 #include "../support/JsonTestSupport.hpp"
+#include "../support/StatePduSupport.hpp"
 #include "../support/SyncStateAfterSupport.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,6 +32,48 @@ using namespace merovingian::tests;
 using namespace merovingian::tests::state_after_support;
 
 constexpr auto k_full_state_after = std::string_view{"&full_state=true&use_state_after=true"};
+
+constexpr auto k_topic_a = std::string_view{"$topic_a:example.org"};
+constexpr auto k_topic_b = std::string_view{"$topic_b:example.org"};
+
+// The event ID of the room's current `m.room.topic`, or "" when it has none.
+[[nodiscard]] auto current_topic(ClientServerRuntime const& rt, std::string const& room) -> std::string
+{
+    return merovingian::database::find_current_state_event_id(rt.homeserver.database.persistent_store, room,
+                                                              "m.room.topic", "")
+        .value_or(std::string{});
+}
+
+// Forks alice's room through the ingestion path, so that the room's resolved state and the state recorded for its
+// newest event disagree: topic A on the room's tip, then a name change after A and a topic B after A, each on its own
+// branch. State resolution v2 orders the two topics, both at the same mainline position, by `origin_server_ts`, and A
+// (9000) wins over B (2000): the room's topic is A, while B, the newest event, records topic B.
+auto fork_between_two_topics(ClientServerRuntime& rt, std::string const& room) -> void
+{
+    namespace pdus = merovingian::tests::state_pdu_support;
+    auto& hs = rt.homeserver;
+    auto const& store = hs.database.persistent_store;
+    auto const alice_id = user_id("alice");
+    auto const auth_ids = std::vector<std::string>{
+        merovingian::database::find_current_state_event_id(store, room, "m.room.power_levels", "").value_or(""),
+        merovingian::database::find_current_state_event_id(store, room, "m.room.member", alice_id).value_or("")};
+    auto const tips = store.forward_extremities.tips_of_room(room);
+    REQUIRE(tips.size() == 1U);
+    auto const accepted = [&](merovingian::federation::InboundPduEnvelope const& pdu) {
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(hs, pdu).status ==
+                merovingian::federation::PduIngestionStatus::accepted);
+    };
+    accepted(pdus::make_topic_pdu(room, std::string{k_topic_a}, alice_id, "topic-A", {tips.front()}, auth_ids, 9000));
+    auto name = Object{};
+    name.push_back(
+        merovingian::canonicaljson::make_member("name", merovingian::canonicaljson::Value{std::string{"witness"}}));
+    accepted(pdus::make_state_pdu(room, "$witness:example.org", alice_id, "m.room.name", std::move(name),
+                                  {std::string{k_topic_a}}, auth_ids, 2500));
+    accepted(pdus::make_topic_pdu(room, std::string{k_topic_b}, alice_id, "topic-B", {std::string{k_topic_a}}, auth_ids,
+                                  2000));
+    REQUIRE(store.forward_extremities.tips_of_room(room).size() == 2U);
+    REQUIRE(current_topic(rt, room) == k_topic_a);
+}
 
 } // namespace
 
@@ -443,6 +494,174 @@ SCENARIO("A lazy-loaded member whose response was lost is sent again in state_af
                 REQUIRE(member_keys(after).contains(user_id("alice")));
                 REQUIRE(content_of(after, "m.room.member", user_id("bob"), "membership") == "join");
                 REQUIRE(event_types(after).contains("m.room.create"));
+            }
+        }
+    }
+}
+
+// The review of 1.1.1's `state_after` (ADR-0827): the client is told the room's resolved state. With the room forked at
+// `since`, the state recorded for the newest event at or below `since` is one branch's, so a delta measured from it
+// lost a key that resolution later moved back to that branch's value: neither the chain walk nor the fallback saw a
+// difference, and a `state_after` client, which takes no state from the timeline, kept the old value.
+SCENARIO("A state_after delta is exact when the room was forked at since",
+         "[integration][sync][state-after][flow][state-change-log]")
+{
+    GIVEN("a forked room whose resolved topic is not the newest event's recorded topic, synced by alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(state_after_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const room = create_room(rt, alice, "public_chat");
+        fork_between_two_topics(rt, room);
+        auto const initial = sync(rt, alice, k_no_filter, {}, k_state_after);
+        REQUIRE(topics_in(events_of(required_room(initial, "join", room), "state_after")) ==
+                std::vector<std::string>{"topic-A"});
+
+        WHEN("a message arrives, resolution moves the topic back to B, and alice syncs with use_state_after=true")
+        {
+            say(rt, alice, room, "after the fork");
+            // recompute_current_state writes a resolution's outcome through this writer.
+            REQUIRE(merovingian::database::store_state(
+                rt.homeserver.database.persistent_store,
+                merovingian::database::PersistentStateEvent{room, "m.room.topic", "", std::string{k_topic_b}}));
+            REQUIRE(current_topic(rt, room) == k_topic_b);
+            auto const synced = sync(rt, alice, k_no_filter, initial.next_batch, k_state_after);
+
+            THEN("state_after holds topic B, which the room now has and alice was never told")
+            {
+                auto const after = events_of(required_room(synced, "join", room), "state_after");
+                REQUIRE(topics_in(after) == std::vector<std::string>{"topic-B"});
+            }
+        }
+        WHEN("only a message arrives and alice syncs with use_state_after=true")
+        {
+            say(rt, alice, room, "after the fork");
+            REQUIRE(current_topic(rt, room) == k_topic_a);
+            auto const synced = sync(rt, alice, k_no_filter, initial.next_batch, k_state_after);
+
+            THEN("state_after holds no topic: alice already has the room's topic")
+            {
+                auto const after = events_of(required_room(synced, "join", room), "state_after");
+                REQUIRE(topics_in(after).empty());
+            }
+        }
+    }
+}
+
+// ADR-0827: a delta reads the room's changes since `since` from the state change log, so a message in a forked room
+// costs no read of the room's state, where the fallback this replaced read the whole of it twice.
+SCENARIO("A state_after delta of a forked room with only a message reads none of the room's state",
+         "[integration][sync][state-after][flow][state-change-log][state-index]")
+{
+    GIVEN("a forked room with sixty more state events, synced by alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(state_after_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const room = create_room(rt, alice, "public_chat");
+        for (auto index = 0; index < 60; ++index)
+        {
+            auto const sent =
+                call(rt, "PUT", "/_matrix/client/v3/rooms/" + room + "/state/org.example.key/k" + std::to_string(index),
+                     alice, R"({"value":"v"})");
+            REQUIRE(sent.status == 200U);
+        }
+        fork_between_two_topics(rt, room);
+        auto const initial = sync(rt, alice, k_no_filter, {}, k_state_after);
+        auto const& store = rt.homeserver.database.persistent_store;
+
+        WHEN("a message arrives and alice syncs with use_state_after=true")
+        {
+            say(rt, alice, room, "hello");
+            auto const before = store.state_rows_examined.value();
+            auto const synced = sync(rt, alice, k_no_filter, initial.next_batch, k_state_after);
+            auto const examined = store.state_rows_examined.value() - before;
+
+            THEN("state_after is empty, and far fewer than sixty state rows were read")
+            {
+                REQUIRE(events_of(required_room(synced, "join", room), "state_after").empty());
+                REQUIRE(examined < 30U);
+            }
+        }
+    }
+}
+
+// ADR-0827: a left room's `state_after` is measured from the state the client was told at `since`, the resolved state,
+// not the state recorded for the newest event at `since`, which on a forked room is one branch's.
+SCENARIO("A left room's state_after is measured from what the client was told when the room was forked",
+         "[integration][sync][state-after][flow][state-change-log]")
+{
+    GIVEN("a forked room bob was told the resolved topic of, and then left")
+    {
+        auto started = merovingian::homeserver::start_client_server(state_after_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        room_post(rt, bob, room, "join");
+        fork_between_two_topics(rt, room);
+        auto const initial = sync(rt, bob, k_no_filter, {}, k_state_after);
+        REQUIRE(topics_in(events_of(required_room(initial, "join", room), "state_after")) ==
+                std::vector<std::string>{"topic-A"});
+        room_post(rt, bob, room, "leave");
+        REQUIRE(current_topic(rt, room) == k_topic_a);
+
+        WHEN("bob syncs with use_state_after=true")
+        {
+            auto const synced = sync(rt, bob, k_no_filter, initial.next_batch, k_state_after);
+            auto const& left = required_room(synced, "leave", room);
+
+            THEN("state_after holds no topic, which bob already has, and his leave is reported")
+            {
+                auto const after = events_of(left, "state_after");
+                REQUIRE(topics_in(after).empty());
+                auto const timeline = events_of(left, "timeline");
+                REQUIRE(member_keys(timeline).contains(user_id("bob")));
+            }
+        }
+    }
+}
+
+// ADR-0827: a `since` answered before the change log started (an earlier process, or a database restored or upgraded
+// from one) is not trusted for a delta: the room's whole state is sent once, and the next sync is a delta again.
+SCENARIO("A state_after since from before the change log started gets the room's whole state once",
+         "[integration][sync][state-after][flow][state-change-log]")
+{
+    GIVEN("a room alice synced before the server's change log started again, as at a restart")
+    {
+        auto started = merovingian::homeserver::start_client_server(state_after_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const room = create_room(rt, alice, "public_chat");
+        auto const initial = sync(rt, alice, k_no_filter, {}, k_state_after);
+        auto& store = rt.homeserver.database.persistent_store;
+        store.state_change_log.start(merovingian::homeserver::visible_stream_position(rt.homeserver.database));
+
+        WHEN("the topic changes and alice syncs from her old token")
+        {
+            set_topic(rt, alice, room, "after the restart");
+            auto const synced = sync(rt, alice, k_no_filter, initial.next_batch, k_state_after);
+
+            THEN("state_after is the room's whole state")
+            {
+                auto const after = events_of(required_room(synced, "join", room), "state_after");
+                REQUIRE(event_types(after).contains("m.room.create"));
+                REQUIRE(topics_in(after) == std::vector<std::string>{"after the restart"});
+            }
+
+            AND_WHEN("only a message arrives and she syncs from the new token")
+            {
+                say(rt, alice, room, "hello");
+                auto const next = sync(rt, alice, k_no_filter, synced.next_batch, k_state_after);
+
+                THEN("state_after is a delta again, and empty")
+                {
+                    REQUIRE(events_of(required_room(next, "join", room), "state_after").empty());
+                }
             }
         }
     }

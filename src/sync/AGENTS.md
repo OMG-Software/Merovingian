@@ -30,6 +30,7 @@ Spec authority:
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
+| `ResolvedState.cpp` | `resolved_state_at`, `resolved_state_changes`, `resolved_state_event_at`: a room's resolved state as of a sync position, the exact delta between two, and one key's value, rebuilt from the current state and `PersistentStore::state_change_log` (ADR-0827) |
 | `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
 | `SlidingSync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
 | `DeviceListDelta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
@@ -359,17 +360,23 @@ room and, when the user is local, for them. The membership acceptor (`send_join`
 `device_lists.left` for remote users. A user who joins over federation is also `changed` for
 themselves (spec: a server may add a user to `changed` when they share a new room).
 
-## `use_state_after` on `/sync` (ADR-0818 to ADR-0820)
+## `use_state_after` on `/sync` (ADR-0818 to ADR-0820, ADR-0827)
 
 `state_after` is as of `sync_position`, not the last delivered event, or a state event the timeline filter hides is lost.
-A delta is `joined_state_changes`: it compares the state at `since` with the state at the position. Do not replace it with a
-list of the window's state events (a key state resolution moved back has none), and do not read both whole states when the
-graph is unforked (`state_changes_along_chain` costs the rows between them, none for a window of messages). Read the room's
-single forward extremity with `ForwardExtremityTable::tips_of_room`, never a walk of every room's. `state_anchor_event` seeks
-the first row at or below its position through `EventTable::room_in_stream_order_up_to` (binary search) and steps only over
-withheld rows (`state_anchor_rows_examined`); never walk the rows above the position. A left room's delta is taken against
-`since` only when the user was joined then (`RoomReadAccess::join_ordering` at or below `since`); a join in the window gets the
-whole readable state (ADR-0820). A left room goes through
+What a client is told is the room's **resolved** state as of a position, rebuilt from the current state and the store's
+`state_change_log` (`ResolvedState.hpp`, ADR-0827); a delta (`joined_state_changes`) is `resolved_state_changes` between
+`since` and the position, and a whole state (initial, `full_state`, a join in the window) is
+`resolved_state_event_ids_at_position`. Never measure a delta from the state recorded for an event at `since`: on a forked
+room that is one branch's, not what the client was told (the 1.1.1 defect). Never list the window's state events either (a
+key state resolution moved back has none). `sync_json` calls `note_served(sync_position)` before it builds anything, so a
+change recorded afterwards is filed above the position and the state told as of it never changes; a new path that serves
+`state_after` does the same. A `since` the log does not cover (at or below the process's start, or below the room's
+horizon) gets the whole resolved state, once. A window of messages costs no change and no state row; a test proves it with
+`state_rows_examined` and the log's `rows_examined`. `select_sync_rooms` counts a logged change above `since` as news for a
+`state_after` client. A sender's member as of the position in a joined room is `resolved_state_event_at` too.
+A left room's delta is taken against `since` only when the user was joined then (`RoomReadAccess::join_ordering` at or
+below `since`), and is the readable state minus the resolved state at `since`; a join in the window gets the whole readable
+state (ADR-0820). A left room goes through
 `build_left_room_state_after`, which reads only as far as `room_read_access_for` allows: never a joined room's delta, which
 would tell a departed user what came after their leave. With lazy-loading the delta's member events are always kept
 (`Plan::changed_event_ids`), and the senders' come by key from `member_event_at_position`. A timeline event is not state

@@ -920,6 +920,10 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         {
             database.opened = false;
         }
+        // ADR-0827: `state_after` deltas are measured from the change log, which covers only what this process saw.
+        // A `since` at or below the position reached at start-up was answered by an earlier process (or a database
+        // restored or upgraded from one) and gets a room's whole state once.
+        database.persistent_store.state_change_log.start(visible_stream_position(database));
     }
     return database;
 }

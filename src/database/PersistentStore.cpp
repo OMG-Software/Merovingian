@@ -3024,6 +3024,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     auto const& room_id = snapshot.room_id;
     store.resolved_state_memo.forget_room(room_id);
     store.state_before_memo.forget_room(room_id);
+    store.state_change_log.forget_room(room_id);
     ++store.room_state_revisions[room_id];
 
     // Replace this room's slice of the store: drop every existing row keyed
@@ -4188,7 +4189,8 @@ namespace
     // Takes `keys` out of `state`, filling each gap from the end, and leaves the indexes in step (ADR-0615). Only the
     // rooms that lost or moved a row have their position lists rewritten.
     auto remove_state_rows_from_mirror(PersistentStore& store, std::string_view room_id,
-                                       std::vector<std::pair<std::string, std::string>> const& keys) -> void
+                                       std::vector<std::pair<std::string, std::string>> const& keys,
+                                       std::uint64_t causing_stream_ordering) -> void
     {
         if (store.state_indexed_rows != store.state.size())
         {
@@ -4200,6 +4202,8 @@ namespace
             auto const entry = store.state_position_index.find(state_position_key(room_id, event_type, state_key));
             if (entry != store.state_position_index.end())
             {
+                store.state_change_log.record(room_id, event_type, state_key, store.state[entry->second].event_id, {},
+                                              causing_stream_ordering);
                 removed.insert(entry->second);
                 store.state_position_index.erase(entry);
             }
@@ -4259,7 +4263,8 @@ namespace
 
 auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
                                std::vector<std::pair<std::string, std::string>> const& keys,
-                               std::vector<MembershipProjection> const& memberships) -> bool
+                               std::vector<MembershipProjection> const& memberships,
+                               std::uint64_t causing_stream_ordering) -> bool
 {
     auto statements = std::vector<PreparedStatement>{};
     if (room_id.empty())
@@ -4285,7 +4290,7 @@ auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
     {
         return false;
     }
-    remove_state_rows_from_mirror(store, room_id, keys);
+    remove_state_rows_from_mirror(store, room_id, keys, causing_stream_ordering);
     if (!keys.empty())
     {
         note_room_state_changed(store, std::string{room_id});
@@ -4586,7 +4591,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool
+[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state,
+                               std::uint64_t causing_stream_ordering) -> bool
 {
     if (!state_matches_persisted_event(store, state))
     {
@@ -4608,7 +4614,7 @@ namespace
     {
         return false;
     }
-    apply_current_state(store, prepared);
+    apply_current_state(store, prepared, causing_stream_ordering);
     return true;
 }
 
@@ -4668,7 +4674,8 @@ namespace
     return {std::move(state), std::move(previous_event_id), std::move(statements)};
 }
 
-auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void
+auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared,
+                         std::uint64_t causing_stream_ordering) -> void
 {
     auto const& state = prepared.state;
     note_room_state_changed(store, state.room_id);
@@ -4677,6 +4684,11 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
         return current.room_id == state.room_id && current.event_type == state.event_type &&
                current.state_key == state.state_key;
     });
+    // The value the mirror held, not the one the statement was prepared against: the log chains what clients saw.
+    store.state_change_log.record(state.room_id, state.event_type, state.state_key,
+                                  existing != store.state.end() ? std::string_view{existing->event_id}
+                                                                : std::string_view{},
+                                  state.event_id, causing_stream_ordering);
     if (existing != store.state.end())
     {
         existing->event_id = state.event_id;
@@ -4856,6 +4868,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
             return current.room_id == update.state->room_id && current.event_type == update.state->event_type &&
                    current.state_key == update.state->state_key;
         });
+        store.state_change_log.record(update.state->room_id, update.state->event_type, update.state->state_key,
+                                      existing != store.state.end() ? std::string_view{existing->event_id}
+                                                                    : std::string_view{},
+                                      update.state->event_id, update.event.stream_ordering);
         if (existing != store.state.end())
         {
             existing->event_id = update.state->event_id;
