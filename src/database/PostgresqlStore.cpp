@@ -1438,7 +1438,12 @@ namespace
             {
                 // Strict: a row that is not read exactly is skipped, left in the database and counted.
                 auto parsed = parse_delayed_event_row(row);
-                if (!parsed.has_value() || !store.delayed_events.insert(std::move(*parsed)))
+                if (!parsed.has_value())
+                {
+                    ++store.delayed_event_rows_skipped_at_load;
+                    continue;
+                }
+                if (!store.delayed_events.insert(std::move(*parsed)))
                 {
                     ++store.delayed_event_rows_skipped_at_load;
                 }
