@@ -22,9 +22,12 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/BoundValue.hpp"
+#include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/DelayedEventStatus.hpp"
 #include "merovingian/database/DelayedEventTable.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -40,6 +43,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1700,5 +1704,266 @@ SCENARIO("The job body returns what the send function returns for the clock's ti
                 CHECK(wait == std::chrono::milliseconds{60'000});
             }
         }
+    }
+}
+
+SCENARIO("A failed store write on schedule is a 500, stores nothing and does not wake the job",
+         "[homeserver][delayed-events][schedule][store-failure]")
+{
+    GIVEN("a runtime whose wake hook counts and whose insert of a delayed event fails once")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto wakes = 0;
+        fixture.runtime().homeserver.delayed_events_wake = [&wakes]() {
+            ++wakes;
+        };
+        auto const scheduled_before = fixture.table().scheduled_count(alice);
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "insert_delayed_event");
+
+        WHEN("alice schedules an event, and then the same request again")
+        {
+            auto const failed = schedule(fixture, message_request(fixture));
+            auto const scheduled_after_failure = fixture.table().scheduled_count(alice);
+            auto const wakes_after_failure = wakes;
+            auto const retried = schedule(fixture, message_request(fixture));
+
+            THEN("the first is 500 M_UNKNOWN with nothing stored and no wake, and the retry succeeds")
+            {
+                CHECK_FALSE(failed.ok);
+                CHECK(failed.status == 500U);
+                CHECK(failed.errcode == "M_UNKNOWN");
+                CHECK(scheduled_after_failure == scheduled_before);
+                CHECK(wakes_after_failure == 0);
+                CHECK(retried.ok);
+                CHECK(fixture.table().scheduled_count(alice) == scheduled_before + 1U);
+                CHECK(wakes == 1);
+            }
+        }
+        fixture.runtime().homeserver.delayed_events_wake = nullptr;
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
+
+SCENARIO("A failed store write on restart is a 500 and leaves the timer alone",
+         "[homeserver][delayed-events][manage][store-failure]")
+{
+    GIVEN("an event scheduled at t0 for 60 s and an update of its timer that fails once")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "txn-1", 60'000U));
+        auto const before = fixture.event_count();
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "restart_delayed_event");
+
+        WHEN("alice restarts it halfway, and the job runs at the original deadline")
+        {
+            fixture.runtime().homeserver.test_delayed_event_clock_ms = t0 + 30'000U;
+            auto const restart = manage(fixture, alice, id, hs::DelayedEventAction::restart);
+            auto const shown = looked_up(fixture, alice, id);
+            drain_job(fixture, t0 + 60'000U);
+
+            THEN("the restart is 500 M_UNKNOWN, the timer still starts at t0 and the event is sent at t0 + 60 s")
+            {
+                CHECK_FALSE(restart.ok);
+                CHECK(restart.status == 500U);
+                CHECK(restart.errcode == "M_UNKNOWN");
+                CHECK(*int_member(shown, "delayed_since_ts") == static_cast<std::int64_t>(t0));
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::sent);
+                CHECK(fixture.event_count() == before + 1U);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
+
+SCENARIO("A failed store write on cancel is a 500 and leaves the event scheduled",
+         "[homeserver][delayed-events][manage][store-failure]")
+{
+    GIVEN("a scheduled event and a finalising write that fails once")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "txn-1", 10'000U));
+        auto const before = fixture.event_count();
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "finalise_delayed_event");
+
+        WHEN("alice cancels it, and the job runs at the deadline")
+        {
+            auto const cancel = manage(fixture, alice, id, hs::DelayedEventAction::cancel);
+            auto const status_after_cancel = status_of(fixture, alice, id);
+            drain_job(fixture, t0 + 10'000U);
+
+            THEN("the cancel is 500 M_UNKNOWN, the event stayed scheduled and the job then sent it")
+            {
+                CHECK_FALSE(cancel.ok);
+                CHECK(cancel.status == 500U);
+                CHECK(cancel.errcode == "M_UNKNOWN");
+                CHECK(status_after_cancel == db::DelayedEventStatus::scheduled);
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::sent);
+                CHECK(fixture.event_count() == before + 1U);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
+
+SCENARIO("A failed age prune is tolerated and the row goes on a later run",
+         "[homeserver][delayed-events][job][retention][store-failure]")
+{
+    GIVEN("a row finalised eight days before the run and a prune DELETE that fails once")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto constexpr day = std::uint64_t{24U * 60U * 60U * 1000U};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "old"));
+        REQUIRE(manage(fixture, alice, id, hs::DelayedEventAction::cancel).ok);
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "delete_delayed_events");
+
+        WHEN("the job runs at t0 + 8 days, and again")
+        {
+            auto failed_wait = std::chrono::milliseconds{0};
+            CHECK_NOTHROW(failed_wait = run_job(fixture, t0 + 8U * day));
+            auto const held_after_failure = fixture.table().find_owned(alice, id) != nullptr;
+            std::ignore = run_job(fixture, t0 + 8U * day);
+
+            THEN("the first run returns its normal wait with the row held, and the second removes the row")
+            {
+                CHECK(failed_wait == std::chrono::milliseconds{60'000});
+                CHECK(held_after_failure);
+                CHECK(fixture.table().find_owned(alice, id) == nullptr);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
+
+SCENARIO("With no rate-limit engine a due event is still sent, and so is the send action",
+         "[homeserver][delayed-events][job][manage][rate-limit]")
+{
+    GIVEN("a runtime with no rate-limit engine, a due event and a scheduled one")
+    {
+        auto fixture = Fixture{memory_config()};
+        REQUIRE(fixture.runtime().rate_limit_engine != nullptr);
+        fixture.runtime().rate_limit_engine.reset();
+        auto const due = scheduled_id(fixture, message_request(fixture, alice, "a", 10'000U));
+        auto const later = scheduled_id(fixture, message_request(fixture, alice, "b", 60'000U));
+        auto const before = fixture.event_count();
+
+        WHEN("the job runs at the due time and alice sends the other now")
+        {
+            drain_job(fixture, t0 + 10'000U);
+            auto const sent = manage(fixture, alice, later, hs::DelayedEventAction::send);
+
+            THEN("both events were sent")
+            {
+                CHECK(sent.ok);
+                CHECK(status_of(fixture, alice, due) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, later) == db::DelayedEventStatus::sent);
+                CHECK(fixture.event_count() == before + 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("The real clock reads a time after 2026-01-01", "[homeserver][delayed-events][clock]")
+{
+    GIVEN("a runtime with the test clock unset")
+    {
+        auto fixture = Fixture{memory_config()};
+        fixture.runtime().homeserver.test_delayed_event_clock_ms.reset();
+
+        WHEN("the delayed-event clock is read")
+        {
+            auto const now = hs::delayed_event_now_ms(fixture.runtime().homeserver);
+
+            THEN("it is at least 2026-01-01T00:00:00Z in milliseconds")
+            {
+                CHECK(now >= std::uint64_t{1'767'225'600'000U});
+            }
+        }
+    }
+}
+
+SCENARIO("A stored row whose content is not a JSON object fails when due and cannot be shown",
+         "[homeserver][delayed-events][persistence][job][lookup]")
+{
+    GIVEN("a SQLite file holding two scheduled rows of alice, one with content [] and one with content not json")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto const config = sqlite_config(path);
+        auto const array_id = std::string{"stored-array-content"};
+        auto const text_id = std::string{"stored-text-content"};
+        {
+            auto first = Fixture{config};
+            auto const insert = [&first](std::string const& delay_id, std::string const& content,
+                                         std::string const& delay_ms) {
+                auto const values = std::array<std::string, db::delayed_event_row_columns>{delay_id,
+                                                                                           std::string{alice},
+                                                                                           "D1",
+                                                                                           first.room_id,
+                                                                                           "m.test.delayed",
+                                                                                           "false",
+                                                                                           "",
+                                                                                           content,
+                                                                                           "",
+                                                                                           "false",
+                                                                                           delay_ms,
+                                                                                           "1700000000000",
+                                                                                           "scheduled",
+                                                                                           "0",
+                                                                                           "",
+                                                                                           ""};
+                auto statement = db::PreparedStatement{
+                    "insert_raw_delayed_event",
+                    "INSERT INTO delayed_events (delay_id, user_id, device_id, room_id, event_type, is_state, "
+                    "state_key, content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, "
+                    "finalised_at_ms, event_id, error_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, "
+                    "$12, $13, $14, $15, $16)",
+                    {}};
+                for (auto const& value : values)
+                {
+                    statement.parameters.push_back(db::BoundValue{value, false});
+                }
+                return db::commit_persistent_transaction(first.runtime().homeserver.database.persistent_store,
+                                                         {statement});
+            };
+            REQUIRE(insert(array_id, "[]", "1000"));
+            REQUIRE(insert(text_id, "not json", "5000"));
+        }
+        auto restarted = hs::start_client_server(config);
+        REQUIRE(restarted.started);
+        auto& homeserver = restarted.runtime.homeserver;
+        homeserver.test_frozen_event_clock_ms = static_cast<std::int64_t>(t0);
+        REQUIRE(homeserver.database.persistent_store.delayed_events.find_owned(alice, array_id) != nullptr);
+        REQUIRE(homeserver.database.persistent_store.delayed_events.find_owned(alice, text_id) != nullptr);
+
+        WHEN("the unreadable one is looked up, and the job runs when only the array one is due")
+        {
+            auto const before = homeserver.database.persistent_store.events.size();
+            auto const shown = [&restarted, &text_id]() {
+                auto const guard = hs::RuntimeLock{restarted.runtime.homeserver.mutex};
+                return hs::delayed_event_lookup(restarted.runtime, alice, text_id);
+            }();
+            std::ignore = hs::send_due_delayed_events(restarted.runtime, t0 + 1'000U, {});
+            auto const* row = homeserver.database.persistent_store.delayed_events.find_owned(alice, array_id);
+            REQUIRE(row != nullptr);
+            auto const failed = row->status == db::DelayedEventStatus::failed;
+            auto const error_text = row->error_json;
+            auto const sent_count = homeserver.database.persistent_store.events.size() - before;
+
+            THEN("the lookup is 500 M_UNKNOWN, and the array row is failed M_BAD_JSON with nothing sent")
+            {
+                CHECK_FALSE(shown.ok);
+                CHECK(shown.status == 500U);
+                CHECK(shown.errcode == "M_UNKNOWN");
+                CHECK(failed);
+                CHECK(*string_member(parse_object(error_text), "errcode") == "M_BAD_JSON");
+                CHECK(sent_count == 0U);
+            }
+        }
+
+        std::filesystem::remove(path);
     }
 }

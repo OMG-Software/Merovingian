@@ -1751,3 +1751,32 @@ SCENARIO("An application service scheduling for a user is recorded as such, and 
         }
     }
 }
+
+SCENARIO("A failed store write on restart is answered 500 M_UNKNOWN and leaves the event scheduled with its timer",
+         "[homeserver][delayed-events][routes]")
+{
+    GIVEN("an event scheduled at t0 and an update of its timer that fails once")
+    {
+        auto fixture = Fixture{};
+        auto const id = schedule_message(fixture, "r1", 60'000U);
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "restart_delayed_event");
+
+        WHEN("alice posts the restart halfway through the delay, and then reads the event")
+        {
+            fixture.set_time(t0 + 30'000U);
+            auto const restart = post_action(fixture, true, id, "restart", fixture.alice_token);
+            auto const shown = get_delayed(fixture, true, id, fixture.alice_token);
+
+            THEN("the restart is HTTP 500 M_UNKNOWN and the event is still scheduled since t0")
+            {
+                CHECK(restart.status == 500U);
+                CHECK(errcode_of(restart) == "M_UNKNOWN");
+                REQUIRE(shown.status == 200U);
+                CHECK(*int_member(parse_object(shown.body), "delayed_since_ts") == static_cast<std::int64_t>(t0));
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::scheduled);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
