@@ -3,6 +3,25 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.2
+
+## Features
+
+* Delayed events (MSC4140): a client can schedule an event to be sent after a delay, and restart, cancel or send it,
+  so a MatrixRTC call membership ends when its client vanishes.
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* None.
+
+## Release notes
+
+Delayed events for MatrixRTC, on top of 1.1.1. Upgrading runs migration 003, which adds one table.
+
 # Version 1.1.1
 
 ## Features
