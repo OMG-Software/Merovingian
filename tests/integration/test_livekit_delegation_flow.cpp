@@ -7,6 +7,7 @@
 
 #include "../support/JsonTestSupport.hpp"
 #include "../support/LiveKitTestSupport.hpp"
+#include "merovingian/crypto/LiveKitToken.hpp"
 #include "merovingian/database/DelayedEventStatus.hpp"
 #include "merovingian/database/LiveKitDelegationStore.hpp"
 #include "merovingian/database/LiveKitDelegationTable.hpp"
@@ -31,6 +32,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -981,6 +983,300 @@ SCENARIO("A webhook prompts only the delegation of the participant it names, as 
             {
                 CHECK(answer.status == 200U);
                 CHECK(get_participant_calls(fixture) == calls_before);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// alice's leave, delegated and checked at t0 with LiveKit answering that she is connected; the clock at t0 + 5 s.
+struct CheckedDelegation final
+{
+    Delegated delegated{};
+    std::int64_t now_s{static_cast<std::int64_t>((t0_ms + 5'000U) / 1000U)};
+    std::string room_name{};
+    std::string identity{};
+
+    CheckedDelegation()
+    {
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
+        std::ignore = run_job(fixture, t0_ms);
+        REQUIRE(get_participant_calls(fixture) == 1U);
+        room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
+        identity = *hs::livekit_participant_identity("@alice:example.org", "DEVICEID_member");
+    }
+
+    // A participant_left of alice's delegation, with `created_at_json` written into the body as it is.
+    [[nodiscard]] auto left_with_created_at(std::string_view const id, std::string_view const created_at_json) const
+        -> std::string
+    {
+        return R"({"event":"participant_left","room":{"name":")" + room_name + R"("},"participant":{"identity":")" +
+               identity + R"("},"id":")" + std::string{id} + R"(","createdAt":)" + std::string{created_at_json} + "}";
+    }
+};
+
+} // namespace
+
+SCENARIO("A webhook with a malformed token or unreadable claims is refused, and one that names nothing is ignored",
+         "[homeserver][livekit][rtc][delegation][webhook][negative]")
+{
+    GIVEN("alice's delegation, checked at t0")
+    {
+        auto checked = CheckedDelegation{};
+        auto& fixture = checked.delegated.fixture;
+        auto const now_s = checked.now_s;
+        auto const left = webhook_event("participant_left", checked.room_name, checked.identity, "EV_shape", now_s);
+
+        WHEN("the Authorization header is a bare Bearer prefix, or a token longer than any HS256 token")
+        {
+            auto const bare = post_webhook(fixture, Webhook{left, "Bearer "}, now_s);
+            auto const long_token = post_webhook(
+                fixture, Webhook{left, std::string(merovingian::crypto::hs256_token_max_bytes + 1U, 'a')}, now_s);
+
+            THEN("each is 401 M_UNAUTHORIZED")
+            {
+                CHECK(bare.status == 401U);
+                CHECK(bare.errcode == "M_UNAUTHORIZED");
+                CHECK(long_token.status == 401U);
+                CHECK(long_token.errcode == "M_UNAUTHORIZED");
+            }
+        }
+
+        WHEN("the token is signed with the API secret but its claims are not a JSON object")
+        {
+            auto const answer = post_webhook(fixture, Webhook{left, hs256("[1]", api_secret)}, now_s);
+
+            THEN("it is 401 M_UNAUTHORIZED")
+            {
+                CHECK(answer.status == 401U);
+                CHECK(answer.errcode == "M_UNAUTHORIZED");
+            }
+        }
+
+        WHEN("authentic webhooks carry a body that is not an object, no participant, an unreadable createdAt, or an "
+             "event from before the delegation existed")
+        {
+            auto const not_object = post_webhook(fixture, signed_webhook("[]", now_s), now_s);
+            auto const no_participant =
+                post_webhook(fixture,
+                             signed_webhook(R"({"event":"participant_left","room":{"name":")" + checked.room_name +
+                                                R"("},"id":"EV_np","createdAt":")" + std::to_string(now_s) + R"("})",
+                                            now_s),
+                             now_s);
+            auto const empty_created =
+                post_webhook(fixture, signed_webhook(checked.left_with_created_at("EV_e", R"("")"), now_s), now_s);
+            auto const letters_created =
+                post_webhook(fixture, signed_webhook(checked.left_with_created_at("EV_l", R"("12a")"), now_s), now_s);
+            auto const before_delegation =
+                post_webhook(fixture,
+                             signed_webhook(webhook_event("participant_left", checked.room_name, checked.identity,
+                                                          "EV_old", static_cast<std::int64_t>(t0_ms / 1000U) - 10),
+                                            now_s),
+                             now_s);
+            std::ignore = run_job(fixture, t0_ms + 6'000U);
+
+            THEN("each is 200 and none brings the check forward")
+            {
+                for (auto const* answer :
+                     {&not_object, &no_participant, &empty_created, &letters_created, &before_delegation})
+                {
+                    CHECK(answer->status == 200U);
+                }
+                CHECK(get_participant_calls(fixture) == 1U);
+            }
+        }
+
+        WHEN("an authentic webhook writes createdAt as a bare integer")
+        {
+            auto const answer = post_webhook(
+                fixture, signed_webhook(checked.left_with_created_at("EV_int", std::to_string(now_s)), now_s), now_s);
+            std::ignore = run_job(fixture, t0_ms + 6'000U);
+
+            THEN("it is read as the time it names, and the check is brought forward")
+            {
+                CHECK(answer.status == 200U);
+                CHECK(get_participant_calls(fixture) == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("The webhook remembers a bounded number of event IDs, the oldest forgotten first",
+         "[homeserver][livekit][rtc][delegation][webhook]")
+{
+    GIVEN("alice's delegation, checked at t0, and LiveKit's participant_left for her as event EV_first")
+    {
+        auto checked = CheckedDelegation{};
+        auto& fixture = checked.delegated.fixture;
+        auto const now_s = checked.now_s;
+        auto const first = signed_webhook(
+            webhook_event("participant_left", checked.room_name, checked.identity, "EV_first", now_s), now_s);
+        REQUIRE(post_webhook(fixture, first, now_s).status == 200U);
+        std::ignore = run_job(fixture, t0_ms + 6'000U);
+        REQUIRE(get_participant_calls(fixture) == 2U);
+
+        WHEN("as many other events as the webhook remembers follow, for a stranger, and EV_first comes again")
+        {
+            for (auto index = std::size_t{0U}; index < hs::livekit_webhook_seen_ids; ++index)
+            {
+                auto const other =
+                    signed_webhook(webhook_event("participant_left", checked.room_name, std::string(43U, 'S'),
+                                                 "EV_other_" + std::to_string(index), now_s),
+                                   now_s);
+                REQUIRE(post_webhook(fixture, other, now_s).status == 200U);
+            }
+            REQUIRE(fixture.runtime().homeserver.livekit_webhook_seen_ids.size() == hs::livekit_webhook_seen_ids);
+            auto const again = post_webhook(fixture, first, now_s);
+            std::ignore = run_job(fixture, t0_ms + 7'000U);
+
+            THEN("EV_first has been forgotten, so it is taken as new and brings the check forward once more")
+            {
+                CHECK(again.status == 200U);
+                CHECK(get_participant_calls(fixture) == 3U);
+            }
+        }
+
+        WHEN("EV_first comes again straight away")
+        {
+            auto const again = post_webhook(fixture, first, now_s);
+            std::ignore = run_job(fixture, t0_ms + 7'000U);
+
+            THEN("it is remembered, answered 200, and brings nothing forward")
+            {
+                CHECK(again.status == 200U);
+                CHECK(get_participant_calls(fixture) == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Without the API secret the job asks LiveKit nothing and the webhook cannot be checked",
+         "[homeserver][livekit][rtc][delegation][webhook][negative]")
+{
+    GIVEN("alice's delegated leave, and the API secret file gone")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.runtime().homeserver.config.server().rtc.token_service.api_secret_file =
+            (std::filesystem::temp_directory_path() / "merovingian-livekit-no-such-secret").string();
+        auto const now_s = static_cast<std::int64_t>(t0_ms / 1000U);
+        auto const room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
+        auto const identity = *hs::livekit_participant_identity("@alice:example.org", "DEVICEID_member");
+
+        WHEN("the job runs, and LiveKit's signed webhook arrives")
+        {
+            std::ignore = run_job(fixture, t0_ms);
+            auto const answer = post_webhook(
+                fixture, signed_webhook(webhook_event("participant_left", room_name, identity, "EV_s", now_s), now_s),
+                now_s);
+
+            THEN("LiveKit is not asked, the delegation and its event stay, and the webhook is 500 M_UNKNOWN")
+            {
+                CHECK(get_participant_calls(fixture) == 0U);
+                CHECK(delegations(fixture).find(delegated.delay_id) != nullptr);
+                CHECK(delayed_row(fixture, delegated.delay_id)->status ==
+                      merovingian::database::DelayedEventStatus::scheduled);
+                CHECK(answer.status == 500U);
+                CHECK(answer.errcode == "M_UNKNOWN");
+            }
+        }
+    }
+}
+
+SCENARIO("With the token service switched off, the job drops every delegation and the webhook is no route",
+         "[homeserver][livekit][rtc][delegation][webhook]")
+{
+    GIVEN("alice's delegated leave, and the token service's URL then removed from the configuration")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.runtime().homeserver.config.server().rtc.token_service.url.clear();
+        auto const now_s = static_cast<std::int64_t>(t0_ms / 1000U);
+
+        WHEN("the job runs, and a signed webhook arrives")
+        {
+            std::ignore = run_job(fixture, t0_ms);
+            auto const answer = post_webhook(fixture,
+                                             signed_webhook(webhook_event("participant_left", std::string(43U, 'B'),
+                                                                          std::string(43U, 'C'), "EV_off", now_s),
+                                                            now_s),
+                                             now_s);
+
+            THEN("the delegation is gone without a call, its leave stays scheduled, and the webhook is 404")
+            {
+                CHECK(get_participant_calls(fixture) == 0U);
+                CHECK(delegations(fixture).size() == 0U);
+                CHECK(delayed_row(fixture, delegated.delay_id)->status ==
+                      merovingian::database::DelayedEventStatus::scheduled);
+                CHECK(answer.status == 404U);
+                CHECK(answer.errcode == "M_UNRECOGNIZED");
+            }
+        }
+    }
+}
+
+SCENARIO("A stored delegation whose LiveKit names cannot be derived is dropped, and others are kept",
+         "[homeserver][livekit][rtc][delegation]")
+{
+    GIVEN("alice's delegation, and a second scheduled leave of hers stored with a member ID that is not UTF-8")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
+        auto const other_delay = schedule_leave(fixture, fixture.alice_token, hour_ms, "alice-unnameable");
+        auto row = merovingian::database::PersistentLiveKitDelegation{};
+        row.delay_id = other_delay;
+        row.user_id = "@alice:example.org";
+        row.room_id = fixture.room_id;
+        row.slot_id = "m.call#room";
+        row.member_id = "\xFF";
+        row.created_ms = t0_ms;
+        REQUIRE(merovingian::database::store_livekit_delegation(fixture.runtime().homeserver.database.persistent_store,
+                                                                std::move(row)));
+
+        WHEN("the job runs")
+        {
+            std::ignore = run_job(fixture, t0_ms);
+
+            THEN("the unnameable delegation is dropped without a call, and alice's own is asked about")
+            {
+                CHECK(delegations(fixture).find(other_delay) == nullptr);
+                CHECK(delegations(fixture).find(delegated.delay_id) != nullptr);
+                CHECK(get_participant_calls(fixture) == 1U);
+                CHECK(delayed_row(fixture, other_delay)->status ==
+                      merovingian::database::DelayedEventStatus::scheduled);
+            }
+        }
+    }
+}
+
+SCENARIO("An answer from LiveKit that cannot be read changes nothing", "[homeserver][livekit][rtc][delegation]")
+{
+    GIVEN("alice's delegated one-hour leave, and LiveKit answering 200 with a body that is not JSON")
+    {
+        auto delegated = Delegated{};
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = "not json";
+
+        WHEN("the job runs at t0 and again 31 minutes later, when a connected participant's leave would be restarted")
+        {
+            std::ignore = run_job(fixture, t0_ms);
+            std::ignore = run_job(fixture, t0_ms + 31U * 60'000U);
+            auto const* event = delayed_row(fixture, delegated.delay_id);
+
+            THEN("LiveKit was asked both times, and the leave was neither restarted nor sent")
+            {
+                CHECK(get_participant_calls(fixture) == 2U);
+                REQUIRE(event != nullptr);
+                CHECK(event->status == merovingian::database::DelayedEventStatus::scheduled);
+                CHECK(event->delayed_since_ms == t0_ms);
+                CHECK(delegations(fixture).find(delegated.delay_id) != nullptr);
             }
         }
     }
