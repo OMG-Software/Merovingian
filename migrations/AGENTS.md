@@ -45,6 +45,15 @@ with `schema_step_creating` and its downgrade with `schema_step_dropping`, a fil
 - Never rename a step or reuse a version number: the ledger check identifies a step by
   both.
 
+## Migration 003: delayed events (1.1.2, ADR-0824, ADR-0825)
+
+`003_delayed_events.sql` creates `delayed_events` (sixteen `TEXT` columns, `delay_id` the primary key) and
+`idx_delayed_events_user_id` on `(user_id)`. It follows migration 002's pattern exactly: its own arrays
+`delayed_event_tables` and `delayed_event_indexes` in `Schema.cpp`, a case in both `*_added_by` functions, the step
+`delayed_events_migration()` built with `schema_step_creating` and its downgrade `downgrade_delayed_events_migration()`
+(`drop_delayed_events`, to version 2) at the front of the downgrade catalog, and the file equal to the step. The
+table is classified in the worker's never-reads set (the worker sends no events), not in the allowlist.
+
 ## File naming
 
 ```
@@ -53,7 +62,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `002`.
+Current highest: `003`.
 
 ## File format
 

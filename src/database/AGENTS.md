@@ -15,6 +15,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `PreparedStatement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
 | `Schema.cpp` | The schema by version: the frozen v1 arrays `core_tables` and `core_indexes` (ADR-0224: a schema change is a new numbered migration, never an edit to v1), the v2 arrays `oauth_tables` and `oauth_indexes`, `schema_definitions_added_by`/`schema_indexes_added_by`, the initial (v1) and current lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0778) |
 | `OAuthTables.cpp` | `OAuthTables`, the in-memory copy of `oauth_clients` and `oauth_sessions`: clients by ID, sessions by (user, device), a per-user index, a session count per client and the sessionless clients ordered by last use (ADR-0776, ADR-0777) |
+| `DelayedEventTable.cpp` | `DelayedEventTable`, the in-memory copy of `delayed_events`: by delay ID, per user (scheduled by due time, finalised by finalised time), the due order that skips a being-sent row, by (user, device, room, type, transaction ID), by event ID, and the finalised rows by finalised time (ADR-0824). Also `delayed_event_due_ms` (a saturating sum) |
+| `DelayedEventStore.cpp` | The delayed-event store functions and their caps (`max_delayed_event_id_bytes` 64, `max_delayed_event_content_bytes` 65,536, `max_delayed_event_error_bytes` 1,024, `max_delayed_event_field_bytes` 255, `max_delayed_event_delay_ms` 31 days): store, restart, cancel, record the outcome of a send, delete a user's rows, prune by age. Finalising evicts the user's oldest finalised rows in the same transaction (ADR-0824, ADR-0825) |
+| `DelayedEventStatusText.cpp` | The `status` column's text for `DelayedEventStatus` and its strict parse (an unknown text makes hydration skip the row) |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
@@ -214,6 +217,23 @@ again). A new path that revokes all of a device's or a user's tokens uses one of
 single-table revokes. The grant's
 `oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
 `remember_audit_event` after the commit). Neither table is read by the federation worker.
+
+## Delayed events (migration 003, ADR-0824)
+
+`PersistentStore::delayed_events` is a `DelayedEventTable`: write it only through `DelayedEventStore.hpp` (hydration
+uses `insert`). It owns the rows, shows them read-only and keeps every index right, so never loop it: ask for a row
+by `find`/`find_owned` (the one place the ownership rule lives, so another user's row and a missing row are the same
+answer), the next send by `earliest_due`, a user's due time by `earliest_due_ms_of_user`, idempotency by
+`find_by_transaction`, a sent event by `find_sent_by_event_id`, and old rows by `finalised_before`. Tests prove cost with
+`rows_examined`. The store functions change memory only after `commit_persistent_transaction` returns true, with ONE
+exception: `record_delayed_event_outcome` finalises memory even when its commit fails (the event was already sent, and a
+row left scheduled would be sent again on every run; the database row still reads `scheduled`, so the next start-up sends
+it once more, ADR-0825). A new function that finalises a row keeps that bounded eviction in the same transaction as the
+status update. The "being sent" mark is memory only and `restart` and `cancel` refuse a marked row. **Every path that
+deletes a user's account removes the user's rows** with `delete_delayed_events_of_user`; logout and device deletion do
+not (a call's delayed leave must outlive its device). `store_delayed_event` does not enforce the per-user cap on
+scheduled rows: the caller does, because it computes `Retry-After`. Never log a row's `content_json`. The federation
+worker never reads the table.
 
 ## Backend selection
 

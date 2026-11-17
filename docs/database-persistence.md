@@ -25,8 +25,8 @@ value. Test fixtures that do not exercise persistence select it through
   migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
   schema-state transitions, enabling backfill and corrective migrations
   should a later migration need one.
-- The schema has two steps. `schema::current_schema_version()` is `2`, and
-  `migrations/` holds `001_initial_schema.sql` and `002_oauth_tables.sql`.
+- The schema has three steps. `schema::current_schema_version()` is `3`, and
+  `migrations/` holds `001_initial_schema.sql`, `002_oauth_tables.sql` and `003_delayed_events.sql`.
 - Version `1` (`initial_schema`) is the frozen v1 schema. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
@@ -42,13 +42,13 @@ value. Test fixtures that do not exercise persistence select it through
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
-  `src/database/Migration.cpp` has two upgrade steps (version `1`,
-  `initial_schema`; version `2`, `oauth_tables`) and two downgrade steps, newest
-  first (`drop_oauth_tables` to version `1`, then `drop_initial_schema` to
+  `src/database/Migration.cpp` has three upgrade steps (version `1`,
+  `initial_schema`; version `2`, `oauth_tables`; version `3`, `delayed_events`) and three downgrade steps, newest
+  first (`drop_delayed_events` to version `2`, `drop_oauth_tables` to version `1`, then `drop_initial_schema` to
   version `0`, which drops every v1 table).
-  `migrations/001_initial_schema.sql` is the frozen record of v1 and
-  `002_oauth_tables.sql` of version 2; a unit test requires each file to match
-  the build's step statement for statement.
+  `migrations/001_initial_schema.sql` is the frozen record of v1,
+  `002_oauth_tables.sql` of version 2 and `003_delayed_events.sql` of version 3; a unit test requires each file to
+  match the build's step statement for statement.
 - Version `2` (`oauth_tables`, 1.1.0) adds the OAuth 2.0 tables
   ([ADR-0776](adr/0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)),
   and changes no existing table:
@@ -76,6 +76,37 @@ value. Test fixtures that do not exercise persistence select it through
     backends, with sessions by (user, device), a per-user index, a session
     count per client and the sessionless clients ordered by last use, which the
     retention sweep reads (30 days, never a client with a session).
+- Version `3` (`delayed_events`, 1.1.2) adds one table for MSC4140 delayed events
+  ([ADR-0824](adr/0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md),
+  [ADR-0825](adr/0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)),
+  and changes no existing table:
+  - `delayed_events` (`delay_id TEXT PRIMARY KEY`, then `user_id`, `device_id`, `room_id`, `event_type`, `is_state`,
+    `state_key`, `content_json`, `txn_id`, `via_appservice`, `delay_ms`, `delayed_since_ms`, `status`,
+    `finalised_at_ms`, `event_id`, `error_json`, all `TEXT NOT NULL`: the integers are decimal text, the two booleans
+    are `true` or `false` like `users.deactivated`, `status` is `scheduled`, `sent`, `cancelled` or `failed`, and the
+    columns that do not apply are the empty string, or `0` for `finalised_at_ms`), with `idx_delayed_events_user_id`
+    on `user_id`, which serves the delete at deactivation. No foreign key. `device_id` is the scheduling request's
+    device and is not deleted with it: a delayed event belongs to the user.
+  - Caps, enforced by `store_delayed_event` and the finalising functions (`DelayedEventStore.hpp`): `delay_id` 64
+    bytes, `content_json` 65,536 bytes, `error_json` 1,024 bytes, 255 bytes for `user_id`, `device_id`, `room_id`,
+    `event_type`, `state_key`, `txn_id` and `event_id`, and `delay_ms` from 1 to 2,678,400,000 (31 days). A row over a
+    cap is refused, never truncated. The store does not enforce the per-user cap on scheduled rows: the caller does,
+    because it must compute `Retry-After` from the user's rows.
+  - In memory: `PersistentStore::delayed_events` (`DelayedEventTable`), hydrated on both backends, with no lock of
+    its own (`runtime.mutex` serialises it). It indexes the rows by delay ID, by user (the scheduled rows by due
+    time, the finalised rows by finalised time), every scheduled row not being sent by due time (`delayed_since_ms +
+    delay_ms`, then delay ID, so the earliest due is O(1)), by (user, device, room, event type, transaction ID) for
+    idempotency, by event ID for sent rows, and every finalised row by finalised time for the age prune. A memory-only
+    "being sent" mark hides a row from the due order while a send is in progress. No reader scans the table. A row
+    whose `status` text is not one of the four is skipped when hydrating, never repaired.
+  - Rows leave in four ways, all in one transaction: the user's cancel and the outcome of a send each evict that
+    user's oldest finalised rows beyond `server.delayed_events.max_finalised_per_user`; the age prune deletes
+    finalised rows older than 7 days (oldest first, at most 500 a transaction); and account deactivation deletes all
+    of a user's rows (`DELETE ... WHERE user_id = $1`). Logout and device deletion delete nothing.
+  - The one place memory changes without a commit: `record_delayed_event_outcome`. The event was already sent, so
+    memory is finalised even when the finalising commit fails (the function says so), and the database row still
+    reads `scheduled`, so the next start-up sends it again (at least once, ADR-0825). Every other function changes
+    memory only after the commit.
 - The schema registry is split by version
   ([ADR-0778](adr/0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)):
   `initial_schema_definitions()` is what v1 created, and the SQLite and
@@ -915,8 +946,9 @@ value. Test fixtures that do not exercise persistence select it through
   (`[fixture]`, one per backend) open it, run `migrate_*_schema_to`, start the runtime on it and read back the users,
   access tokens, rooms, events, media, account data, pusher and device keys the manifest lists, then send a new
   event signed with the old release's key. Opening the 1.0.3 database applies migration 002 (the OAuth 2.0 tables), so
-  the scenarios first assert the v1 to v2 step ran: the schema version is `current_schema_version()`, the ledger gained the
-  `oauth_tables` row, and `oauth_clients` and `oauth_sessions` exist and take a row. They then assert everything the manifest lists is still served.
+  the scenarios first assert the v1 to v3 steps ran: the schema version is `current_schema_version()`, the ledger gained the
+  `oauth_tables` and `delayed_events` rows, and `oauth_clients`, `oauth_sessions` and `delayed_events` exist and take a row (the fixture
+  held none of them before). They then assert everything the manifest lists is still served.
   The PostgreSQL scenario needs `MEROVINGIAN_TEST_POSTGRESQL_URI` and reports itself skipped without it.
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
@@ -1217,7 +1249,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (52 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (53 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `stream_token_epoch`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1229,7 +1261,8 @@ migration's table cannot go unclassified:
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
   `receipts`, `appservice_directory`, `media_pending_uploads`, `oauth_clients` and `oauth_sessions` (migration
-  002; every OAuth 2.0 endpoint runs in main), plus six tables `Schema.cpp`
+  002; every OAuth 2.0 endpoint runs in main), `delayed_events` (migration 003; the federation worker sends no events
+  and holds no signing key, so it never reads a scheduled event), plus six tables `Schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
