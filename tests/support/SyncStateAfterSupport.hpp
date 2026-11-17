@@ -249,15 +249,25 @@ using Keys = std::multiset<std::string>;
     return topics;
 }
 
+// The required section must exist, be an object and hold an `events` array, even an empty one (the spec's `State`).
+inline auto require_state_section(Object const& room, std::string_view part) -> void
+{
+    REQUIRE(has_part(room, part));
+    auto const* section = object_member_as_object(room, part);
+    REQUIRE(section != nullptr);
+    REQUIRE(object_member_as_array(*section, "events") != nullptr);
+}
+
+// The forbidden section is judged by presence: the key must not exist, whatever its value.
 inline auto require_state_after_only(Object const& room) -> void
 {
-    REQUIRE(has_part(room, "state_after"));
+    require_state_section(room, "state_after");
     REQUIRE_FALSE(has_part(room, "state"));
 }
 
 inline auto require_state_only(Object const& room) -> void
 {
-    REQUIRE(has_part(room, "state"));
+    require_state_section(room, "state");
     REQUIRE_FALSE(has_part(room, "state_after"));
 }
 
