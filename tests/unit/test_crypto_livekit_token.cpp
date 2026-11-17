@@ -4,9 +4,11 @@
 // LiveKit's HS256 tokens (ADR-0828): the three typed signers and the verifier. The signed vectors were computed apart
 // from this code with Python's `hmac` and `hashlib`; the verifier's vector is RFC 7515 Appendix A.1.
 
+#include "merovingian/crypto/Encoding.hpp"
 #include "merovingian/crypto/LiveKitToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <cstdint>
@@ -337,6 +339,92 @@ SCENARIO("The verifier refuses a token that is altered, malformed or under anoth
             THEN("it is refused before any decoding")
             {
                 CHECK_FALSE(merovingian::crypto::verify_hs256_token(long_token, secret));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// `signing_input` signed with HMAC-SHA256 under `secret` and appended as the third segment, so the token's MAC is
+// genuine whatever its first two segments hold.
+[[nodiscard]] auto with_genuine_mac(std::string const& signing_input, std::vector<std::uint8_t> const& secret)
+    -> std::string
+{
+    REQUIRE(sodium_init() >= 0);
+    auto state = crypto_auth_hmacsha256_state{};
+    auto mac = std::array<unsigned char, crypto_auth_hmacsha256_BYTES>{};
+    crypto_auth_hmacsha256_init(&state, secret.data(), secret.size());
+    crypto_auth_hmacsha256_update(&state, reinterpret_cast<unsigned char const*>(signing_input.data()),
+                                  signing_input.size());
+    crypto_auth_hmacsha256_final(&state, mac.data());
+    auto const encoded = merovingian::crypto::base64_urlsafe_encode(
+        std::string_view{reinterpret_cast<char const*>(mac.data()), mac.size()});
+    REQUIRE(encoded.has_value());
+    return signing_input + "." + *encoded;
+}
+
+} // namespace
+
+SCENARIO("The verifier refuses a correctly signed token whose header or payload is not base64",
+         "[crypto][livekit][rtc][negative]")
+{
+    GIVEN("tokens whose MAC is genuine but whose first or second segment is not unpadded URL-safe base64")
+    {
+        auto const secret = counting_secret();
+        // A valid segment, `{}`.
+        auto const good = std::string{"e30"};
+        auto const bad_header = with_genuine_mac("!!!!." + good, secret);
+        auto const bad_payload = with_genuine_mac(good + ".!!!!", secret);
+        auto const control = with_genuine_mac(good + "." + good, secret);
+
+        WHEN("they are verified under the secret that signed them")
+        {
+            auto const header_result = merovingian::crypto::verify_hs256_token(bad_header, secret);
+            auto const payload_result = merovingian::crypto::verify_hs256_token(bad_payload, secret);
+            auto const control_result = merovingian::crypto::verify_hs256_token(control, secret);
+
+            THEN("the control verifies and neither malformed one returns any part of its content")
+            {
+                REQUIRE(control_result.has_value());
+                CHECK(control_result->header_json == "{}");
+                CHECK(control_result->payload_json == "{}");
+                CHECK_FALSE(header_result.has_value());
+                CHECK_FALSE(payload_result.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("The room-administration signer refuses a bad room name, key, time or secret",
+         "[crypto][livekit][rtc][negative]")
+{
+    GIVEN("a valid key, secret and room name")
+    {
+        auto const secret = counting_secret();
+        auto const short_secret = std::vector<std::uint8_t>(31U, 0x01U);
+
+        WHEN("one input at a time is made invalid")
+        {
+            auto const sign = [&secret](std::string_view key, std::string_view room, std::int64_t not_before,
+                                        std::int64_t expires) {
+                return merovingian::crypto::sign_livekit_room_admin_token(key, secret, room, not_before, expires);
+            };
+
+            THEN("no token is signed, and the valid call does sign")
+            {
+                CHECK(sign(api_key, slot_room, 0, 60));
+                CHECK_FALSE(sign(api_key, "", 0, 60));
+                CHECK_FALSE(sign(api_key, std::string(42U, 'A'), 0, 60));
+                CHECK_FALSE(sign(api_key, std::string(42U, 'A') + "\"", 0, 60));
+                CHECK_FALSE(sign("bad key", slot_room, 0, 60));
+                CHECK_FALSE(sign(api_key, slot_room, 60, 60));
+                CHECK_FALSE(sign(api_key, slot_room, -1, 60));
+                CHECK_FALSE(
+                    merovingian::crypto::sign_livekit_room_admin_token(api_key, short_secret, slot_room, 0, 60));
+                CHECK_FALSE(merovingian::crypto::sign_livekit_room_admin_token(api_key, std::span<std::uint8_t const>{},
+                                                                               slot_room, 0, 60));
             }
         }
     }
