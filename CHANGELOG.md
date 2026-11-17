@@ -3,6 +3,25 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.3
+
+## Features
+
+* None.
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* None.
+
+## Release notes
+
+Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, and an exact
+`state_after` on `/sync`.
+
 # Version 1.1.2
 
 ## Features
