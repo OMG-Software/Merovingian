@@ -64,8 +64,9 @@ inline constexpr auto max_delayed_event_delay_ms = std::uint64_t{2'678'400'000U}
                                                 std::string error_json, std::size_t max_finalised_per_user)
     -> DelayedEventOutcomeResult;
 
-// Deletes every row of `user_id`, scheduled and finalised, in one `DELETE ... WHERE user_id = $1`. True when the user
-// has none (nothing is written) or the rows are gone; false when the commit fails, with memory unchanged.
+// Deletes every row of `user_id`, scheduled and finalised, in one `DELETE ... WHERE user_id = $1`, which always runs
+// (a row hydration skipped is in the database only). True when the rows are gone, then memory is erased; false when the
+// commit fails, with memory unchanged.
 [[nodiscard]] auto delete_delayed_events_of_user(PersistentStore& store, std::string_view user_id) -> bool;
 
 // Deletes finalised rows whose `finalised_at_ms` is below `cutoff_ms`, oldest first, at most `max_rows`, in one

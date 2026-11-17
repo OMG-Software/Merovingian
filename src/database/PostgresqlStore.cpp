@@ -8,7 +8,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
-#include "merovingian/database/DelayedEventStatusText.hpp"
+#include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
@@ -1422,7 +1422,8 @@ namespace
         }
 
         // Migration 003 (ADR-0824): delayed events, main only (the federation worker sends no events). A row whose
-        // status text is not one of the four, or that duplicates a delay ID or a transaction key, is skipped.
+        // status text is not one of the four, that duplicates a delay ID, a transaction key or a sent event ID, or
+        // whose numbers or booleans are not exactly what the store writes, is skipped and counted, never repaired.
         if (table_load_profile_includes("delayed_events", profile))
         {
             auto delayed = query_rows(connection, "postgresql_load_delayed_events",
@@ -1435,17 +1436,11 @@ namespace
             }
             for (auto const& row : delayed.rows)
             {
-                if (row.size() < 16U)
+                // Strict: a row that is not read exactly is skipped, left in the database and counted.
+                auto parsed = parse_delayed_event_row(row);
+                if (!parsed.has_value() || !store.delayed_events.insert(std::move(*parsed)))
                 {
-                    continue;
-                }
-                auto const status = parse_delayed_event_status(row[12]);
-                if (status.has_value())
-                {
-                    std::ignore = store.delayed_events.insert(
-                        {row[0], row[1], row[2], row[3], row[4], text_is_true(row[5]), row[6], row[7], row[8],
-                         text_is_true(row[9]), parse_u64(row[10]), parse_u64(row[11]), *status, parse_u64(row[13]),
-                         row[14], row[15]});
+                    ++store.delayed_event_rows_skipped_at_load;
                 }
             }
         }

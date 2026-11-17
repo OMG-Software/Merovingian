@@ -234,10 +234,8 @@ auto record_delayed_event_outcome(PersistentStore& store, std::string_view delay
 
 auto delete_delayed_events_of_user(PersistentStore& store, std::string_view user_id) -> bool
 {
-    if (store.delayed_events.scheduled_count(user_id) == 0U && store.delayed_events.finalised_count(user_id) == 0U)
-    {
-        return true;
-    }
+    // Always the DELETE, even when memory holds no row for the user: a row that hydration skipped is in the database
+    // and must not survive a deactivation. Deactivation is rare.
     auto const statement = PreparedStatement{
         "delete_delayed_events_of_user", "DELETE FROM delayed_events WHERE user_id = $1", {text(user_id)}};
     if (!commit_persistent_transaction(store, {statement}))

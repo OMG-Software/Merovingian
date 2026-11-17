@@ -218,7 +218,10 @@ auto DelayedEventTable::unindex_row(PersistentDelayedEvent const& row) -> void
 
 auto DelayedEventTable::insert(PersistentDelayedEvent row) -> bool
 {
-    if (m_rows.contains(row.delay_id) || (!row.txn_id.empty() && m_by_transaction.contains(transaction_key_of(row))))
+    // A second `sent` row for an event ID is refused like a duplicate transaction key: the index would name only the
+    // first, and erasing it would orphan the second.
+    if (m_rows.contains(row.delay_id) || (!row.txn_id.empty() && m_by_transaction.contains(transaction_key_of(row))) ||
+        (row.status == DelayedEventStatus::sent && m_by_event_id.contains(row.event_id)))
     {
         return false;
     }

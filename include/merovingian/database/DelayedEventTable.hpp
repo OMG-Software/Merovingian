@@ -74,7 +74,8 @@ public:
     [[nodiscard]] auto is_being_sent(std::string_view delay_id) const -> bool;
 
     // Adds `row`, indexing it by its status. False, and nothing changes, when its delay ID is held, or it has a
-    // transaction ID and another row already holds the same (user, device, room, event type, transaction ID).
+    // transaction ID and another row already holds the same (user, device, room, event type, transaction ID), or it is
+    // `sent` and another sent row already claims its event ID.
     auto insert(PersistentDelayedEvent row) -> bool;
     // Sets `delayed_since_ms` of a scheduled row, moving it in the due order. False when the row is absent or not
     // scheduled.

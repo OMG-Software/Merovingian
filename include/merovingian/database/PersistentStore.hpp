@@ -579,6 +579,10 @@ struct PersistentStore final
     // DelayedEventStore.hpp; it has no lock of its own, so in main `runtime.mutex` serialises it. The federation worker
     // never holds it.
     DelayedEventTable delayed_events{};
+    // How many `delayed_events` rows the last hydration skipped because they were not read exactly (a number that is
+    // not digits or is out of range, a boolean that is not "true" or "false", an unknown status, a duplicate key). The
+    // rows stay in the database. The homeserver warns once at start-up when this is not zero.
+    std::size_t delayed_event_rows_skipped_at_load{0U};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.

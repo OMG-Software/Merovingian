@@ -18,6 +18,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `DelayedEventTable.cpp` | `DelayedEventTable`, the in-memory copy of `delayed_events`: by delay ID, per user (scheduled by due time, finalised by finalised time), the due order that skips a being-sent row, by (user, device, room, type, transaction ID), by event ID, and the finalised rows by finalised time (ADR-0824). Also `delayed_event_due_ms` (a saturating sum) |
 | `DelayedEventStore.cpp` | The delayed-event store functions and their caps (`max_delayed_event_id_bytes` 64, `max_delayed_event_content_bytes` 65,536, `max_delayed_event_error_bytes` 1,024, `max_delayed_event_field_bytes` 255, `max_delayed_event_delay_ms` 31 days): store, restart, cancel, record the outcome of a send, delete a user's rows, prune by age. Finalising evicts the user's oldest finalised rows in the same transaction (ADR-0824, ADR-0825) |
 | `DelayedEventStatusText.cpp` | The `status` column's text for `DelayedEventStatus` and its strict parse (an unknown text makes hydration skip the row) |
+| `DelayedEventRowText.cpp` | `parse_delayed_event_row`, the one strict reading of a stored row both loaders use: the three numeric columns are 1+ ASCII digits that fit 64 bits, both booleans are exactly `true` or `false`, a scheduled row's `delay_ms` is 1 to `max_delayed_event_delay_ms`, a finalised row has a non-zero `finalised_at_ms`. Anything else is skipped, never repaired or guessed |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
@@ -230,8 +231,12 @@ exception: `record_delayed_event_outcome` finalises memory even when its commit 
 row left scheduled would be sent again on every run; the database row still reads `scheduled`, so the next start-up sends
 it once more, ADR-0825). A new function that finalises a row keeps that bounded eviction in the same transaction as the
 status update. The "being sent" mark is memory only and `restart` and `cancel` refuse a marked row. **Every path that
-deletes a user's account removes the user's rows** with `delete_delayed_events_of_user`; logout and device deletion do
-not (a call's delayed leave must outlive its device). `store_delayed_event` does not enforce the per-user cap on
+deletes a user's account removes the user's rows** with `delete_delayed_events_of_user`, which always runs its
+`DELETE` (a row hydration skipped is in the database only) and then erases memory; logout and device deletion do
+not (a call's delayed leave must outlive its device). Hydration counts every row it skips in
+`PersistentStore::delayed_event_rows_skipped_at_load` (a duplicate delay ID, transaction key or sent event ID counts),
+and `main.cpp` logs it once as `delayed_events.rows_skipped_at_load`; never log a skipped row's columns.
+`store_delayed_event` does not enforce the per-user cap on
 scheduled rows: the caller does, because it computes `Retry-After`. Never log a row's `content_json`. The federation
 worker never reads the table.
 
