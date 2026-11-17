@@ -59,7 +59,7 @@ constexpr auto unstable = std::string_view{"/_matrix/client/unstable/org.matrix.
 constexpr auto delay_param = std::string_view{"org.matrix.msc4140.delay"};
 constexpr auto message_content = std::string_view{R"({"body":"later"})"};
 
-[[nodiscard]] auto memory_config() -> merovingian::config::Config
+[[nodiscard]] auto memory_config(merovingian::config::ClientRateLimitsConfig limits = {}) -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = shared_master_key_file();
@@ -69,7 +69,7 @@ constexpr auto message_content = std::string_view{R"({"body":"later"})"};
         merovingian::config::ListenersConfig{},
         in_memory_database_config(),
         std::move(security),
-        merovingian::config::ClientRateLimitsConfig{},
+        std::move(limits),
         merovingian::config::LogModulesConfig{},
     };
 }
@@ -106,6 +106,21 @@ constexpr auto message_content = std::string_view{R"({"body":"later"})"};
 {
     REQUIRE(request(runtime, "POST", "/_matrix/client/v3/register", {}, registration_json(name, password)).status ==
             200U);
+    auto const login =
+        request(runtime, "POST", "/_matrix/client/v3/login", {},
+                R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + name +
+                    R"(:example.org"},"password":")" + std::string{password} + R"(","device_id":")" + device + R"("})");
+    REQUIRE(login.status == 200U);
+    auto const body = parse_object(login.body);
+    auto const* token = string_member(body, "access_token");
+    REQUIRE(token != nullptr);
+    return *token;
+}
+
+// Signs an existing user in on a new device; the access token.
+[[nodiscard]] auto log_in(hs::ClientServerRuntime& runtime, std::string const& name, std::string const& device)
+    -> std::string
+{
     auto const login =
         request(runtime, "POST", "/_matrix/client/v3/login", {},
                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + name +
@@ -164,10 +179,19 @@ public:
         runtime().homeserver.test_frozen_event_clock_ms = static_cast<std::int64_t>(now_ms);
     }
 
-    // The job body at `now_ms`.
+    // The job body at `now_ms`, run until no scheduled event is due then: one run sends at most one event. A bound
+    // stops a job that makes no progress.
     auto run_job(std::uint64_t now_ms) -> void
     {
-        std::ignore = hs::send_due_delayed_events(runtime(), now_ms, hs::StopFlag{});
+        for (auto runs = 0; runs < 1'000; ++runs)
+        {
+            auto const* next = table().earliest_due();
+            if (next == nullptr || db::delayed_event_due_ms(*next) > now_ms)
+            {
+                return;
+            }
+            std::ignore = hs::send_due_delayed_events(runtime(), now_ms, hs::StopFlag{});
+        }
     }
 
     std::string alice_token{};
@@ -351,6 +375,20 @@ SCENARIO("Every scheduling form answers a delay ID, sends nothing early and send
                 CHECK(fixture.event_count() == before + 1U);
                 CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::sent);
                 CHECK(timeline_has(fixture, event_type));
+            }
+            AND_THEN("a state form produced the state key it named, and no other")
+            {
+                fixture.set_time(t0 + 30'000U);
+                fixture.run_job(t0 + 30'000U);
+                if (is_state)
+                {
+                    auto const keyed = state_content(fixture, event_type, "key");
+                    auto const empty_key = state_content(fixture, event_type);
+                    // Form 3 names the key `key`; forms 4 (`/`) and 5 (no key segment) mean the empty state key.
+                    CHECK((form == 3 ? keyed.status : empty_key.status) == 200U);
+                    CHECK((form == 3 ? empty_key.status : keyed.status) == 404U);
+                    CHECK((form == 3 ? keyed.body : empty_key.body).find("\"v\":1") != std::string::npos);
+                }
             }
         }
     }
@@ -597,11 +635,17 @@ SCENARIO("The delay parameter is read with leading zeros and an encoded name, an
                                                   "org%2Ematrix.msc4140.delay=5000");
             auto const not_object = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "z3",
                                                      std::string{delay_param} + "=5000", "[]");
+            auto const state_encoded = put_state_delayed(fixture, fixture.alice_token, "m.test.state", "/k",
+                                                         "org%2Ematrix.msc4140.delay=5000");
+            auto const state_padded = put_state_delayed(fixture, fixture.alice_token, "m.test.state", "/k",
+                                                        std::string{delay_param} + "=0007");
 
             THEN("the first two are scheduled, the third is M_BAD_JSON, and nothing is sent")
             {
                 CHECK(delay_id_of(padded).size() > 0U);
                 CHECK(delay_id_of(encoded).size() > 0U);
+                CHECK(delay_id_of(state_encoded).size() > 0U);
+                CHECK(delay_id_of(state_padded).size() > 0U);
                 CHECK(not_object.status == 400U);
                 CHECK(errcode_of(not_object) == "M_BAD_JSON");
                 CHECK(fixture.event_count() == before);
@@ -1238,6 +1282,8 @@ SCENARIO("/versions and /capabilities advertise delayed events with the configur
 SCENARIO("The built-in per-user limits stop the 121st management request and the 61st scheduling request",
          "[homeserver][delayed-events][routes][rate-limit]")
 {
+    // The rate-limit engine reads the steady clock itself (`ClientServerClock`, no test seam), so this scenario relies
+    // on its 121 (or 61) in-process requests completing within the policy's 60-second window.
     GIVEN("alice and bob on one server with the default rate limits")
     {
         auto fixture = Fixture{};
@@ -1388,8 +1434,27 @@ SCENARIO("A NUL in the content of a delayed event is refused as a raw byte and k
                     CHECK(row->content_json.find(R"(\u0000)") != std::string::npos);
                     CHECK(get_delayed(fixture, true, id, fixture.alice_token).status == 200U);
                 }
+            }
+            AND_THEN("after the job each is sent and the sent event holds the escape, as the client sent it")
+            {
+                auto ids = std::vector<std::string>{};
+                for (auto const* response : {&l1, &l2, &s1, &s2})
+                {
+                    ids.push_back(delay_id_of(*response));
+                }
                 fixture.set_time(t0 + 5'000U);
                 fixture.run_job(t0 + 5'000U);
+                CHECK(fixture.event_count() == before + 4U);
+                for (auto const& id : ids)
+                {
+                    auto const* row = fixture.table().find_owned(alice, id);
+                    REQUIRE(row != nullptr);
+                    CHECK(row->status == db::DelayedEventStatus::sent);
+                    auto const event = request(fixture.runtime(), "GET",
+                                               fixture.room_path() + "/event/" + row->event_id, fixture.alice_token);
+                    REQUIRE(event.status == 200U);
+                    CHECK(event.body.find(R"("a":"x\u0000y")") != std::string::npos);
+                }
             }
         }
     }
@@ -1422,6 +1487,266 @@ SCENARIO("Any other route that sends from the caller's body refuses the delay pa
                 CHECK(errcode_of(redact) == "M_INVALID_PARAM");
                 CHECK(fixture.event_count() == before);
                 CHECK_FALSE(timeline_has(fixture, "m.test.delayed"));
+            }
+        }
+    }
+}
+
+SCENARIO("The delayed branch comes before the ordinary route's idempotency lookup, and the two namespaces are separate",
+         "[homeserver][delayed-events][routes][idempotency]")
+{
+    GIVEN("alice in a room")
+    {
+        auto fixture = Fixture{};
+
+        WHEN("an ordinary send is made, then the same path and transaction ID with the delay parameter")
+        {
+            auto const ordinary = request(fixture.runtime(), "PUT", fixture.room_path() + "/send/m.test.delayed/tx1",
+                                          fixture.alice_token, std::string{message_content});
+            REQUIRE(ordinary.status == 200U);
+            REQUIRE(string_member(parse_object(ordinary.body), "event_id") != nullptr);
+            auto const before = fixture.event_count();
+            auto const delayed = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "tx1",
+                                                  std::string{delay_param} + "=5000");
+
+            THEN("the answer is a delay_id, not the cached event_id, and nothing new is in the timeline")
+            {
+                REQUIRE(delayed.status == 200U);
+                auto const body = parse_object(delayed.body);
+                CHECK(string_member(body, "delay_id") != nullptr);
+                CHECK(string_member(body, "event_id") == nullptr);
+                CHECK(fixture.event_count() == before);
+            }
+        }
+
+        WHEN("an event is scheduled with a transaction ID, then sent ordinarily with the same one")
+        {
+            auto const delayed = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "tx2",
+                                                  std::string{delay_param} + "=5000");
+            REQUIRE(delayed.status == 200U);
+            auto const before = fixture.event_count();
+            auto const ordinary = request(fixture.runtime(), "PUT", fixture.room_path() + "/send/m.test.delayed/tx2",
+                                          fixture.alice_token, std::string{message_content});
+
+            THEN("the ordinary send sends an ordinary event")
+            {
+                REQUIRE(ordinary.status == 200U);
+                CHECK(string_member(parse_object(ordinary.body), "event_id") != nullptr);
+                CHECK(fixture.event_count() == before + 1U);
+            }
+        }
+    }
+}
+
+SCENARIO(
+    "The send action under the user's per-user limit for the send route is 429 with Retry-After and stays scheduled",
+    "[homeserver][delayed-events][routes][rate-limit]")
+{
+    GIVEN("a per-user policy of one send a minute for the send route and two scheduled events")
+    {
+        // The engine reads the steady clock itself (no test seam): the two sends below rely on completing within the
+        // policy's 60-second window.
+        auto limits = merovingian::config::ClientRateLimitsConfig{};
+        limits.per_user["/_matrix/client/v3/rooms/{roomId}/send/"] = merovingian::http::RateLimitPolicy{1U, 60U};
+        auto fixture = Fixture{memory_config(std::move(limits))};
+        auto const first = schedule_message(fixture, "a");
+        auto const second = schedule_message(fixture, "b");
+
+        WHEN("the first is sent now and then the second")
+        {
+            auto const sent = post_action(fixture, true, first, "send", fixture.alice_token);
+            auto const limited = post_action(fixture, true, second, "send", fixture.alice_token);
+
+            THEN("the second is 429 M_LIMIT_EXCEEDED with retry_after_ms and Retry-After, and is still scheduled")
+            {
+                CHECK(sent.status == 200U);
+                CHECK(limited.status == 429U);
+                CHECK(errcode_of(limited) == "M_LIMIT_EXCEEDED");
+                auto const limited_body = parse_object(limited.body);
+                CHECK(int_member(limited_body, "retry_after_ms") != nullptr);
+                CHECK_FALSE(header_of(limited, "Retry-After").empty());
+                CHECK(status_of(fixture, alice, second) == db::DelayedEventStatus::scheduled);
+            }
+        }
+    }
+}
+
+SCENARIO("Scheduling wakes the job once per scheduled event, and a refusal or a restart does not",
+         "[homeserver][delayed-events][routes][wake]")
+{
+    GIVEN("a runtime whose wake hook counts")
+    {
+        auto fixture = Fixture{};
+        auto wakes = 0;
+        fixture.runtime().homeserver.delayed_events_wake = [&wakes]() {
+            ++wakes;
+        };
+
+        WHEN("an event is scheduled, a schedule is refused, and the event is restarted")
+        {
+            auto const scheduled =
+                put_dedicated(fixture, true, fixture.alice_token, "m.test.delayed", "w1", schedule_body(5'000U));
+            auto const after_schedule = wakes;
+            auto const refused =
+                put_dedicated(fixture, true, fixture.alice_token, "m.test.delayed", "w2", schedule_body(0U));
+            auto const after_refusal = wakes;
+            auto const restart = post_action(fixture, true, delay_id_of(scheduled), "restart", fixture.alice_token);
+
+            THEN("one wake for the schedule, none for the refusal and none for the restart")
+            {
+                CHECK(after_schedule == 1);
+                CHECK(refused.status == 400U);
+                CHECK(after_refusal == 1);
+                CHECK(restart.status == 200U);
+                CHECK(wakes == 1);
+            }
+        }
+        fixture.runtime().homeserver.delayed_events_wake = nullptr;
+    }
+}
+
+SCENARIO("Ending the scheduling device leaves the delayed event scheduled, and another device manages it",
+         "[homeserver][delayed-events][routes][device]")
+{
+    GIVEN("two events scheduled by device D1 of alice, and a second device D3")
+    {
+        auto fixture = Fixture{};
+        auto const restarted = schedule_message(fixture, "a", 60'000U);
+        auto const cancelled = schedule_message(fixture, "b", 60'000U);
+        auto const other_token = log_in(fixture.runtime(), "alice", "D3");
+        auto const delete_device = GENERATE(false, true);
+        auto const before = fixture.event_count();
+
+        WHEN("D1 is logged out or deleted")
+        {
+            if (delete_device)
+            {
+                REQUIRE(request(fixture.runtime(), "DELETE", "/_matrix/client/v3/devices/D1", other_token,
+                                R"({"auth":{"type":"m.login.password","password":")" + std::string{password} + R"("}})")
+                            .status == 200U);
+            }
+            else
+            {
+                REQUIRE(
+                    request(fixture.runtime(), "POST", "/_matrix/client/v3/logout", fixture.alice_token, "{}").status ==
+                    200U);
+            }
+            fixture.set_time(t0 + 10'000U);
+            auto const restart = post_action(fixture, true, restarted, "restart", other_token);
+            auto const cancel = post_action(fixture, true, cancelled, "cancel", other_token);
+
+            THEN("both rows were still scheduled, D3 restarts one and cancels the other, and the restarted one is sent "
+                 "when due")
+            {
+                CHECK(restart.status == 200U);
+                CHECK(cancel.status == 200U);
+                CHECK(status_of(fixture, alice, cancelled) == db::DelayedEventStatus::cancelled);
+                fixture.run_job(t0 + 69'999U);
+                CHECK(status_of(fixture, alice, restarted) == db::DelayedEventStatus::scheduled);
+                fixture.set_time(t0 + 70'000U);
+                fixture.run_job(t0 + 70'000U);
+                CHECK(status_of(fixture, alice, restarted) == db::DelayedEventStatus::sent);
+                CHECK(fixture.event_count() == before + 1U);
+            }
+        }
+    }
+}
+
+SCENARIO(
+    "Content of exactly 65,536 bytes is accepted and 65,537 is refused 413 on the dedicated route and the query form",
+    "[homeserver][delayed-events][routes][size]")
+{
+    GIVEN("alice in a room and content objects of 65,536 and 65,537 serialised bytes")
+    {
+        auto fixture = Fixture{};
+        auto const exact = R"({"a":")" + std::string(65'528U, 'x') + R"("})";
+        auto const over = R"({"a":")" + std::string(65'529U, 'x') + R"("})";
+        REQUIRE(exact.size() == 65'536U);
+        REQUIRE(over.size() == 65'537U);
+
+        WHEN("each is scheduled on the dedicated route and on the query form")
+        {
+            auto const dedicated_ok =
+                put_dedicated(fixture, true, fixture.alice_token, "m.test.delayed", "s1", schedule_body(5'000U, exact));
+            auto const dedicated_over =
+                put_dedicated(fixture, true, fixture.alice_token, "m.test.delayed", "s2", schedule_body(5'000U, over));
+            auto const query_ok = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "q1",
+                                                   std::string{delay_param} + "=5000", exact);
+            auto const query_over = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "q2",
+                                                     std::string{delay_param} + "=5000", over);
+
+            THEN("65,536 is scheduled and 65,537 is 413 M_TOO_LARGE, on both")
+            {
+                CHECK(delay_id_of(dedicated_ok).size() > 0U);
+                CHECK(delay_id_of(query_ok).size() > 0U);
+                CHECK(dedicated_over.status == 413U);
+                CHECK(errcode_of(dedicated_over) == "M_TOO_LARGE");
+                CHECK(query_over.status == 413U);
+                CHECK(errcode_of(query_over) == "M_TOO_LARGE");
+                CHECK(fixture.table().scheduled_count(alice) == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("An application service scheduling for a user is recorded as such, and a user's own request is not",
+         "[homeserver][delayed-events][routes][appservice]")
+{
+    GIVEN("an application service whose namespace holds alice")
+    {
+        auto bridge = TestAppservice{.id = "bridge", .users_regex = "@.*:example.org"};
+        auto fixture = Fixture{appservice_test_config({bridge})};
+        auto const token = bridge.as_token();
+        auto const as_alice = std::string{"user_id=@alice:example.org"};
+
+        WHEN("it schedules as alice, and alice schedules directly")
+        {
+            auto const by_service = request(fixture.runtime(), "PUT",
+                                            "/_matrix/client/unstable/org.matrix.msc4140/rooms/" + fixture.room_id +
+                                                "/delayed_event/m.test.delayed/as1?" + as_alice,
+                                            token, schedule_body(5'000U));
+            auto const by_user =
+                put_dedicated(fixture, false, fixture.alice_token, "m.test.delayed", "u1", schedule_body(5'000U));
+
+            THEN("the stored row of the first has via_appservice and the second does not")
+            {
+                auto const* service_row = fixture.table().find_owned(alice, delay_id_of(by_service));
+                auto const* user_row = fixture.table().find_owned(alice, delay_id_of(by_user));
+                REQUIRE(service_row != nullptr);
+                REQUIRE(user_row != nullptr);
+                CHECK(service_row->via_appservice);
+                CHECK_FALSE(user_row->via_appservice);
+            }
+        }
+
+        WHEN("the ts parameter is sent with the delay parameter, by the service and by alice")
+        {
+            auto const by_service = request(fixture.runtime(), "PUT",
+                                            fixture.room_path() + "/send/m.test.delayed/ts1?" + as_alice + "&ts=1&" +
+                                                std::string{delay_param} + "=5000",
+                                            token, std::string{message_content});
+            auto const by_user = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "ts2",
+                                                  "ts=1&" + std::string{delay_param} + "=5000");
+            auto const service_id = delay_id_of(by_service);
+            auto const user_id = delay_id_of(by_user);
+            fixture.set_time(t0 + 5'000U);
+            fixture.run_job(t0 + 5'000U);
+
+            THEN("both are scheduled, ts is ignored, and each event's origin_server_ts is the send time")
+            {
+                for (auto const& id : {service_id, user_id})
+                {
+                    auto const* row = fixture.table().find_owned(alice, id);
+                    REQUIRE(row != nullptr);
+                    REQUIRE(row->status == db::DelayedEventStatus::sent);
+                    auto const event = request(fixture.runtime(), "GET",
+                                               fixture.room_path() + "/event/" + row->event_id, fixture.alice_token);
+                    REQUIRE(event.status == 200U);
+                    auto const event_body = parse_object(event.body);
+                    auto const* stamp = int_member(event_body, "origin_server_ts");
+                    REQUIRE(stamp != nullptr);
+                    CHECK(*stamp == static_cast<std::int64_t>(t0 + 5'000U));
+                }
             }
         }
     }

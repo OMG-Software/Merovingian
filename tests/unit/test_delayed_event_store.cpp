@@ -5,7 +5,10 @@
 // after a commit (and the one exception), the per-user eviction in the finalising transaction, the age prune, bound
 // parameters only, and a round trip through a SQLite file.
 #include "../support/TempDirectory.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/database/BoundValue.hpp"
 #include "merovingian/database/DelayedEventOutcomeResult.hpp"
+#include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/DelayedEventStatus.hpp"
 #include "merovingian/database/DelayedEventStore.hpp"
 #include "merovingian/database/DelayedEventTable.hpp"
@@ -15,9 +18,11 @@
 #include "merovingian/database/PreparedStatement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -109,7 +114,66 @@ struct SqliteClose final
     return text;
 }
 
+using RawRow = std::array<std::string, db::delayed_event_row_columns>;
+
+// The 16 columns of a valid scheduled row, as the text the store writes, for a test to change one of.
+[[nodiscard]] auto raw_row(std::string delay_id) -> RawRow
+{
+    return {std::move(delay_id),
+            std::string{alice},
+            "DEVICE",
+            "!room:example.org",
+            "m.room.message",
+            "false",
+            "",
+            "{}",
+            "",
+            "false",
+            "60000",
+            "1000",
+            "scheduled",
+            "0",
+            "",
+            ""};
+}
+
+// Writes `values` to the store's database as one row of `delayed_events`, without touching memory (a bound-parameter
+// insert, so any text goes in), the way a damaged or foreign file would hold it.
+[[nodiscard]] auto insert_raw_row(db::PersistentStore& store, RawRow const& values) -> bool
+{
+    auto statement = db::PreparedStatement{
+        "insert_raw_delayed_event",
+        "INSERT INTO delayed_events (delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
+        "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, event_id, "
+        "error_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        {}};
+    for (auto const& value : values)
+    {
+        statement.parameters.push_back(db::BoundValue{value, false});
+    }
+    return db::commit_persistent_transaction(store, {statement});
+}
+
+struct RawRowCase final
+{
+    std::string_view name{};
+    std::size_t column{0U};
+    std::string_view value{};
+};
+
 } // namespace
+
+SCENARIO("The delayed-event delay maximum is one number in the config and the database module",
+         "[database][delayed-events][delayed-event-store]")
+{
+    GIVEN("the config module's longest delay and the store's")
+    {
+        THEN("they are equal, or a configured delay could be accepted by the config and refused by the store")
+        {
+            REQUIRE(merovingian::config::max_delayed_event_delay_ms == db::max_delayed_event_delay_ms);
+        }
+    }
+}
 
 SCENARIO("A delayed event is stored once, within its caps, and refused outside them",
          "[database][delayed-events][delayed-event-store]")
@@ -705,19 +769,49 @@ SCENARIO("All of a user's delayed events are deleted in one statement",
             auto const transactions = db::committed_transaction_count(store) - before;
             auto const none = db::delete_delayed_events_of_user(store, "@nobody:example.org");
 
-            THEN("one DELETE by user removes them all, the other user keeps theirs, and no write is made for none")
+            THEN("one DELETE by user removes them all, the other user keeps theirs, and one for none is still made")
             {
                 REQUIRE(deleted);
                 REQUIRE(transactions == 1U);
-                REQUIRE(store.captured_statements.size() == 1U);
                 REQUIRE(store.captured_statements[0].sql == "DELETE FROM delayed_events WHERE user_id = $1");
                 REQUIRE(store.captured_statements[0].parameters[0].value == std::string{alice});
                 REQUIRE(none);
-                REQUIRE(db::committed_transaction_count(store) - before == 1U);
+                REQUIRE(db::committed_transaction_count(store) - before == 2U);
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[1].parameters[0].value == "@nobody:example.org");
                 REQUIRE(store.delayed_events.size() == 1U);
                 REQUIRE(store.delayed_events.find("b-live") != nullptr);
             }
         }
+    }
+}
+
+SCENARIO("Deactivation deletes a delayed event that exists only in the database",
+         "[database][delayed-events][delayed-event-store][sqlite]")
+{
+    GIVEN("a SQLite store with a row in the file that memory does not hold, for a user with no row in memory")
+    {
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-delayed-events-only-" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        auto opened = db::open_sqlite_persistent_store(path.string());
+        REQUIRE(opened.ok);
+        REQUIRE(insert_raw_row(opened.store, raw_row("only-in-file")));
+        REQUIRE(opened.store.delayed_events.size() == 0U);
+        REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "1");
+
+        WHEN("the user's delayed events are deleted")
+        {
+            auto const deleted = db::delete_delayed_events_of_user(opened.store, alice);
+
+            THEN("the row is gone from the file")
+            {
+                REQUIRE(deleted);
+                REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "0");
+            }
+        }
+        opened = {};
+        std::filesystem::remove(path);
     }
 }
 
@@ -929,6 +1023,99 @@ SCENARIO("Delayed events survive a reopen of a SQLite store with every column an
                 REQUIRE(reopened.store.delayed_events.find("d-sent") == nullptr);
                 REQUIRE(reopened.store.delayed_events.find("d-cancelled") != nullptr);
                 REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "3");
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Hydration reads a delayed event row strictly and counts the rows it skips",
+         "[database][delayed-events][delayed-event-store][sqlite]")
+{
+    GIVEN("a SQLite file holding a valid scheduled row, a sent row and one row that is not read exactly")
+    {
+        auto const bad = GENERATE(RawRowCase{"a delay_ms that is not a number", 10U, "abc"},
+                                  RawRowCase{"an empty delay_ms", 10U, ""},
+                                  RawRowCase{"a negative delay_ms", 10U, "-5"}, RawRowCase{"a delay_ms of 0", 10U, "0"},
+                                  RawRowCase{"a delay_ms over the maximum", 10U, "2678400001"},
+                                  RawRowCase{"a delay_ms of 21 digits", 10U, "123456789012345678901"},
+                                  RawRowCase{"a delayed_since_ms that is not a number", 11U, "abc"},
+                                  RawRowCase{"a boolean column holding yes", 5U, "yes"},
+                                  RawRowCase{"a finalised row with no finalised time", 13U, "0"});
+        INFO(bad.name);
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-delayed-events-strict-" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        {
+            auto opened = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(db::store_delayed_event(opened.store, row("m-good")));
+            REQUIRE(db::store_delayed_event(opened.store, row("a-sent")));
+            REQUIRE(db::record_delayed_event_outcome(opened.store, "a-sent", DelayedEventStatus::sent, 2000U,
+                                                     "$sent:example.org", {},
+                                                     10U) == DelayedEventOutcomeResult::recorded);
+            auto damaged = raw_row("z-bad");
+            damaged[bad.column] = std::string{bad.value};
+            if (bad.column == 13U)
+            {
+                damaged[12] = "cancelled";
+            }
+            REQUIRE(insert_raw_row(opened.store, damaged));
+        }
+
+        WHEN("the store is opened")
+        {
+            auto reopened = db::open_sqlite_persistent_store(path.string());
+
+            THEN("the row is not loaded, stays in the file and is counted, and the valid rows load")
+            {
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.delayed_events.size() == 2U);
+                REQUIRE(reopened.store.delayed_events.find("z-bad") == nullptr);
+                REQUIRE(reopened.store.delayed_events.find("m-good") != nullptr);
+                REQUIRE(reopened.store.delayed_events.find("a-sent") != nullptr);
+                REQUIRE(reopened.store.delayed_event_rows_skipped_at_load == 1U);
+                REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events WHERE delay_id = 'z-bad'") == "1");
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Hydration skips a second sent row that claims an event ID another row holds",
+         "[database][delayed-events][delayed-event-store][sqlite]")
+{
+    GIVEN("a SQLite file holding a sent row and a second sent row with the same event ID")
+    {
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-delayed-events-dup-" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        {
+            auto opened = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(db::store_delayed_event(opened.store, row("a-sent")));
+            REQUIRE(db::record_delayed_event_outcome(opened.store, "a-sent", DelayedEventStatus::sent, 2000U,
+                                                     "$sent:example.org", {},
+                                                     10U) == DelayedEventOutcomeResult::recorded);
+            auto duplicate = raw_row("z-sent");
+            duplicate[12] = "sent";
+            duplicate[13] = "2001";
+            duplicate[14] = "$sent:example.org";
+            REQUIRE(insert_raw_row(opened.store, duplicate));
+        }
+
+        WHEN("the store is opened")
+        {
+            auto reopened = db::open_sqlite_persistent_store(path.string());
+
+            THEN("the first row keeps the event ID, the second is skipped and counted, and stays in the file")
+            {
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.delayed_events.size() == 1U);
+                REQUIRE(reopened.store.delayed_events.find_sent_by_event_id("$sent:example.org") ==
+                        reopened.store.delayed_events.find("a-sent"));
+                REQUIRE(reopened.store.delayed_event_rows_skipped_at_load == 1U);
+                REQUIRE(sqlite_first_text(path, "SELECT count(*) FROM delayed_events") == "2");
             }
         }
         std::filesystem::remove(path);

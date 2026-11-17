@@ -7,6 +7,7 @@
 // MEROVINGIAN_TEST_POSTGRESQL_URI is not set; a skip is not a pass.
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/BoundValue.hpp>
 #include <merovingian/database/DelayedEventOutcomeResult.hpp>
 #include <merovingian/database/DelayedEventStatus.hpp>
 #include <merovingian/database/DelayedEventStore.hpp>
@@ -14,9 +15,11 @@
 #include <merovingian/database/OAuthStore.hpp>
 #include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/PostgresqlStore.hpp>
+#include <merovingian/database/PreparedStatement.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -1785,6 +1788,101 @@ SCENARIO("PostgreSQL delayed events of every status survive a reopen with every 
                 REQUIRE(again.store.delayed_events.find("d-state-" + suffix) == nullptr);
                 REQUIRE(again.store.delayed_events.find("d-failed-" + suffix) == nullptr);
                 REQUIRE(again.store.delayed_events.scheduled_count(alice) == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactly and counts them",
+         "[database][postgresql][integration][pg-behaviour][delayed-events]")
+{
+    GIVEN("a valid scheduled row and rows with a damaged number or boolean, written with bound parameters")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const suffix = unique_suffix();
+        auto const user = "@strict-" + suffix + ":example.org";
+        auto const baseline = reopen(uri).store.delayed_event_rows_skipped_at_load;
+
+        struct Damaged final
+        {
+            std::string_view name;
+            std::size_t column;
+            std::string_view value;
+        };
+        auto const cases = std::vector<Damaged>{
+            {"not a number",          10U, "abc"                  },
+            {"empty",                 10U, ""                     },
+            {"negative",              10U, "-5"                   },
+            {"zero",                  10U, "0"                    },
+            {"over the maximum",      10U, "2678400001"           },
+            {"21 digits",             10U, "123456789012345678901"},
+            {"since not a number",    11U, "abc"                  },
+            {"a boolean holding yes", 5U,  "yes"                  },
+        };
+        auto const insert_raw = [&](std::string const& delay_id, std::size_t damaged_column,
+                                    std::string_view damaged_value) {
+            auto columns = std::vector<std::string>{delay_id,
+                                                    user,
+                                                    "DEVICE",
+                                                    "!strict-" + suffix + ":example.org",
+                                                    "m.room.message",
+                                                    "false",
+                                                    "",
+                                                    "{}",
+                                                    "",
+                                                    "false",
+                                                    "60000",
+                                                    "1000",
+                                                    "scheduled",
+                                                    "0",
+                                                    "",
+                                                    ""};
+            if (damaged_column < columns.size())
+            {
+                columns[damaged_column] = std::string{damaged_value};
+            }
+            auto statement = db::PreparedStatement{
+                "insert_raw_delayed_event",
+                "INSERT INTO delayed_events (delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
+                "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, "
+                "event_id, error_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
+                "$16)",
+                {}};
+            for (auto const& column : columns)
+            {
+                statement.parameters.push_back(db::BoundValue{column, false});
+            }
+            auto opened = reopen(uri);
+            return db::commit_persistent_transaction(opened.store, {statement});
+        };
+        REQUIRE(insert_raw("d-strict-good-" + suffix, 99U, {}));
+        for (auto const& damaged : cases)
+        {
+            REQUIRE(insert_raw("d-strict-" + std::string{damaged.name} + "-" + suffix, damaged.column, damaged.value));
+        }
+
+        WHEN("the store is opened")
+        {
+            auto reopened = reopen(uri);
+
+            THEN("only the valid row is loaded and each damaged row is counted as skipped")
+            {
+                CHECK(reopened.store.delayed_events.find("d-strict-good-" + suffix) != nullptr);
+                CHECK(reopened.store.delayed_events.scheduled_count(user) == 1U);
+                CHECK(reopened.store.delayed_event_rows_skipped_at_load == baseline + cases.size());
+            }
+
+            AND_THEN("deleting the user's rows removes the skipped rows from the database as well")
+            {
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, user));
+                auto again = reopen(uri);
+                CHECK(again.store.delayed_event_rows_skipped_at_load == baseline);
+                CHECK(again.store.delayed_events.scheduled_count(user) == 0U);
             }
         }
     }

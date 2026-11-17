@@ -469,6 +469,37 @@ SCENARIO("A transaction ID is looked up by user, device, room, event type and ID
     }
 }
 
+SCENARIO("A second sent row claiming an event ID another row holds is refused", "[database][delayed-events]")
+{
+    GIVEN("a sent row")
+    {
+        auto table = DelayedEventTable{};
+        auto first = scheduled("d-first", "@a:example.org", 0U, 1000U);
+        first.status = DelayedEventStatus::sent;
+        first.finalised_at_ms = 5U;
+        first.event_id = "$event:example.org";
+        REQUIRE(table.insert(first));
+
+        WHEN("another sent row with the same event ID is inserted")
+        {
+            auto second = scheduled("d-second", "@a:example.org", 0U, 1000U);
+            second.status = DelayedEventStatus::sent;
+            second.finalised_at_ms = 6U;
+            second.event_id = "$event:example.org";
+            auto const accepted = table.insert(second);
+
+            THEN("it is refused, and the first row still owns the event ID and erasing it frees the ID")
+            {
+                REQUIRE_FALSE(accepted);
+                REQUIRE(table.find("d-second") == nullptr);
+                REQUIRE(table.find_sent_by_event_id("$event:example.org") == table.find("d-first"));
+                REQUIRE(table.erase("d-first"));
+                REQUIRE(table.find_sent_by_event_id("$event:example.org") == nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("Erasing a row, or all of a user's rows, removes it from every index", "[database][delayed-events]")
 {
     GIVEN("two users with scheduled, sent and cancelled rows")

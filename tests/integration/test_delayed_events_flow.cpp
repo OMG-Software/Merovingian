@@ -210,6 +210,23 @@ private:
     return hs::send_due_delayed_events(fixture.runtime(), now_ms, stop);
 }
 
+// Runs the job until no scheduled event is due at `now_ms` (the job sends at most one a run), and returns how many runs
+// it took. A bound stops a job that makes no progress.
+auto drain_job(Fixture& fixture, std::uint64_t now_ms) -> std::size_t
+{
+    auto runs = std::size_t{0U};
+    for (; runs < 1'000U; ++runs)
+    {
+        auto const* next = fixture.table().earliest_due();
+        if (next == nullptr || db::delayed_event_due_ms(*next) > now_ms)
+        {
+            break;
+        }
+        std::ignore = run_job(fixture, now_ms);
+    }
+    return runs;
+}
+
 [[nodiscard]] auto scheduled_id(Fixture& fixture, hs::DelayedEventScheduleRequest const& made) -> std::string
 {
     auto const result = schedule(fixture, made);
@@ -419,11 +436,11 @@ SCENARIO("A delayed event is never sent early, and is then sent once with its de
         {
             auto const wait = run_job(fixture, due - 1U);
 
-            THEN("nothing is sent and the job asks to run again in one millisecond")
+            THEN("nothing is sent and the job asks to run again after the 5 ms pace (the 1 ms left is raised to it)")
             {
                 CHECK(fixture.event_count() == before);
                 CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::scheduled);
-                CHECK(wait == std::chrono::milliseconds{1});
+                CHECK(wait == std::chrono::milliseconds{5});
             }
         }
 
@@ -481,7 +498,7 @@ SCENARIO("A delayed state event is sent as a state event and stamped with the ti
 
         WHEN("the job runs after the due time")
         {
-            std::ignore = run_job(fixture, t0 + 30'000U);
+            drain_job(fixture, t0 + 30'000U);
 
             THEN("the event is a state event whose origin_server_ts is the send time, not the schedule time")
             {
@@ -516,11 +533,11 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
                 CHECK(restarted.value.empty());
                 CHECK(*int_member(looked_up(fixture, alice, id), "delayed_since_ts") ==
                       static_cast<std::int64_t>(t0 + 20'000U));
-                std::ignore = run_job(fixture, t0 + 60'000U);
+                drain_job(fixture, t0 + 60'000U);
                 CHECK(fixture.event_count() == before);
-                std::ignore = run_job(fixture, t0 + 80'000U - 1U);
+                drain_job(fixture, t0 + 80'000U - 1U);
                 CHECK(fixture.event_count() == before);
-                std::ignore = run_job(fixture, t0 + 80'000U);
+                drain_job(fixture, t0 + 80'000U);
                 CHECK(fixture.event_count() == before + 1U);
             }
         }
@@ -536,7 +553,7 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
                 auto const finalised = *object_member_as_object(looked_up(fixture, alice, id), "finalised");
                 CHECK(string_member(finalised, "event_id") == nullptr);
                 CHECK(object_member_as_object(finalised, "error") == nullptr);
-                std::ignore = run_job(fixture, t0 + 10'000'000U);
+                drain_job(fixture, t0 + 10'000'000U);
                 CHECK(fixture.event_count() == before);
             }
         }
@@ -555,7 +572,7 @@ SCENARIO("Restarting a delayed event moves its deadline, and every cell of the o
                         fixture.bob_token, "{}")
                     .status == 200U);
         // `sent` is due first (1 s), then `failed` (bob has left, 2 s); `scheduled` (10 s) is not yet due.
-        std::ignore = run_job(fixture, t0 + 5'000U);
+        drain_job(fixture, t0 + 5'000U);
         REQUIRE(status_of(fixture, alice, sent) == db::DelayedEventStatus::sent);
         REQUIRE(status_of(fixture, bob, failed) == db::DelayedEventStatus::failed);
         REQUIRE(fixture.table().mark_being_sent(being_sent));
@@ -666,7 +683,7 @@ SCENARIO("A delayed event is authorised when it is sent, not when it was schedul
         {
             set_power(fixture, bob, 0);
             auto const before = fixture.event_count();
-            std::ignore = run_job(fixture, t0 + 10'000U);
+            drain_job(fixture, t0 + 10'000U);
 
             THEN("the state event is not sent and fails with the room's refusal, and is not tried again")
             {
@@ -678,7 +695,7 @@ SCENARIO("A delayed event is authorised when it is sent, not when it was schedul
                 // The message needs no power, so exactly it was sent.
                 CHECK(status_of(fixture, bob, message_id) == db::DelayedEventStatus::sent);
                 CHECK(fixture.event_count() == before + 1U);
-                std::ignore = run_job(fixture, t0 + 20'000U);
+                drain_job(fixture, t0 + 20'000U);
                 CHECK(fixture.event_count() == before + 1U);
             }
         }
@@ -695,9 +712,9 @@ SCENARIO("A delayed event is authorised when it is sent, not when it was schedul
 
         WHEN("the due time passes and the job runs twice")
         {
-            std::ignore = run_job(fixture, t0 + 10'000U);
+            drain_job(fixture, t0 + 10'000U);
             auto const after_first = fixture.event_count();
-            std::ignore = run_job(fixture, t0 + 20'000U);
+            drain_job(fixture, t0 + 20'000U);
 
             THEN("nothing is sent, the row is failed with the error in the lookup, and no second attempt is made")
             {
@@ -757,7 +774,7 @@ SCENARIO("A suspended, locked or deactivated sender sends nothing when the event
 
         WHEN("the due time passes")
         {
-            std::ignore = run_job(fixture, t0 + 10'000U);
+            drain_job(fixture, t0 + 10'000U);
 
             THEN("the event is failed with the account's errcode and nothing is sent")
             {
@@ -790,6 +807,8 @@ SCENARIO("The send-time rate limit fails a due event when the user's per-user po
 {
     GIVEN("a per-user policy of one send a minute for the send route, and two due events")
     {
+        // The rate-limit engine reads the steady clock itself (`ClientServerClock`, no test seam), so this relies on
+        // the two sends completing within the policy's 60-second window.
         auto limits = merovingian::config::ClientRateLimitsConfig{};
         limits.per_user["/_matrix/client/v3/rooms/{roomId}/send/"] = merovingian::http::RateLimitPolicy{1U, 60U};
         auto fixture = Fixture{memory_config(std::move(limits))};
@@ -798,7 +817,7 @@ SCENARIO("The send-time rate limit fails a due event when the user's per-user po
 
         WHEN("the job runs when both are due")
         {
-            std::ignore = run_job(fixture, t0 + 5'000U);
+            drain_job(fixture, t0 + 5'000U);
 
             THEN("the first is sent and the second fails with M_LIMIT_EXCEEDED")
             {
@@ -819,7 +838,7 @@ SCENARIO("The send-time rate limit fails a due event when the user's per-user po
 
         WHEN("the job runs when both are due")
         {
-            std::ignore = run_job(fixture, t0 + 5'000U);
+            drain_job(fixture, t0 + 5'000U);
 
             THEN("both are sent")
             {
@@ -924,7 +943,7 @@ SCENARIO("With the feature disabled nothing new is scheduled, but what was sched
         {
             auto const refused = schedule(fixture, message_request(fixture, alice, "c"));
             auto const cancel = manage(fixture, alice, cancelled, hs::DelayedEventAction::cancel);
-            std::ignore = run_job(fixture, t0 + 10'000U);
+            drain_job(fixture, t0 + 10'000U);
 
             THEN("the schedule is 403 M_FORBIDDEN, the cancel works and the due event is sent")
             {
@@ -1096,7 +1115,7 @@ SCENARIO("A delayed event survives a restart, and one that fell due while the se
                 CHECK(held->status == db::DelayedEventStatus::sent);
                 CHECK(early_count == before);
                 CHECK(homeserver.database.persistent_store.events.size() == before + 1U);
-                CHECK(early == std::chrono::milliseconds{1});
+                CHECK(early == std::chrono::milliseconds{5});
                 CHECK(late == std::chrono::milliseconds{60'000});
             }
         }
@@ -1118,8 +1137,8 @@ SCENARIO("A failed outcome commit leaves the event sent once and never sent agai
 
         WHEN("the job runs twice")
         {
-            std::ignore = run_job(fixture, t0 + 10'000U);
-            std::ignore = run_job(fixture, t0 + 20'000U);
+            drain_job(fixture, t0 + 10'000U);
+            drain_job(fixture, t0 + 20'000U);
 
             THEN("the event was sent once and memory says it was sent")
             {
@@ -1216,6 +1235,48 @@ SCENARIO("Deactivating an account deletes every delayed event of that user and n
     }
 }
 
+SCENARIO("Deactivation succeeds when the delayed-events delete fails, and the job then fails the user's due event",
+         "[homeserver][delayed-events][deactivation]")
+{
+    GIVEN("a scheduled event of bob and a delete of delayed events that fails")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, bob, "x", 10'000U));
+        auto const before = fixture.event_count();
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.insert(
+            "delete_delayed_events_of_user");
+
+        WHEN("bob's account is deactivated and the job runs at the due time")
+        {
+            {
+                auto const guard = hs::RuntimeLock{fixture.runtime().homeserver.mutex};
+                auto const result = hs::deactivate_user_account(fixture.runtime().homeserver, bob,
+                                                                {std::string{bob}, std::string{bob}, "test"});
+                REQUIRE(result.ok);
+            }
+            auto const still_held = fixture.table().find(id) != nullptr;
+            drain_job(fixture, t0 + 10'000U);
+
+            THEN("the account is deactivated, and the event is failed M_USER_DEACTIVATED and not sent")
+            {
+                auto deactivated = false;
+                for (auto const& user : fixture.runtime().homeserver.database.users)
+                {
+                    deactivated = deactivated || (user.user_id == bob && user.deactivated);
+                }
+                CHECK(deactivated);
+                CHECK(still_held);
+                CHECK(status_of(fixture, bob, id) == db::DelayedEventStatus::failed);
+                auto const error = *object_member_as_object(
+                    *object_member_as_object(looked_up(fixture, bob, id), "finalised"), "error");
+                CHECK(*string_member(error, "errcode") == "M_USER_DEACTIVATED");
+                CHECK(fixture.event_count() == before);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.force_failure_statement_names.clear();
+    }
+}
+
 SCENARIO("The job's return value says when it should run next, and it stops when asked",
          "[homeserver][delayed-events][job][pacing]")
 {
@@ -1252,27 +1313,61 @@ SCENARIO("The job's return value says when it should run next, and it stops when
         }
     }
 
-    GIVEN("102 events due at once")
+    GIVEN("102 events due at once, due 1 ms apart")
     {
         auto fixture = Fixture{memory_config()};
         fixture.runtime().limits.max_scheduled_delayed_events_per_user = 1000U;
+        auto ids = std::vector<std::string>{};
         for (auto index = 0; index < 102; ++index)
         {
-            std::ignore = scheduled_id(fixture, message_request(fixture, alice, std::to_string(index), 1'000U));
+            // Scheduled newest-deadline first, so the deadline order is not the order they were stored in.
+            ids.push_back(scheduled_id(fixture, message_request(fixture, alice, std::to_string(index),
+                                                                2'000U - static_cast<unsigned>(index))));
         }
         auto const before = fixture.event_count();
 
         WHEN("the job runs once")
         {
-            auto const wait = run_job(fixture, t0 + 1'000U);
+            auto const wait = run_job(fixture, t0 + 5'000U);
 
-            THEN("it sent 100 and asks to run again at once, and the next run sends the other two")
+            THEN("it sent exactly the earliest one and asks to run again after the pace, never at once")
             {
-                CHECK(fixture.event_count() == before + 100U);
-                CHECK(wait == std::chrono::milliseconds{0});
-                auto const second = run_job(fixture, t0 + 1'000U);
+                CHECK(fixture.event_count() == before + 1U);
+                CHECK(status_of(fixture, alice, ids[101]) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, ids[100]) == db::DelayedEventStatus::scheduled);
+                CHECK(wait == std::chrono::milliseconds{5});
+            }
+        }
+
+        WHEN("the job runs three times")
+        {
+            auto const first = run_job(fixture, t0 + 5'000U);
+            auto const second = run_job(fixture, t0 + 5'000U);
+            auto const third = run_job(fixture, t0 + 5'000U);
+
+            THEN("three events are sent in deadline order, each run returning the pace")
+            {
+                CHECK(fixture.event_count() == before + 3U);
+                CHECK(status_of(fixture, alice, ids[101]) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, ids[100]) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, ids[99]) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, ids[98]) == db::DelayedEventStatus::scheduled);
+                CHECK(first == std::chrono::milliseconds{5});
+                CHECK(second == std::chrono::milliseconds{5});
+                CHECK(third == std::chrono::milliseconds{5});
+            }
+        }
+
+        WHEN("the job is run until nothing is due")
+        {
+            auto const runs = drain_job(fixture, t0 + 5'000U);
+            auto const last = run_job(fixture, t0 + 5'000U);
+
+            THEN("it took one run per event, and the run with nothing due asks for 60 seconds")
+            {
+                CHECK(runs == 102U);
                 CHECK(fixture.event_count() == before + 102U);
-                CHECK(second == std::chrono::milliseconds{60'000});
+                CHECK(last == std::chrono::milliseconds{60'000});
             }
         }
 
@@ -1280,7 +1375,7 @@ SCENARIO("The job's return value says when it should run next, and it stops when
         {
             auto stop = hs::StopFlag{};
             stop.request_stop();
-            std::ignore = run_job(fixture, t0 + 1'000U, stop);
+            std::ignore = run_job(fixture, t0 + 5'000U, stop);
 
             THEN("nothing is sent")
             {
@@ -1288,6 +1383,153 @@ SCENARIO("The job's return value says when it should run next, and it stops when
                 CHECK(fixture.table().scheduled_count(alice) == 102U);
             }
         }
+    }
+
+    GIVEN("one event due now and one due in 2 ms")
+    {
+        auto fixture = Fixture{memory_config()};
+        std::ignore = scheduled_id(fixture, message_request(fixture, alice, "a", 1'000U));
+        std::ignore = scheduled_id(fixture, message_request(fixture, alice, "b", 1'002U));
+
+        WHEN("the job runs at the first deadline")
+        {
+            auto const wait = run_job(fixture, t0 + 1'000U);
+
+            THEN("the wait to the next deadline is raised to the pace")
+            {
+                CHECK(wait == std::chrono::milliseconds{5});
+            }
+        }
+    }
+}
+
+SCENARIO("An exception while recording the outcome keeps the mark, so the event is not sent again by this process",
+         "[homeserver][delayed-events][job][exception]")
+{
+    GIVEN("a due event, and the number of backend commits one send and its record make")
+    {
+        auto commits = std::size_t{0U};
+        {
+            auto calibration = Fixture{memory_config()};
+            std::ignore = scheduled_id(calibration, message_request(calibration, alice, "boom", 10'000U));
+            calibration.runtime().homeserver.database.persistent_store.test_before_backend_commit =
+                [&commits](std::size_t) {
+                    ++commits;
+                };
+            drain_job(calibration, t0 + 10'000U);
+            calibration.runtime().homeserver.database.persistent_store.test_before_backend_commit = nullptr;
+        }
+        REQUIRE(commits >= 2U);
+
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "boom", 10'000U));
+        auto const before = fixture.event_count();
+        auto seen = std::size_t{0U};
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = [&seen,
+                                                                                             commits](std::size_t) {
+            if (++seen == commits)
+            {
+                throw std::runtime_error{"simulated outcome commit failure"};
+            }
+        };
+
+        WHEN("the job runs at the due time and twice afterwards")
+        {
+            CHECK_NOTHROW(std::ignore = run_job(fixture, t0 + 10'000U));
+            auto const after_first = fixture.event_count();
+            CHECK_NOTHROW(std::ignore = run_job(fixture, t0 + 20'000U));
+            CHECK_NOTHROW(std::ignore = run_job(fixture, t0 + 30'000U));
+
+            THEN("the event was sent once, the row is still scheduled and marked, and nothing is sent again")
+            {
+                REQUIRE(seen == commits);
+                CHECK(after_first == before + 1U);
+                CHECK(fixture.event_count() == before + 1U);
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::scheduled);
+                CHECK(fixture.table().is_being_sent(id));
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = nullptr;
+    }
+}
+
+SCENARIO("The send action is subject to the user's rate limit for the send route",
+         "[homeserver][delayed-events][manage][rate-limit]")
+{
+    GIVEN("a per-user policy of one send a minute for the send route and two scheduled events")
+    {
+        // The rate-limit engine reads the steady clock itself (`ClientServerClock`, no test seam), so this relies on
+        // the two sends completing within the policy's 60-second window.
+        auto limits = merovingian::config::ClientRateLimitsConfig{};
+        limits.per_user["/_matrix/client/v3/rooms/{roomId}/send/"] = merovingian::http::RateLimitPolicy{1U, 60U};
+        auto fixture = Fixture{memory_config(std::move(limits))};
+        auto const first = scheduled_id(fixture, message_request(fixture, alice, "a", 60'000U));
+        auto const second = scheduled_id(fixture, message_request(fixture, alice, "b", 60'000U));
+
+        WHEN("the first is sent now, and then the second")
+        {
+            auto const sent = manage(fixture, alice, first, hs::DelayedEventAction::send);
+            auto const limited = manage(fixture, alice, second, hs::DelayedEventAction::send);
+
+            THEN("the second is 429 M_LIMIT_EXCEEDED with retry_after_ms and is still scheduled")
+            {
+                CHECK(sent.ok);
+                CHECK_FALSE(limited.ok);
+                CHECK(limited.status == 429U);
+                CHECK(limited.errcode == "M_LIMIT_EXCEEDED");
+                CHECK(limited.retry_after_ms > 0U);
+                CHECK(status_of(fixture, alice, first) == db::DelayedEventStatus::sent);
+                CHECK(status_of(fixture, alice, second) == db::DelayedEventStatus::scheduled);
+                CHECK_FALSE(fixture.table().is_being_sent(second));
+            }
+        }
+    }
+}
+
+SCENARIO("A restart is persisted: the reopened event's timer starts at the restart and it is sent at the new deadline",
+         "[homeserver][delayed-events][persistence]")
+{
+    GIVEN("an event scheduled for 60 s on a SQLite file, restarted 10 s later, and the runtime started again")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto const config = sqlite_config(path);
+        auto id = std::string{};
+        {
+            auto first = Fixture{config};
+            id = scheduled_id(first, message_request(first, alice, "txn-1", 60'000U));
+            first.runtime().homeserver.test_delayed_event_clock_ms = t0 + 10'000U;
+            REQUIRE(manage(first, alice, id, hs::DelayedEventAction::restart).ok);
+        }
+        auto restarted = hs::start_client_server(config);
+        REQUIRE(restarted.started);
+        auto& homeserver = restarted.runtime.homeserver;
+        homeserver.test_frozen_event_clock_ms = static_cast<std::int64_t>(t0);
+
+        WHEN("the job runs at the original deadline and then at the new one")
+        {
+            auto const before = homeserver.database.persistent_store.events.size();
+            std::ignore = hs::send_due_delayed_events(restarted.runtime, t0 + 60'000U, {});
+            auto const at_original = homeserver.database.persistent_store.events.size();
+            auto const* held = homeserver.database.persistent_store.delayed_events.find_owned(alice, id);
+            REQUIRE(held != nullptr);
+            auto const since = held->delayed_since_ms;
+            auto const scheduled_at_original = held->status == db::DelayedEventStatus::scheduled;
+            std::ignore = hs::send_due_delayed_events(restarted.runtime, t0 + 70'000U, {});
+
+            THEN("the timer started at the restart, nothing was sent at the original deadline, and it is sent at the "
+                 "new")
+            {
+                CHECK(since == t0 + 10'000U);
+                CHECK(at_original == before);
+                CHECK(scheduled_at_original);
+                CHECK(homeserver.database.persistent_store.events.size() == before + 1U);
+                CHECK(homeserver.database.persistent_store.delayed_events.find_owned(alice, id)->status ==
+                      db::DelayedEventStatus::sent);
+            }
+        }
+
+        std::filesystem::remove(path);
     }
 }
 
