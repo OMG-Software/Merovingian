@@ -627,6 +627,15 @@ template, no ID and no query) and `type` (the exception's mangled type name, `un
 The exception's message is never logged: it can quote request data. A `std::overflow_error` from the sync stream
 counter keeps its own answer and is not logged this way.
 
+## Delayed event diagnostics (ADR-0823 to ADR-0826)
+
+The delayed-events handlers and the `delayed-events` job log under the `delayed_events` module, each with the fields
+`delay_id`, `user_id`, `room_id` and `event_type`, never the content and never the state key (a call membership's state
+key holds a device ID): `delayed_event.scheduled` (info, with `delay_ms`), `delayed_event.restarted` (info),
+`delayed_event.cancelled` (info), `delayed_event.sent` (info, with `event_id`), `delayed_event.failed` (warning, with
+`status` and `errcode`) and `delayed_event.finalise_commit_failed` (error, with `outcome`, `refused` or `commit_failed`:
+the event was sent but its row could not be recorded, so it is sent again after a restart).
+
 ## Registration token file diagnostics
 
 When `security.registration.token_file` is set but yields no token hash, every `POST /register` that needs the token

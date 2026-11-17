@@ -19,7 +19,8 @@ The released clients, read at their release tags on 2026-11-17, do not send the 
 * Element Web 1.12.35 (matrix-js-sdk 45.1.0) tries the unstable dedicated path
   `.../org.matrix.msc4140/rooms/{roomId}/delayed_event/{eventType}/{txnId}` first and falls back to the query form on
   `M_UNRECOGNIZED`. It manages with `POST .../org.matrix.msc4140/delayed_events/{delayId}/{send|cancel|restart}`.
-  Element Call 0.28.2 pins matrix-js-sdk commit `3f05dc4d`, which does the same.
+  Element Call 0.28.2 pins matrix-js-sdk commit `3f05dc4d`, which schedules with the query form and manages with the
+  same path-form `POST`.
 * lk-jwt-service 0.10.0 manages a delegated leave as an application service acting for the user, on the same
   unstable management path.
 * Every client reads only the `org.matrix.msc4140` flag in `unstable_features`; matrix-js-sdk refuses to use the

@@ -112,6 +112,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   an OAuth client that has a session (ADR-0776, ADR-0777). Whatever replaces a device's credentials replaces its
   `oauth_sessions` row in the same transaction; a grant's audit row is in its transaction (ADR-0792).
   `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
+- A finalised-row bound and the 7-day prune apply to every `delayed_events` row; only `DelayedEventTable` touches the
+  rows, and the in-memory mirror changes only after the commit (one exception, ADR-0825). A path that deletes an
+  account's data deletes these rows too (ADR-0824).
 
 ## src/email
 
@@ -197,6 +200,10 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   API's own function; a password change, reset or deactivation calls `end_account_page_access`; a taken approval is
   spent only after the keys are stored (ADR-0796 to ADR-0798).
   `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0812, ADR-0773)`
+- A due delayed event is sent only by the `delayed-events` job or the `send` action, under the runtime lock, through
+  `send_event_as_user`, never before `delayed_since_ms + delay_ms`, after the account checks and the send-time rate
+  limit, with the "being sent" mark set across the send; a request carrying `org.matrix.msc4140.delay` never reaches an
+  immediate send; the content and state key are never logged (ADR-0823, ADR-0825, ADR-0826).
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`
@@ -339,6 +346,7 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   equals the generated step (ADR-0778). `migrations/AGENTS.md#Migration 002: the OAuth 2.0 tables (1.1.0, ADR-0776, ADR-0778)`
 - Next number is the maximum plus one, contiguous. Check that parallel branches have not taken it. Format and
   header follow `#File format`.
+- Migration 003 adds `delayed_events` the same way, in its own per-version array (ADR-0778, ADR-0824).
 - Every new table is classified for the federation worker. `#Federation worker classification`
 - `NOT NULL` additions need a `DEFAULT`. No drops without approval. Update `docs/database-persistence.md`.
 
