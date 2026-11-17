@@ -201,6 +201,34 @@ struct Webhook final
     return hs::receive_livekit_webhook(fixture.runtime(), request, now_seconds);
 }
 
+// alice's leave, delegated and checked at t0 with LiveKit answering that she is connected; the clock at t0 + 5 s.
+struct CheckedDelegation final
+{
+    Delegated delegated{};
+    std::int64_t now_s{static_cast<std::int64_t>((t0_ms + 5'000U) / 1000U)};
+    std::string room_name{};
+    std::string identity{};
+
+    CheckedDelegation()
+    {
+        auto& fixture = delegated.fixture;
+        fixture.mock().get_participant_status = 200U;
+        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
+        std::ignore = run_job(fixture, t0_ms);
+        REQUIRE(get_participant_calls(fixture) == 1U);
+        room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
+        identity = *hs::livekit_participant_identity("@alice:example.org", "DEVICEID_member");
+    }
+
+    // A participant_left of alice's delegation, with `created_at_json` written into the body as it is.
+    [[nodiscard]] auto left_with_created_at(std::string_view const id, std::string_view const created_at_json) const
+        -> std::string
+    {
+        return R"({"event":"participant_left","room":{"name":")" + room_name + R"("},"participant":{"identity":")" +
+               identity + R"("},"id":")" + std::string{id} + R"(","createdAt":)" + std::string{created_at_json} + "}";
+    }
+};
+
 } // namespace
 
 SCENARIO("A delegation is accepted only for the caller's own scheduled event, in the room, for this server's SFU",
@@ -643,15 +671,11 @@ SCENARIO("A LiveKit webhook is believed only when LiveKit signed it, and then on
 {
     GIVEN("alice's delegated leave, checked at t0 and seen connected")
     {
-        auto delegated = Delegated{};
-        auto& fixture = delegated.fixture;
-        fixture.mock().get_participant_status = 200U;
-        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
-        std::ignore = run_job(fixture, t0_ms);
-        REQUIRE(get_participant_calls(fixture) == 1U);
-        auto const now_s = static_cast<std::int64_t>((t0_ms + 5'000U) / 1000U);
-        auto const room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
-        auto const identity = *hs::livekit_participant_identity("@alice:example.org", "DEVICEID_member");
+        auto checked = CheckedDelegation{};
+        auto& fixture = checked.delegated.fixture;
+        auto const now_s = checked.now_s;
+        auto const& room_name = checked.room_name;
+        auto const& identity = checked.identity;
         auto const left = webhook_event("participant_left", room_name, identity, "EV_1", now_s);
 
         WHEN("a webhook is unsigned, signed with another secret, by another key, stale, or for another body")
@@ -691,7 +715,7 @@ SCENARIO("A LiveKit webhook is believed only when LiveKit signed it, and then on
             fixture.mock().get_participant_status = 404U;
             fixture.mock().get_participant_body = R"({"code":"not_found"})";
             auto const answer = post_webhook(fixture, webhook, now_s);
-            auto const status_after_webhook = delayed_row(fixture, delegated.delay_id)->status;
+            auto const status_after_webhook = delayed_row(fixture, checked.delegated.delay_id)->status;
             std::ignore = run_job(fixture, t0_ms + 6'000U);
 
             THEN("it is 200, changes nothing by itself, and the next run checks at once and sends the leave")
@@ -699,10 +723,36 @@ SCENARIO("A LiveKit webhook is believed only when LiveKit signed it, and then on
                 CHECK(answer.status == 200U);
                 CHECK(status_after_webhook == merovingian::database::DelayedEventStatus::scheduled);
                 CHECK(get_participant_calls(fixture) == 2U);
-                CHECK(delayed_row(fixture, delegated.delay_id)->status ==
+                CHECK(delayed_row(fixture, checked.delegated.delay_id)->status ==
                       merovingian::database::DelayedEventStatus::sent);
             }
         }
+
+        WHEN("a webhook is larger than 64 KiB")
+        {
+            auto const answer = post_webhook(fixture, signed_webhook(std::string(64U * 1024U + 1U, ' '), now_s), now_s);
+
+            THEN("it is 413")
+            {
+                CHECK(answer.status == 413U);
+            }
+        }
+    }
+}
+
+SCENARIO("A signed webhook that is replayed, stale, of another kind or for no delegation prompts no check",
+         "[homeserver][livekit][rtc][delegation][webhook]")
+{
+    // Only a participant_left LiveKit signed, seen once and recent, for a recorded delegation brings its check
+    // forward; anything else is still answered 200, so LiveKit does not retry it.
+    GIVEN("alice's delegated leave, checked at t0 and seen connected")
+    {
+        auto checked = CheckedDelegation{};
+        auto& fixture = checked.delegated.fixture;
+        auto const now_s = checked.now_s;
+        auto const& room_name = checked.room_name;
+        auto const& identity = checked.identity;
+        auto const left = webhook_event("participant_left", room_name, identity, "EV_1", now_s);
 
         WHEN("a signed webhook is replayed, stale, of another kind, or for no recorded delegation")
         {
@@ -732,16 +782,6 @@ SCENARIO("A LiveKit webhook is believed only when LiveKit signed it, and then on
                     CHECK(answer->status == 200U);
                 }
                 CHECK(get_participant_calls(fixture) == calls_after_first);
-            }
-        }
-
-        WHEN("a webhook is larger than 64 KiB")
-        {
-            auto const answer = post_webhook(fixture, signed_webhook(std::string(64U * 1024U + 1U, ' '), now_s), now_s);
-
-            THEN("it is 413")
-            {
-                CHECK(answer.status == 413U);
             }
         }
     }
@@ -987,39 +1027,6 @@ SCENARIO("A webhook prompts only the delegation of the participant it names, as 
         }
     }
 }
-
-namespace
-{
-
-// alice's leave, delegated and checked at t0 with LiveKit answering that she is connected; the clock at t0 + 5 s.
-struct CheckedDelegation final
-{
-    Delegated delegated{};
-    std::int64_t now_s{static_cast<std::int64_t>((t0_ms + 5'000U) / 1000U)};
-    std::string room_name{};
-    std::string identity{};
-
-    CheckedDelegation()
-    {
-        auto& fixture = delegated.fixture;
-        fixture.mock().get_participant_status = 200U;
-        fixture.mock().get_participant_body = R"({"state":"ACTIVE"})";
-        std::ignore = run_job(fixture, t0_ms);
-        REQUIRE(get_participant_calls(fixture) == 1U);
-        room_name = *hs::livekit_room_name(fixture.room_id, "m.call#room");
-        identity = *hs::livekit_participant_identity("@alice:example.org", "DEVICEID_member");
-    }
-
-    // A participant_left of alice's delegation, with `created_at_json` written into the body as it is.
-    [[nodiscard]] auto left_with_created_at(std::string_view const id, std::string_view const created_at_json) const
-        -> std::string
-    {
-        return R"({"event":"participant_left","room":{"name":")" + room_name + R"("},"participant":{"identity":")" +
-               identity + R"("},"id":")" + std::string{id} + R"(","createdAt":)" + std::string{created_at_json} + "}";
-    }
-};
-
-} // namespace
 
 SCENARIO("A webhook with a malformed token or unreadable claims is refused, and one that names nothing is ignored",
          "[homeserver][livekit][rtc][delegation][webhook][negative]")

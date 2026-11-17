@@ -813,6 +813,18 @@ SCENARIO("A federated request is refused unless this server's own state shows th
                 CHECK(left.errcode == "M_FORBIDDEN");
             }
         }
+    }
+}
+
+SCENARIO("A federated request for another SFU or with a malformed body is 400, and with no token service 404",
+         "[homeserver][livekit][rtc][federation][negative]")
+{
+    GIVEN("alice's room, which carol of remote.example.org has joined")
+    {
+        auto fixture = LiveKitFixture{};
+        seed_remote_join(fixture.runtime(), fixture.room_id, carol);
+        auto const joined = federated(fixture.runtime(), remote_server, federation_body(fixture.room_id, carol));
+        REQUIRE(joined.status == 200U);
 
         WHEN("the url is not this server's SFU, or the body is malformed")
         {
@@ -921,7 +933,11 @@ SCENARIO("A token for another server's SFU is relayed to that server, and only i
             }
         }
     }
+}
 
+SCENARIO("A relayed request's refusal or error is passed on only in this server's words",
+         "[homeserver][livekit][rtc][federation][relay][negative]")
+{
     GIVEN("remote.example.org answering get_token with a refusal, an error or a malformed jwt")
     {
         struct Case final
@@ -1064,7 +1080,11 @@ SCENARIO("A token request this server cannot carry out is refused before LiveKit
             }
         }
     }
+}
 
+SCENARIO("A token request is refused before any call when the outbound budget, signing key or API secret fails",
+         "[homeserver][livekit][rtc][negative]")
+{
     GIVEN("alice in a room that carol of remote.example.org has joined, and every client outbound slot taken")
     {
         auto fixture = LiveKitFixture{};

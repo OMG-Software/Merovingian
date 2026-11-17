@@ -3150,7 +3150,7 @@ SCENARIO("main admits a worker's key and profile query only as the verified quer
     }
 }
 
-SCENARIO("main admits a worker's LiveKit token relay only as the verified request it forwarded",
+SCENARIO("main admits a worker's LiveKit token relay under the origin it verified, with its permit, once",
          "[integration][federation-worker][query-relay][ghsa-3p5v][livekit]")
 {
     // ADR-0831: the LiveKit secret is main's alone, so a worker relays the request. The service is off here, so a
@@ -3199,6 +3199,62 @@ SCENARIO("main admits a worker's LiveKit token relay only as the verified reques
                 CHECK(body_of(reply).find("M_UNRECOGNIZED") != std::string::npos);
             }
         }
+        WHEN("the permit is spent a second time")
+        {
+            REQUIRE(context.establish("remote.example", {}, {*permit}));
+            auto const frame =
+                context.frame(merovingian::federation::WorkerRelayKind::livekit_token, body, "remote.example");
+            auto const first =
+                merovingian::homeserver::handle_livekit_token_ingest_request(runtime, frame, *channels.main);
+            auto const second =
+                merovingian::homeserver::handle_livekit_token_ingest_request(runtime, frame, *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("the first reaches the token service and the second is 403 M_FORBIDDEN")
+            {
+                INFO("first: " << first << "\nsecond: " << second);
+                CHECK(status_of(first) == 404U);
+                CHECK(status_of(second) == 403U);
+                CHECK(body_of(second).find("M_FORBIDDEN") != std::string::npos);
+                CHECK(body_of(second).find("M_UNRECOGNIZED") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("main refuses a worker's LiveKit token relay for another origin, or without this body's permit",
+         "[integration][federation-worker][query-relay][ghsa-3p5v][livekit][negative]")
+{
+    // ADR-0831: each relay here is refused by main before the token service. The service is off, so a relay that
+    // got through would answer 404 M_UNRECOGNIZED; every refusal must be 403 M_FORBIDDEN instead.
+    GIVEN("a runtime with no LiveKit token service and a verified request from remote.example carrying a body")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-livekit-binding");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "livekit-binding-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.livekit_token_provider);
+
+        auto const body = std::string{R"({"room_id":"!r:remote.example","slot_id":"s","member":{"id":"m"}})"};
+        auto const permit =
+            merovingian::federation::worker_relay_digest(merovingian::federation::WorkerRelayKind::livekit_token, body);
+        REQUIRE(permit.has_value());
+        auto const status_of = [](std::string const& reply) {
+            return merovingian::ipc::ipc_json_get_u64(reply, "status");
+        };
+        auto const body_of = [](std::string const& reply) {
+            return merovingian::ipc::ipc_json_get_str(reply, "response_body");
+        };
+
+        auto channels = merovingian::tests::make_edu_relay_channels();
+        auto context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+
         WHEN("the worker names an origin other than the one main verified")
         {
             REQUIRE(context.establish("remote.example", {}, {*permit}));
@@ -3229,26 +3285,6 @@ SCENARIO("main admits a worker's LiveKit token relay only as the verified reques
                 CHECK(status_of(reply) == 403U);
                 CHECK(body_of(reply).find("M_FORBIDDEN") != std::string::npos);
                 CHECK(body_of(reply).find("M_UNRECOGNIZED") == std::string::npos);
-            }
-        }
-        WHEN("the permit is spent a second time")
-        {
-            REQUIRE(context.establish("remote.example", {}, {*permit}));
-            auto const frame =
-                context.frame(merovingian::federation::WorkerRelayKind::livekit_token, body, "remote.example");
-            auto const first =
-                merovingian::homeserver::handle_livekit_token_ingest_request(runtime, frame, *channels.main);
-            auto const second =
-                merovingian::homeserver::handle_livekit_token_ingest_request(runtime, frame, *channels.main);
-            REQUIRE(context.finish());
-
-            THEN("the first reaches the token service and the second is 403 M_FORBIDDEN")
-            {
-                INFO("first: " << first << "\nsecond: " << second);
-                CHECK(status_of(first) == 404U);
-                CHECK(status_of(second) == 403U);
-                CHECK(body_of(second).find("M_FORBIDDEN") != std::string::npos);
-                CHECK(body_of(second).find("M_UNRECOGNIZED") == std::string::npos);
             }
         }
         WHEN("the permit was made for another body")
