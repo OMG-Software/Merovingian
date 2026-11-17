@@ -12572,6 +12572,21 @@ namespace
         return schedule_delayed_event_for_request(rt, req, user, std::move(request));
     }
 
+    // A request that carries `org.matrix.msc4140.delay` is never sent at once by any route (ADR-0823). PUT /send and
+    // PUT /state schedule it; every other route that sends a room event from the caller's body (POST .../send, PUT
+    // .../redact/...) refuses it here, before anything is sent and whether or not delayed events are enabled. Uses
+    // `delay_query_of`, the one reader of the parameter.
+    [[nodiscard]] auto delay_parameter_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (!delay_query_of(req.target).present)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                            "delayed events are scheduled with PUT /send, PUT /state or the delayed_event endpoint");
+    }
+
     // The members of S1 and S2's body.
     struct DelayedScheduleBody final
     {
@@ -21034,6 +21049,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // ../../docs/matrix-v1.19-spec/client-server-api.md#redactions
             if (auto const redact = room_redact_path_parts(req.target); redact.has_value())
             {
+                if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
@@ -21279,6 +21298,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (req.method == "POST" && suffix.size() > send_s.size() &&
             suffix.substr(suffix.size() - send_s.size()) == send_s)
         {
+            if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+            {
+                return std::move(*refused);
+            }
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - send_s.size()));
             log_diagnostic("room.send_event.internal", {
                                                            {"actor",   *user,   false},

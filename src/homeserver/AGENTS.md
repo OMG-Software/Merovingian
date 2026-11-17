@@ -1208,6 +1208,10 @@ from the table's redacted JSON; do not add a second copy.
 `DelayedEvents.cpp` schedules, manages, looks up and sends an event a user asked to have sent later; the routes (the
 next layer) only parse a request and call it. Invariants a change must keep:
 
+- **The mark is owned by `SendMark` (RAII).** It is cleared on every path, an exception included. The job's send is
+  caught whole (a job item has no dispatch backstop, and an unrecorded attempt would be repeated every few seconds): it
+  is recorded `failed` 500 `M_UNKNOWN`. The `send` action does not catch: the exception reaches the backstop (500) and
+  the row stays scheduled.
 - **One sender at a time, marked.** A send takes `runtime.mutex` for one event, marks the row as being sent
   (`DelayedEventTable::mark_being_sent`, memory only) before `send_event_as_resolved_user`, and finalising clears the
   mark. A marked row is offered by nobody: restart, cancel and send answer 409 "being sent". The job sends ONE event per
@@ -1232,7 +1236,8 @@ next layer) only parse a request and call it. Invariants a change must keep:
 - **Lookup is by `find_owned` only**, and an unknown, another user's, empty or over-long ID is the one 404 `M_NOT_FOUND`
   "Delayed event not found.", byte for byte.
 - **Logging** is under `delayed_events` (`delayed_event.scheduled`, `.restarted`, `.cancelled`, `.sent`, `.failed`,
-  `.finalise_commit_failed`) with `delay_id`, `user_id`, `room_id`, `event_type`, and `event_id`, `status`, `errcode`
+  `.finalise_commit_failed`, and `.prune_failed`, a warning with no row fields) with `delay_id`, `user_id`, `room_id`,
+  `event_type`, and `event_id`, `status`, `errcode`, and for an exception in the job's send `type` (never `what()`),
   where they apply. NEVER log `content_json` or a state key (a call-membership state key holds a device ID).
 - `send_event_as_user`'s room and membership refusal is `room_send_refusal`, and its power refusal
   `event_authorization_refusal`, both shared with the schedule-time check; change them, not a copy.

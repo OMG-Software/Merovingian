@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1287,5 +1288,78 @@ SCENARIO("The job's return value says when it should run next, and it stops when
                 CHECK(fixture.table().scheduled_count(alice) == 102U);
             }
         }
+    }
+}
+
+SCENARIO("A send that throws in the job is recorded failed with M_UNKNOWN and is not sent again",
+         "[homeserver][delayed-events][job][exception]")
+{
+    GIVEN("a due delayed event whose send throws from the store's commit")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "boom", 10'000U));
+        auto armed = true;
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = [&armed](std::size_t) {
+            if (armed)
+            {
+                armed = false;
+                throw std::runtime_error{"simulated commit failure"};
+            }
+        };
+
+        WHEN("the job runs at the due time, and again afterwards")
+        {
+            CHECK_NOTHROW(std::ignore = run_job(fixture, t0 + 10'000U));
+            auto const after_first = fixture.event_count();
+            CHECK_NOTHROW(std::ignore = run_job(fixture, t0 + 20'000U));
+
+            THEN("the row is failed with M_UNKNOWN, unmarked, and the second run sends nothing")
+            {
+                REQUIRE(armed == false);
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::failed);
+                CHECK_FALSE(fixture.table().is_being_sent(id));
+                auto const error = *object_member_as_object(
+                    *object_member_as_object(looked_up(fixture, alice, id), "finalised"), "error");
+                CHECK(*string_member(error, "errcode") == "M_UNKNOWN");
+                CHECK(fixture.event_count() == after_first);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = nullptr;
+    }
+}
+
+SCENARIO("A send action that throws is answered 500 by the backstop and leaves the event scheduled and unmarked",
+         "[homeserver][delayed-events][manage][exception]")
+{
+    GIVEN("a scheduled delayed event whose send throws from the store's commit")
+    {
+        auto fixture = Fixture{memory_config()};
+        auto const id = scheduled_id(fixture, message_request(fixture, alice, "boom", 60'000U));
+        auto armed = true;
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = [&armed](std::size_t) {
+            if (armed)
+            {
+                armed = false;
+                throw std::runtime_error{"simulated commit failure"};
+            }
+        };
+
+        WHEN("the send action is requested, and then a restart")
+        {
+            auto const sent = request(fixture.runtime(), "POST", "/_matrix/client/v1/delayed_events/" + id + "/send",
+                                      fixture.alice_token);
+            auto const restart = request(fixture.runtime(), "POST",
+                                         "/_matrix/client/v1/delayed_events/" + id + "/restart", fixture.alice_token);
+
+            THEN("the first is 500, the row is scheduled and not marked, and the restart is 200")
+            {
+                REQUIRE(armed == false);
+                CHECK(sent.status == 500U);
+                CHECK(status_of(fixture, alice, id) == db::DelayedEventStatus::scheduled);
+                CHECK_FALSE(fixture.table().is_being_sent(id));
+                CHECK(restart.status == 200U);
+            }
+        }
+        fixture.runtime().homeserver.database.persistent_store.test_before_backend_commit = nullptr;
     }
 }

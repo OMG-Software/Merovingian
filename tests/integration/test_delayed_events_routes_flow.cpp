@@ -1337,3 +1337,92 @@ SCENARIO("A method a delayed-event path does not serve, and the listing, get the
         }
     }
 }
+
+SCENARIO("A NUL in the content of a delayed event is refused as a raw byte and kept as an escape",
+         "[homeserver][delayed-events][routes][nul]")
+{
+    GIVEN("alice in a room")
+    {
+        auto fixture = Fixture{};
+        auto const before = fixture.event_count();
+        auto const raw_nul = std::string{"{\"a\":\"x"} + std::string(1U, '\0') + "y\"}";
+        auto const escaped_nul = std::string{R"({"a":"x\u0000y"})"};
+
+        WHEN("the legacy forms carry a raw NUL byte inside a string")
+        {
+            auto const l1 = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "n1",
+                                             std::string{delay_param} + "=5000", raw_nul);
+            auto const l2 = put_state_delayed(fixture, fixture.alice_token, "m.test.state", "/k",
+                                              std::string{delay_param} + "=5000", raw_nul);
+
+            THEN("each is 400 M_NOT_JSON from the gate, and nothing is stored or sent")
+            {
+                for (auto const* response : {&l1, &l2})
+                {
+                    CHECK(response->status == 400U);
+                    CHECK(errcode_of(*response) == "M_NOT_JSON");
+                }
+                CHECK(fixture.event_count() == before);
+            }
+        }
+
+        WHEN("each form carries the escape \u0000 in a string")
+        {
+            auto const l1 = put_send_delayed(fixture, fixture.alice_token, "m.test.delayed", "n2",
+                                             std::string{delay_param} + "=5000", escaped_nul);
+            auto const l2 = put_state_delayed(fixture, fixture.alice_token, "m.test.state", "/k",
+                                              std::string{delay_param} + "=5000", escaped_nul);
+            auto const s1 = put_dedicated(fixture, true, fixture.alice_token, "m.test.delayed", "n3",
+                                          schedule_body(5'000U, escaped_nul));
+            auto const s2 = put_dedicated(fixture, false, fixture.alice_token, "m.test.delayed", "n4",
+                                          schedule_body(5'000U, escaped_nul));
+
+            THEN("each is accepted and no stored content holds a raw NUL byte")
+            {
+                for (auto const* response : {&l1, &l2, &s1, &s2})
+                {
+                    auto const id = delay_id_of(*response);
+                    auto const* row = fixture.table().find_owned(alice, id);
+                    REQUIRE(row != nullptr);
+                    CHECK(row->content_json.find('\0') == std::string::npos);
+                    CHECK(row->content_json.find(R"(\u0000)") != std::string::npos);
+                    CHECK(get_delayed(fixture, true, id, fixture.alice_token).status == 200U);
+                }
+                fixture.set_time(t0 + 5'000U);
+                fixture.run_job(t0 + 5'000U);
+            }
+        }
+    }
+}
+
+SCENARIO("Any other route that sends from the caller's body refuses the delay parameter",
+         "[homeserver][delayed-events][routes][invalid-param]")
+{
+    GIVEN("alice in a room, with delayed events on or off")
+    {
+        auto fixture = Fixture{};
+        fixture.runtime().limits.delayed_events_enabled = GENERATE(true, false);
+        auto const before = fixture.event_count();
+
+        WHEN("POST .../send and PUT .../redact/... carry the parameter")
+        {
+            auto const sent =
+                request(fixture.runtime(), "POST", fixture.room_path() + "/send?" + std::string{delay_param} + "=5000",
+                        fixture.alice_token, R"({"type":"m.test.delayed","content":{"body":"now"}})");
+            auto const redact =
+                request(fixture.runtime(), "PUT",
+                        fixture.room_path() + "/redact/$somewhere/t1?" + std::string{delay_param} + "=5000",
+                        fixture.alice_token, "{}");
+
+            THEN("each is 400 M_INVALID_PARAM and nothing is sent")
+            {
+                CHECK(sent.status == 400U);
+                CHECK(errcode_of(sent) == "M_INVALID_PARAM");
+                CHECK(redact.status == 400U);
+                CHECK(errcode_of(redact) == "M_INVALID_PARAM");
+                CHECK(fixture.event_count() == before);
+                CHECK_FALSE(timeline_has(fixture, "m.test.delayed"));
+            }
+        }
+    }
+}

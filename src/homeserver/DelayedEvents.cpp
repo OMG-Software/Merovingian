@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/core/CurrentException.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/crypto/Encoding.hpp"
 #include "merovingian/crypto/Random.hpp"
@@ -316,6 +317,52 @@ namespace
         }
     }
 
+    // Owns the "being sent" mark of one row (memory only) for the length of one send: made with the mark taken, and
+    // when it goes out of scope, on every path including an exception, the mark is cleared. Finalising the row already
+    // clears it and clearing an unmarked row does nothing, so the destructor clears unconditionally. A record the store
+    // refuses is the one case that must keep the mark (the row is then never sent again by this process): that path
+    // calls `keep_mark()`.
+    class SendMark final
+    {
+    public:
+        SendMark(database::DelayedEventTable& table, std::string delay_id)
+            : m_table{&table}
+            , m_delay_id{std::move(delay_id)}
+            , m_held{table.mark_being_sent(m_delay_id)}
+        {
+        }
+
+        SendMark(SendMark const&) = delete;
+        auto operator=(SendMark const&) -> SendMark& = delete;
+        SendMark(SendMark&&) = delete;
+        auto operator=(SendMark&&) -> SendMark& = delete;
+
+        ~SendMark() noexcept
+        {
+            if (m_held)
+            {
+                std::ignore = m_table->clear_being_sent(m_delay_id);
+            }
+        }
+
+        // True when this guard took the mark: nobody else was sending the row.
+        [[nodiscard]] auto held() const noexcept -> bool
+        {
+            return m_held;
+        }
+
+        // The record of the outcome was refused: leave the mark, so the row is not sent again by this process.
+        auto keep_mark() noexcept -> void
+        {
+            m_held = false;
+        }
+
+    private:
+        database::DelayedEventTable* m_table;
+        std::string m_delay_id;
+        bool m_held;
+    };
+
     // Sends the earliest-due row if it is due at `now_ms`, under its own hold of the runtime lock, and records the
     // outcome (any failure is `failed`, never retried). False when nothing was due.
     [[nodiscard]] auto send_next_due(ClientServerRuntime& runtime, std::uint64_t now_ms) -> bool
@@ -329,14 +376,38 @@ namespace
         }
         // A copy: the send and the outcome change the table, which invalidates the pointer.
         auto const row = *next;
-        if (!table.mark_being_sent(row.delay_id))
+        auto mark = SendMark{table, row.delay_id};
+        if (!mark.held())
         {
             return false;
         }
-        auto const result = attempt_send(runtime, row);
+        // The catch-all is here because this is a job item, not a request handler: the dispatch boundary's backstop
+        // does not cover it, and an attempt that is not recorded is repeated, because PeriodicJob runs a job that
+        // throws again a few seconds later, and a throw after the event was stored would send it every time. So an
+        // exception is a failed send with status 500, recorded like any other failure. Only the type is logged, never
+        // what(), which can carry content.
+        auto result = std::optional<OperationResult>{};
+        try
+        {
+            result = attempt_send(runtime, row);
+        }
+        catch (...)
+        {
+            log_event("delayed_event.failed", row,
+                      {
+                          {"status", "500",                               false},
+                          {"type",   core::current_exception_type_name(), false},
+            },
+                      observability::LogEventSeverity::error);
+            result = refusal(500U, "M_UNKNOWN", "internal server error");
+        }
         // Finalising clears the mark. A record that was refused leaves the row marked, so it is never sent again by
         // this process (and is logged), never in a loop.
-        record_send_outcome(runtime, row, result, now_ms);
+        record_send_outcome(runtime, row, *result, now_ms);
+        if (table.is_being_sent(row.delay_id))
+        {
+            mark.keep_mark();
+        }
         return true;
     }
 
@@ -516,7 +587,10 @@ auto manage_delayed_event(ClientServerRuntime& runtime, std::string_view user_id
             log_event("delayed_event.cancelled", row);
             return ok_result();
         case DelayedEventAction::send: {
-            if (!store.delayed_events.mark_being_sent(row.delay_id))
+            // An exception from the send unwinds through the guard (the mark is cleared, the row stays scheduled with
+            // its timer unchanged) to the dispatch boundary's backstop, which answers 500.
+            auto mark = SendMark{store.delayed_events, row.delay_id};
+            if (!mark.held())
             {
                 return conflict_result("The delayed event is being sent.");
             }
@@ -524,10 +598,13 @@ auto manage_delayed_event(ClientServerRuntime& runtime, std::string_view user_id
             if (!result.ok)
             {
                 // The row stays scheduled with its timer unchanged; the caller answers as the send did.
-                std::ignore = store.delayed_events.clear_being_sent(row.delay_id);
                 return result;
             }
             record_send_outcome(runtime, row, result, now_ms);
+            if (store.delayed_events.is_being_sent(row.delay_id))
+            {
+                mark.keep_mark();
+            }
             return ok_result();
         }
         }
@@ -608,7 +685,11 @@ auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms,
     {
         // One batch of the age prune, in this hold. A failed commit leaves the rows for the next run.
         auto const cutoff_ms = now_ms > finalised_retention_ms ? now_ms - finalised_retention_ms : std::uint64_t{0U};
-        std::ignore = database::prune_finalised_delayed_events(store, cutoff_ms, prune_batch_rows);
+        if (!database::prune_finalised_delayed_events(store, cutoff_ms, prune_batch_rows).has_value())
+        {
+            observability::log_diagnostic(log_module, "delayed_event.prune_failed", {},
+                                          observability::LogEventSeverity::warning);
+        }
     }
     auto const* next = store.delayed_events.earliest_due();
     if (next == nullptr)
