@@ -45,8 +45,9 @@ Rejected:
 * **A workflow-level group that cancels older runs.** It would cancel the package builds, which are the checks every push
   to `main` reports, and a tag's run (`release.yml` calls this workflow) would share the group. GitHub also does not
   promise that runs enter a group in push order, so the group alone cannot tell which run is newer.
-* **`queue: max` on the job's group.** It would keep a newer commit's publish waiting instead of cancelled, but GitHub
-  documents it only for a workflow-level group; see Consequences.
+* **`queue: max` on the job's group, for now.** Up to 100 publishes could wait instead of being cancelled. GitHub's
+  guide describes it for jobs too, but shows it only on a workflow-level group, so it waits for a trial run of this
+  job-level group; see Consequences.
 * **Run numbers or times.** A re-run of an older run gets a later time, and run order is not commit order; only the
   commit graph says which build is newer.
 
@@ -57,9 +58,11 @@ Rejected:
   therefore cancel a newer commit's waiting publish and then publish itself. `latest` never goes backwards (the older
   build is still newer than what it replaces), but it can lag behind `main` until the next push, or until a maintainer
   re-runs the cancelled `publish-latest`, which then sees itself `ahead` and publishes. GitHub's `queue: max` keeps up
-  to 100 pending entries instead, which would remove the lag; it is not used because GitHub documents it only on a
-  workflow-level group, and an unsupported key on this job-level group would fail `packages.yml` on every push to
-  `main`. The ancestry check keeps either setting safe, so adopting it needs only a run that shows the job accepts it.
+  to 100 pending jobs or runs instead, which would make that lag rarer but not impossible: once 100 are pending, a new
+  one is still cancelled. GitHub's guide describes it for pending jobs as well as runs, but its only example is a
+  workflow-level group, and a key this job-level group rejected would fail `packages.yml` on every push to `main`. It is
+  a candidate, not a rejection: the ancestry check keeps either setting safe, so adopting it needs only a trial run that
+  shows the job-level group accepts it.
 * A force-push to `main` that rewrites the published commit, or a reset of `main` behind it, makes every later publish
   fail until a maintainer recovers: wait for any `publish-latest` in progress, delete `latest` (with
   `gh release delete latest --cleanup-tag` when the release exists, or the tag's ref alone when only the tag is left),
