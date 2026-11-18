@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JoiningThreads.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
@@ -68,12 +69,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -834,9 +838,9 @@ SCENARIO("The local router hands a transaction's PDUs to the sink with runtime.m
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
         auto sink_calls = 0U;
         auto sink_saw_lock_held = false;
-        runtime.federation.pdu_sink = [&runtime, &sink_calls, &sink_saw_lock_held](
-                                          merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::PduIngestionResult {
+        runtime.federation.pdu_sink =
+            [&runtime, &sink_calls, &sink_saw_lock_held](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
             ++sink_calls;
             sink_saw_lock_held = sink_saw_lock_held || runtime.mutex.held_by_current_thread();
             return {merovingian::federation::PduIngestionStatus::accepted, "", 1U, 1U};
@@ -857,6 +861,78 @@ SCENARIO("The local router hands a transaction's PDUs to the sink with runtime.m
                 REQUIRE(response.status == 200U);
                 REQUIRE(sink_calls == 1U);
                 REQUIRE_FALSE(sink_saw_lock_held);
+            }
+        }
+    }
+}
+
+SCENARIO("The federation query providers that read main's store wait for runtime.mutex",
+         "[integration][federation][lock_order]")
+{
+    // The local router runs the federation core without runtime.mutex, as production does, so a provider that reads or
+    // changes main's store takes the lock itself (ADR-0711). A provider that did not would read the store while a
+    // client request writes it.
+    GIVEN("a started runtime with its federation callbacks wired, and each provider that reads main's store")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const user_id = std::string{"@alice:localhost"};
+        auto const keys_body = std::string{R"({"device_keys":{"@alice:localhost":[]}})"};
+        auto const claim_body = std::string{R"({"one_time_keys":{"@alice:localhost":{"DEVICE":"signed_curve25519"}}})"};
+        auto const providers = std::array<std::pair<std::string_view, std::function<void()>>, 5>{
+            {
+             {"directory_query",
+                 [&runtime] {
+                     std::ignore = runtime.federation.directory_query_provider("#nowhere:localhost");
+                 }},
+             {"profile_query",
+                 [&runtime, &user_id] {
+                     std::ignore = runtime.federation.profile_query_provider(user_id);
+                 }},
+             {"device_keys_query",
+                 [&runtime, &keys_body] {
+                     std::ignore = runtime.federation.device_keys_query_provider(keys_body);
+                 }},
+             {"one_time_keys_claim",
+                 [&runtime, &claim_body] {
+                     std::ignore = runtime.federation.one_time_keys_claim_provider(claim_body);
+                 }},
+             {"user_devices",
+                 [&runtime, &user_id] {
+                     std::ignore = runtime.federation.user_devices_provider(user_id);
+                 }},
+             }
+        };
+
+        WHEN("each is called on another thread while this thread holds runtime.mutex")
+        {
+            THEN("none returns until the lock is released, and each returns once it is")
+            {
+                for (auto const& [name, call] : providers)
+                {
+                    CAPTURE(name);
+                    auto returned = std::atomic<bool>{false};
+                    auto finished_while_locked = false;
+                    {
+                        auto worker = merovingian::tests::JoiningThreads{};
+                        {
+                            auto const guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
+                            worker.emplace_back([&call, &returned] {
+                                call();
+                                returned.store(true);
+                            });
+                            // A provider that took no lock would have returned well within this time. One that takes
+                            // the lock cannot return before the release, so the scenario never fails on a slow runner.
+                            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                            finished_while_locked = returned.load();
+                        }
+                        worker.join();
+                    }
+                    REQUIRE_FALSE(finished_while_locked);
+                    REQUIRE(returned.load());
+                }
             }
         }
     }

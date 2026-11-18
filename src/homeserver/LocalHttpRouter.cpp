@@ -3318,6 +3318,7 @@ namespace
 
         runtime.federation.directory_query_provider =
             [rt](std::string_view room_alias) -> federation::FederationDirectory {
+            auto const store_guard = main_store_read_lock(*rt);
             auto const found = database::find_room_alias(rt->database.persistent_store, room_alias);
             if (!found.has_value())
             {
@@ -3356,6 +3357,7 @@ namespace
         };
 
         runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
+            auto const store_guard = main_store_read_lock(*rt);
             auto const profile = database::find_profile(rt->database.persistent_store, user_id);
             if (profile.has_value())
             {
@@ -3385,16 +3387,20 @@ namespace
         };
 
         runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_device_keys_query_response(rt->database.persistent_store, body,
                                                                 rt->config.server().server_name);
         };
 
+        // A claim deletes the keys it hands out, so it holds the lock as a writer, not through main_store_read_lock.
         runtime.federation.one_time_keys_claim_provider = [rt](std::string_view body) -> std::string {
+            auto const guard = RuntimeLock{rt->mutex};
             return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body,
                                                                   rt->config.server().server_name);
         };
 
         runtime.federation.user_devices_provider = [rt](std::string_view user_id) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_user_devices_response(rt->database.persistent_store, user_id);
         };
 

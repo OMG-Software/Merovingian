@@ -31,3 +31,8 @@ what the design avoids.
 
 Residual: a large `/state` or `/backfill` answer is built under the lock, bounded by the answer limits those builders
 already apply (ADR-0363, ADR-0364).
+
+Amended 2026-11-18: the directory, profile, device keys and user devices query providers read main's store too and
+had been missed; they take `main_store_read_lock` like the others. The one-time-key claim provider, which deletes the
+keys it hands out, takes `runtime.mutex` as a writer. A worker relays all five to main under the lock, so production
+was covered; the test-only local router, which now runs the federation core unlocked, was not.

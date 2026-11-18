@@ -1042,9 +1042,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
   not visible (ADR-0414); it never judges the members one by one.
 - The federation read providers wired by `wire_federation_callbacks_impl` (`backfill`, `event_query`, `state_query`,
-  `state_ids_query`, `event_auth_query`, `missing_events_query`, `room_server_acl`, `room_version_resolver`) read main's
-  store under `runtime.mutex` through `main_store_read_lock`, because the federation core calls them without it and every
-  writer changes the store under it. A federation worker takes no lock there (`StoreReadGuard` guards its snapshot). A new
+  `state_ids_query`, `event_auth_query`, `missing_events_query`, `room_server_acl`, `room_version_resolver`,
+  `directory_query`, `profile_query`, `device_keys_query`, `user_devices`) read main's store under `runtime.mutex`
+  through `main_store_read_lock`, because the federation core calls them without it and every writer changes the store
+  under it; `one_time_keys_claim`, which deletes the keys it hands out, takes `RuntimeLock` itself. A federation worker takes no lock there (`StoreReadGuard` guards its snapshot). A new
   provider that reads the store does the same, and none holds the lock across network I/O (C11, ADR-0711).
 - `join_room` writes a federated join's answer in few transactions (ADR-0714): the auth chain in one, with `runtime.mutex`
   released around its commit (orderings reserved in `PendingStreamOrdering`s first, rows prepared before and applied after,
