@@ -23,11 +23,12 @@ namespace merovingian::tests
 class ConsoleLogCapture final
 {
 public:
-    ConsoleLogCapture()
+    // level is the lowest level captured: info by default, debug for a test that must see per-request lines.
+    explicit ConsoleLogCapture(merovingian::observability::LogLevel level = merovingian::observability::LogLevel::info)
         : logger_{merovingian::observability::SingleLog::instance()}
     {
         REQUIRE_FALSE(logger_.get().writers_started());
-        previous_level_ = logger_.get().exchange_console_log_level(merovingian::observability::LogLevel::info);
+        previous_level_ = logger_.get().exchange_console_log_level(level);
         previous_buffer_ = std::cout.rdbuf(output_.rdbuf());
     }
     ~ConsoleLogCapture()

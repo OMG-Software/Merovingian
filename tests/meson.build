@@ -158,6 +158,12 @@ shell = find_program('sh')
   )
 
   test(
+    'page-text-member-initialiser-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_page_text_member_initialisers.py'],
+  )
+
+  test(
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],
@@ -293,7 +299,6 @@ shell = find_program('sh')
       'unit/test_appservice_registration.cpp',
       'unit/test_member_join_sender.cpp',
       'unit/test_auth.cpp',
-      'unit/test_auth_oidc_discovery.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_audit_filter.cpp',
       'unit/test_audit_rate_gate.cpp',
@@ -327,7 +332,7 @@ shell = find_program('sh')
       'unit/test_sync_stream_ceiling.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
-      'unit/test_config_oidc_validation.cpp',
+      'unit/test_config_oauth.cpp',
       'unit/test_config_sso.cpp',
       'unit/test_config_identity_server.cpp',
       'unit/test_identity_bind_domains.cpp',
@@ -335,6 +340,7 @@ shell = find_program('sh')
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
+      'unit/test_crypto_oauth_client_id.cpp',
       'unit/test_crypto_token_key_cache.cpp',
       'unit/test_database_backend_config.cpp',
       'unit/test_database_connection_pool.cpp',
@@ -344,6 +350,7 @@ shell = find_program('sh')
       'unit/test_database_security_boundaries.cpp',
       'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
+      'unit/test_database_oauth_store.cpp',
       'unit/test_media_reservation_sweep.cpp',
       'unit/test_credential_tables.cpp',
       'unit/test_bundled_aggregations.cpp',
@@ -430,6 +437,31 @@ shell = find_program('sh')
       'unit/test_security_audit_log_controls.cpp',
       'unit/test_security_audit_outbound.cpp',
       'unit/test_http_request.cpp',
+      'unit/test_http_response_head.cpp',
+      'unit/test_core_form_fields.cpp',
+      'unit/test_core_host_cookie.cpp',
+      'unit/test_core_request_cookies.cpp',
+      'unit/test_oauth_client_metadata.cpp',
+      'unit/test_oauth_hand_off_allowlist.cpp',
+      'unit/test_legacy_auth_policy.cpp',
+      'unit/test_oauth_hand_off_redirect.cpp',
+      'unit/test_oauth_authorization_code_store.cpp',
+      'unit/test_oauth_authorization_pages.cpp',
+      'unit/test_oauth_authorization_redirect.cpp',
+      'unit/test_oauth_form_post_origin.cpp',
+      'unit/test_oauth_page.cpp',
+      'unit/test_oauth_page_response.cpp',
+      'unit/test_oauth_account_pages.cpp',
+      'unit/test_oauth_account_session_store.cpp',
+      'unit/test_oauth_cross_signing_reset_approvals.cpp',
+      'unit/test_oauth_device_authorisation_store.cpp',
+      'unit/test_oauth_pending_authorisation_store.cpp',
+      'unit/test_oauth_pkce.cpp',
+      'unit/test_oauth_redirect_uri.cpp',
+      'unit/test_oauth_scope.cpp',
+      'unit/test_oauth_server_metadata.cpp',
+      'unit/test_oauth_token_rules.cpp',
+      'unit/test_oauth_user_code.cpp',
       'unit/test_http_request_limits.cpp',
       'unit/test_inbound_ingestion.cpp',
       'unit/test_join_routing.cpp',
@@ -588,7 +620,7 @@ shell = find_program('sh')
     cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
     link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
@@ -631,6 +663,14 @@ shell = find_program('sh')
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
+      'conformance/test_oauth_metadata_conformance.cpp',
+      'conformance/test_oauth_account_management_conformance.cpp',
+      'conformance/test_oauth_authorization_conformance.cpp',
+      'conformance/test_oauth_client_registration_conformance.cpp',
+      'conformance/test_oauth_device_grant_conformance.cpp',
+      'conformance/test_oauth_token_conformance.cpp',
+      'conformance/test_oauth_legacy_api_conformance.cpp',
+      'conformance/test_oauth_aware_clients_conformance.cpp',
       'conformance/test_open_registration_conformance.cpp',
       'conformance/test_account_lifecycle_conformance.cpp',
       'conformance/test_device_lifecycle_conformance.cpp',
@@ -717,7 +757,7 @@ shell = find_program('sh')
     include_directories: inc,
     link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   # Most scenarios start a server and log a user in, so this binary grows with every scenario. It reached
@@ -839,6 +879,17 @@ shell = find_program('sh')
       'integration/test_media_thumbnail_flow.cpp',
       'integration/test_media_thumbnail_revalidation_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
+      'integration/test_oauth_account_creation_flow.cpp',
+      'integration/test_oauth_authorization_flow.cpp',
+      'integration/test_oauth_client_registration_flow.cpp',
+      'integration/test_oauth_device_grant_flow.cpp',
+      'integration/test_oauth_log_query_flow.cpp',
+      'integration/test_oauth_metadata_flow.cpp',
+      'integration/test_oauth_password_login_flow.cpp',
+      'integration/test_oauth_token_flow.cpp',
+      'integration/test_oauth_account_pages_flow.cpp',
+      'integration/test_oauth_legacy_api_flow.cpp',
+      'integration/test_oauth_login_hand_off_flow.cpp',
       'integration/test_observability_flow.cpp',
       'integration/test_operator_admin_flow.cpp',
       'integration/test_admin_masquerade_refusal_flow.cpp',
@@ -874,6 +925,7 @@ shell = find_program('sh')
       'integration/test_push_delivery_flow.cpp',
       'integration/test_push_user_isolation_flow.cpp',
       'integration/test_request_lock_contention_flow.cpp',
+      'integration/test_request_exception_flow.cpp',
       'integration/test_create_room_state_reads_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_seccomp_sqlite_flow.cpp',
@@ -956,7 +1008,7 @@ shell = find_program('sh')
     include_directories: inc,
     link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args,
                '-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
   )
@@ -977,7 +1029,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
     test('live-integration-tests', live_integration_tests)
@@ -992,7 +1044,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
 #The harness's own default duration is short (2 s, MEROVINGIAN_LOCK_SOAK_SECONDS

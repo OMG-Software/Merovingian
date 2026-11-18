@@ -1015,45 +1015,39 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
-        // OIDC delegation: discovery endpoints advertised to clients when an external issuer is used.
-        else if (key == "server.oidc.enabled")
+        // The built-in OAuth 2.0 API (ADR-0812). validate() judges how the keys combine.
+        else if (key == "server.oauth.enabled")
         {
-            if (!parse_bool_value(value, server.oidc.enabled))
+            if (!parse_bool_value(value, server.oauth.enabled))
             {
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
-        else if (key == "server.oidc.issuer")
+        else if (key == "server.oauth.legacy_api_enabled")
         {
-            server.oidc.issuer = std::string{value};
+            if (!parse_bool_value(value, server.oauth.legacy_api_enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
         }
-        else if (key == "server.oidc.authorization_endpoint")
+        else if (key == "server.oauth.device_grant_enabled")
         {
-            server.oidc.authorization_endpoint = std::string{value};
+            if (!parse_bool_value(value, server.oauth.device_grant_enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
         }
-        else if (key == "server.oidc.token_endpoint")
+        else if (key == "server.oauth.hand_off_redirect_allowlist")
         {
-            server.oidc.token_endpoint = std::string{value};
+            server.oauth.hand_off_redirect_allowlist = parse_string_list(value);
         }
-        else if (key == "server.oidc.registration_endpoint")
+        // ADR-0816: server.oidc.* only advertised an external server that could not log anyone in. It is refused, not
+        // ignored, so an operator who set it learns that the server now answers auth_metadata itself.
+        else if (starts_with(key, "server.oidc."))
         {
-            server.oidc.registration_endpoint = std::string{value};
-        }
-        else if (key == "server.oidc.revocation_endpoint")
-        {
-            server.oidc.revocation_endpoint = std::string{value};
-        }
-        else if (key == "server.oidc.device_authorization_endpoint")
-        {
-            server.oidc.device_authorization_endpoint = std::string{value};
-        }
-        else if (key == "server.oidc.account_management_uri")
-        {
-            server.oidc.account_management_uri = std::string{value};
-        }
-        else if (key == "server.oidc.account_management_actions_supported")
-        {
-            server.oidc.account_management_actions_supported = parse_string_list(value);
+            add_parse_finding(findings, std::string{key},
+                              "removed in 1.1.0: delete every server.oidc.* line; the OAuth 2.0 API is built in and "
+                              "is turned on with server.oauth.enabled=true (ADR-0816)");
         }
         // Identity server client: allowlists and timeouts for outbound 3PID calls.
         else if (key == "server.identity_server.trusted_servers")

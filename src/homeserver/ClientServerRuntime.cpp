@@ -23,7 +23,6 @@
 #include "merovingian/auth/KeyApi.hpp"
 #include "merovingian/auth/KeyApiEndpoint.hpp"
 #include "merovingian/auth/KeyApiRoute.hpp"
-#include "merovingian/auth/OidcDiscovery.hpp"
 #include "merovingian/auth/Password.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
@@ -32,6 +31,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Signable.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/core/CurrentException.hpp"
 #include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
@@ -44,6 +44,7 @@
 #include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/crypto/Random.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAuditEvent.hpp"
 #include "merovingian/database/PersistentCrossSigningKey.hpp"
@@ -76,11 +77,13 @@
 #include "merovingian/federation/PublicRoomsFilter.hpp"
 #include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
+#include "merovingian/homeserver/AccountPage.hpp"
 #include "merovingian/homeserver/AppserviceDelivery.hpp"
 #include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
+#include "merovingian/homeserver/ClientDeviceSessions.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerStartOptions.hpp"
@@ -92,6 +95,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LegacyAuthPolicy.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -99,6 +103,13 @@
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/MutualRoomsToken.hpp"
+#include "merovingian/homeserver/OAuthAuthorization.hpp"
+#include "merovingian/homeserver/OAuthClientRegistration.hpp"
+#include "merovingian/homeserver/OAuthClock.hpp"
+#include "merovingian/homeserver/OAuthDeviceAuthorization.hpp"
+#include "merovingian/homeserver/OAuthPageResponse.hpp"
+#include "merovingian/homeserver/OAuthRevocation.hpp"
+#include "merovingian/homeserver/OAuthTokenEndpoint.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
@@ -114,6 +125,7 @@
 #include "merovingian/homeserver/RemoteMediaFetchScope.hpp"
 #include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 #include "merovingian/homeserver/RemoteTimestampEvent.hpp"
+#include "merovingian/homeserver/RequestHeaders.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RoomPower.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
@@ -124,6 +136,7 @@
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
 #include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/homeserver/StoredDeviceDisplayName.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/homeserver/TurnCredentials.hpp"
@@ -140,6 +153,11 @@
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/media/Security.hpp"
+#include "merovingian/oauth/AccountPages.hpp"
+#include "merovingian/oauth/OAuthBaseUrl.hpp"
+#include "merovingian/oauth/OAuthPaths.hpp"
+#include "merovingian/oauth/ServerMetadata.hpp"
+#include "merovingian/oauth/ServerMetadataOptions.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -244,39 +262,6 @@ namespace
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
 
-    // Convenience wrappers that build a LocalHttpResponse and wrap it in
-    // a DispatchResult in one call.
-    // Look up a single header in a parsed request. Returns the value or an
-    // empty string view when the header is missing. Match is case-insensitive
-    // because the wire spelling varies by client.
-    [[nodiscard]] auto request_header(LocalHttpRequest const& req, std::string_view name) noexcept -> std::string_view
-    {
-        for (auto const& header : req.headers)
-        {
-            if (header.name.size() == name.size())
-            {
-                auto equal = true;
-                for (std::size_t i = 0U; i < header.name.size(); ++i)
-                {
-                    auto const a = static_cast<unsigned char>(header.name[i]);
-                    auto const b = static_cast<unsigned char>(name[i]);
-                    auto const lo_a = (a >= 'A' && a <= 'Z') ? static_cast<unsigned char>(a + ('a' - 'A')) : a;
-                    auto const lo_b = (b >= 'A' && b <= 'Z') ? static_cast<unsigned char>(b + ('a' - 'A')) : b;
-                    if (lo_a != lo_b)
-                    {
-                        equal = false;
-                        break;
-                    }
-                }
-                if (equal)
-                {
-                    return header.value;
-                }
-            }
-        }
-        return {};
-    }
-
     // Determine which `Access-Control-Allow-Origin` value to emit, if any.
     // Returns the empty string when the request's Origin is not in the
     // configured allow-list (CORS spec: the header MUST be absent in that
@@ -321,7 +306,9 @@ namespace
         }
         for (auto const& existing : headers)
         {
-            if (existing.first == name)
+            // Case-insensitive: a handler's `content-security-policy` is the same header, and a second copy would
+            // reach the wire beside it.
+            if (http::header_names_equal(existing.first, name))
             {
                 return;
             }
@@ -383,7 +370,8 @@ namespace
         -> void
     {
         append_header_if_missing(response.headers, "X-Content-Type-Options", "nosniff");
-        if (cors.allowed_origins.empty())
+        // An OAuth 2.0 page is same-origin only: no CORS header may let another origin read it (ADR-0785).
+        if (response.page || cors.allowed_origins.empty())
         {
             return;
         }
@@ -2283,6 +2271,24 @@ namespace
         });
     }
 
+    // The newest live session this server issued to `owner` for `purpose`, or nullopt. A challenge that may be
+    // repeated by polling (the `m.oauth` stage, ADR-0799) names it instead of issuing another, so the owner holds one
+    // session for the purpose at a time. One pass over the pool, which is capped at `max_uia_sessions`.
+    [[nodiscard]] auto live_uia_session(ClientServerRuntime const& rt, std::string_view purpose, std::string_view owner)
+        -> std::optional<std::string>
+    {
+        auto const now_ms = wall_clock_milliseconds();
+        for (auto session = rt.uia_sessions.rbegin(); session != rt.uia_sessions.rend(); ++session)
+        {
+            if (!session->session_id.empty() && session->purpose == purpose && session->owner == owner &&
+                (now_ms <= session->created_at_ms || now_ms - session->created_at_ms <= uia_session_ttl_ms))
+            {
+                return session->session_id;
+            }
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto normalize_threepid_address(std::string_view medium, std::string_view address) -> std::string
     {
         if (medium == "email")
@@ -3088,13 +3094,10 @@ namespace
         return json_serialize(json_obj(std::move(members)));
     }
 
+    // The one normalisation of a typed identifier, shared with the OAuth 2.0 login page (ADR-0783).
     [[nodiscard]] auto matrix_user_id(std::string_view server_name, std::string_view user) -> std::string
     {
-        if (user.starts_with("@"))
-        {
-            return std::string{user};
-        }
-        return "@" + std::string{user} + ":" + std::string{server_name};
+        return login_identifier_user_id(server_name, user);
     }
 
     [[nodiscard]] auto parse_login_body(std::string_view body, std::string_view server_name)
@@ -4059,6 +4062,14 @@ namespace
             "/_matrix/client/v3/logout",
             "/_matrix/client/v3/logout/all",
             "/_matrix/client/v1/auth_metadata",
+            "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",
+            "/_merovingian/oauth2/register",
+            "/_merovingian/oauth2/authorize",
+            "/_merovingian/oauth2/token",
+            "/_merovingian/oauth2/revoke",
+            "/_merovingian/oauth2/device",
+            "/_merovingian/oauth2/link",
+            "/_merovingian/account",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
             "/_matrix/client/v3/account/password/email/requestToken",
@@ -4154,6 +4165,14 @@ namespace
             {"/_matrix/client/v3/logout",                                                   "POST"            },
             {"/_matrix/client/v3/logout/all",                                               "POST"            },
             {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
+            {"/_merovingian/oauth2/register",                                               "POST"            },
+            {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
+            {"/_merovingian/oauth2/token",                                                  "POST"            },
+            {"/_merovingian/oauth2/revoke",                                                 "POST"            },
+            {"/_merovingian/oauth2/device",                                                 "POST"            },
+            {"/_merovingian/oauth2/link",                                                   "GET, POST"       },
+            {"/_merovingian/account",                                                       "GET, POST"       },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
             {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
@@ -4477,11 +4496,25 @@ namespace
         return rt.homeserver.config.security().login_token.enabled;
     }
 
-    // Hash of a login token as `LoginTokenStore` keeps it. The token is 256 random bits, so an unkeyed hash suffices.
-    [[nodiscard]] auto login_token_hash(std::string_view token) -> std::optional<std::string>
+    // Whether POST /login/get_token is served: the operator switch, and the legacy API that redeems what it mints
+    // (`legacy_auth_refusal`, ADR-0801). Also the `m.get_login_token` capability.
+    [[nodiscard]] auto login_token_minting_served(ClientServerRuntime const& rt) -> bool
     {
-        auto const pieces = std::array<std::string_view, 1U>{token};
-        return crypto::generic_hash(pieces);
+        return login_tokens_enabled(rt) &&
+               !legacy_auth_refusal(rt.homeserver.config.server().oauth, LegacyAuthUse::login_token_mint).has_value();
+    }
+
+    // The answer to `use` of the legacy authentication API when `legacy_auth_refusal` refuses it, or nullopt to serve
+    // it (ADR-0801).
+    [[nodiscard]] auto legacy_auth_refused(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                           LegacyAuthUse use) -> std::optional<DispatchResult>
+    {
+        auto const refusal = legacy_auth_refusal(rt.homeserver.config.server().oauth, use);
+        if (!refusal.has_value())
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, refusal->status, refusal->errcode, refusal->reason);
     }
 
     // F-07: the operator accounts route deactivates through `HomeserverRuntime` alone, which cannot reach the
@@ -4515,12 +4548,45 @@ namespace
     // runtime.mutex; the Argon2id check inside verify_local_user_password releases it itself. UIA with the account
     // password is required on EVERY call: the spec says servers "MUST always re-prompt", and a UIA session id
     // carries no authority here, so nothing from an earlier call is honoured.
+    // P7 (ADR-0794): a session that signed in through the OAuth 2.0 API holds no password the server could ask for in
+    // User-Interactive Authentication, and this server does not offer the `m.oauth` stage. Every endpoint that would
+    // ask for UIA answers such a session 403 M_FORBIDDEN instead, naming the account page, before it reads the body
+    // or issues a UIA session. nullopt for every other caller: a legacy session, and an application service (a
+    // masquerade token), which the spec exempts from UIA and which holds no session here.
+    [[nodiscard]] auto oauth_session_uia_refusal(ClientServerRuntime const& rt, std::string_view access_token)
+        -> std::optional<std::string>
+    {
+        if (appservice::decode_masquerade_token(access_token).has_value())
+        {
+            return std::nullopt;
+        }
+        auto const session = authenticated_session(rt.homeserver, access_token);
+        if (!session.has_value() || database::find_oauth_session(rt.homeserver.database.persistent_store,
+                                                                 session->user_id, session->device_id) == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto message = std::string{"This session signed in through OAuth 2.0 and cannot confirm this request here. "
+                                   "Manage the account at the server's account page"};
+        auto const base = oauth::OAuthBaseUrl::read(rt.homeserver.config.server().public_baseurl);
+        if (auto const* const url = std::get_if<oauth::OAuthBaseUrl>(&base); url != nullptr)
+        {
+            message += ": " + url->url(oauth::account_path);
+        }
+        message += '.';
+        return message;
+    }
+
     [[nodiscard]] auto handle_get_login_token(ClientServerRuntime& rt, LocalHttpRequest const& req,
                                               std::string_view user_id) -> DispatchResult
     {
-        if (!login_tokens_enabled(rt))
+        if (!login_token_minting_served(rt))
         {
             return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
         }
         auto const challenge = [&](bool password_failed) -> DispatchResult {
             auto const session = issue_uia_session(rt, "login_get_token", user_id);
@@ -4574,7 +4640,7 @@ namespace
             });
         }
         auto const token = crypto::secure_random_hex(32U);
-        auto const token_hash = token.has_value() ? login_token_hash(*token) : std::nullopt;
+        auto const token_hash = token.has_value() ? LoginTokenStore::token_hash(*token) : std::nullopt;
         if (!token_hash.has_value())
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a login token");
@@ -4601,16 +4667,19 @@ namespace
                              })));
     }
 
-    // Consumes a login token minted by get_token, answering the user it was minted for. A token is spent by the
-    // attempt that names it, so this is called once per login. Empty when the feature is off.
+    // Consumes a login token minted by get_token or by the legacy login hand-off (ADR-0802), answering the user it was
+    // minted for. A token is spent by the attempt that names it, so this is called once per login. Empty when neither
+    // mints tokens.
     [[nodiscard]] auto redeem_minted_login_token(ClientServerRuntime& rt, std::string_view token)
         -> std::optional<std::string>
     {
-        if (!login_tokens_enabled(rt) || token.empty())
+        auto const minted_here =
+            login_tokens_enabled(rt) || legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth);
+        if (!minted_here || token.empty())
         {
             return std::nullopt;
         }
-        auto const token_hash = login_token_hash(token);
+        auto const token_hash = LoginTokenStore::token_hash(token);
         if (!token_hash.has_value())
         {
             return std::nullopt;
@@ -4749,6 +4818,20 @@ namespace
             return device.user_id == user_id && device.device_id == device_id;
         });
         rt.devices.erase(first, last);
+    }
+
+    // What follows a session that ended with its device (POST /logout, OAuth 2.0 revocation and code replay,
+    // ADR-0795): the runtime's device list loses it, the users who share a room are told, and the servers in
+    // `destinations` (remote_servers_for_user, read before the removal) are told of the device only if its row went.
+    auto announce_ended_device_session(ClientServerRuntime& rt, std::string_view user_id, std::string_view device_id,
+                                       std::vector<std::string> const& destinations) -> void
+    {
+        erase_runtime_device(rt, user_id, device_id);
+        std::ignore = record_shared_room_device_changes(rt, user_id, NotifyOwnDevices::no);
+        announce_deleted_devices(
+            rt, user_id,
+            devices_removed_since(rt.homeserver.database.persistent_store, user_id, {std::string{device_id}}),
+            destinations);
     }
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
@@ -8126,6 +8209,11 @@ namespace
 
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
     {
+        // A page is served as built, never re-encoded as JSON (ADR-0785).
+        if (r.page)
+        {
+            return r;
+        }
         if (r.status != 200U)
         {
             return err(r.status, error_code_for(r), r.body);
@@ -13315,50 +13403,300 @@ namespace
         return resp(200U, found->json);
     }
 
-    // POST /_matrix/client/v3/keys/device_signing/upload: password-authenticated upload of the cross-signing keys.
+    // Whether POST /keys/device_signing/upload may skip User-Interactive Authentication (spec v1.19, "Changed in
+    // v1.11" and "v1.17"; ADR-0794): the caller is an application service, or the user holds no master key, or the
+    // request carries the master key and every key it carries is byte for byte the canonical JSON already held under
+    // that slot, so it changes nothing. A request without a master key, once one is held, needs UIA.
+    [[nodiscard]] auto cross_signing_upload_is_uia_exempt(ClientServerRuntime const& rt, std::string_view user,
+                                                          canonicaljson::Object const& body,
+                                                          LocalHttpRequest const& req) -> bool
+    {
+        if (appservice::decode_masquerade_token(req.access_token).has_value())
+        {
+            return true;
+        }
+        constexpr auto slots = std::array<std::pair<std::string_view, std::string_view>, 3U>{
+            {
+             {"master_key", "master"},
+             {"self_signing_key", "self_signing"},
+             {"user_signing_key", "user_signing"},
+             }
+        };
+        auto held = std::array<std::optional<std::string>, slots.size()>{};
+        database::for_each_user_cross_signing_key(rt.homeserver.database.persistent_store, user,
+                                                  [&](database::PersistentCrossSigningKey const& row) {
+                                                      for (std::size_t index = 0U; index < slots.size(); ++index)
+                                                      {
+                                                          if (row.key_type == slots.at(index).second)
+                                                          {
+                                                              held.at(index) = row.json;
+                                                          }
+                                                      }
+                                                      return true;
+                                                  });
+        if (!held.front().has_value())
+        {
+            return true;
+        }
+        if (object_member(body, slots.front().first) == nullptr)
+        {
+            return false;
+        }
+        for (std::size_t index = 0U; index < slots.size(); ++index)
+        {
+            auto const* const value = object_member(body, slots.at(index).first);
+            if (value == nullptr)
+            {
+                continue;
+            }
+            auto const serialized = canonicaljson::serialize_canonical(*value);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none || !held.at(index).has_value() ||
+                *held.at(index) != serialized.output)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The UIA session purpose of the `m.oauth` stage of a replacing cross-signing upload (ADR-0797).
+    constexpr auto cross_signing_reset_uia_purpose = std::string_view{"cross_signing_reset"};
+
+    // A cross-signing reset approval an OAuth session's replacing upload has taken (ADR-0797). It goes back to the
+    // store unless `spend` is called once the keys are stored, so a refused or failed upload does not use it up. Lives
+    // within one request, under runtime.mutex.
+    class TakenResetApproval final
+    {
+    public:
+        TakenResetApproval(ClientServerRuntime& rt, std::string_view user_id, std::string_view bound_device_id,
+                           std::uint64_t expires_at_ms)
+            : m_rt{&rt}
+            , m_user_id{user_id}
+            , m_bound_device_id{bound_device_id}
+            , m_expires_at_ms{expires_at_ms}
+        {
+        }
+        TakenResetApproval(TakenResetApproval const&) = delete;
+        auto operator=(TakenResetApproval const&) -> TakenResetApproval& = delete;
+        TakenResetApproval(TakenResetApproval&&) = delete;
+        auto operator=(TakenResetApproval&&) -> TakenResetApproval& = delete;
+        ~TakenResetApproval() noexcept
+        {
+            if (m_spent)
+            {
+                return;
+            }
+            try
+            {
+                m_rt->homeserver.cross_signing_reset_approvals.restore(m_user_id, m_bound_device_id, m_expires_at_ms,
+                                                                       oauth_wall_clock_ms());
+            }
+            catch (...)
+            {
+                // Restoring allocates. If it cannot, the approval is lost and the user approves again: fail closed.
+                m_spent = true;
+            }
+        }
+
+        // The keys are stored: the approval is used up, and the use is audited.
+        auto spend() -> void
+        {
+            m_spent = true;
+            append_local_audit(m_rt->homeserver.database, observability::AuditCategory::auth,
+                               "cross_signing.reset_used", m_user_id, m_user_id, "m.oauth");
+        }
+
+    private:
+        ClientServerRuntime* m_rt;
+        std::string m_user_id;
+        // The device the approval was bound to (empty: unbound), so a restored approval keeps its binding (ADR-0809).
+        std::string m_bound_device_id;
+        std::uint64_t m_expires_at_ms;
+        bool m_spent{false};
+    };
+
+    // The outcome of the `m.oauth` stage: the answer to send (a 401 challenge, a 429 for a full UIA pool, a 500), or,
+    // with no answer, the expiry of the approval the request has taken.
+    struct OAuthResetStage final
+    {
+        std::optional<LocalHttpResponse> answer{};
+        std::uint64_t approval_expires_at_ms{0U};
+        std::string approval_device_id{};
+    };
+
+    // The name the `m.oauth` stage had before spec v1.17, offered as a second flow with the same parameters for clients
+    // that still look for it (ADR-0799).
+    constexpr auto cross_signing_reset_unstable_stage = std::string_view{"org.matrix.cross_signing_reset"};
+
+    // The `m.oauth` User-Interactive Authentication stage of a replacing cross-signing upload from an OAuth session
+    // (spec v1.19 "OAuth authentication" and "Account management"; ADR-0797, ADR-0799). nullopt when the stage cannot
+    // be offered (OAuth off, or no usable `server.public_baseurl`): the caller keeps the ADR-0794 403.
+    //
+    // The stage is complete when the user approved the reset on the account page in the last ten minutes and the
+    // request either names a session this server issued to this user for this purpose, or names no session at all
+    // (no `auth` dict, or one without `session`): a client that polls by resending the same upload is accepted once
+    // the approval exists (ADR-0799). The challenge URL carries the requesting device's `device_id` (spec "Account
+    // management URL parameters": a Matrix-specific action may take it), so the page can bind the approval to that
+    // device; a bound approval is spent only by that device's upload, an unbound one by any of the user's OAuth
+    // sessions (ADR-0809). The session ID adds no secret. A `type` other than absent, `m.oauth` or the pre-standard
+    // name (a password stage) is answered with the challenge and never checked: an OAuth session cannot complete the
+    // upload with a password. So is a `session` this server did not issue to this user for this purpose. The approval
+    // is taken here and spent only by a stored upload.
+    //
+    // A challenge reuses the user's newest live session for this purpose before issuing one, so a client polling
+    // before the approval holds one session, not one per poll (a session lives ten minutes; ADR-0799).
+    [[nodiscard]] auto oauth_cross_signing_reset_stage(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                       std::string_view user, std::string_view device_id,
+                                                       std::optional<canonicaljson::Object> const& body)
+        -> std::optional<OAuthResetStage>
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return std::nullopt;
+        }
+        auto const base = oauth::OAuthBaseUrl::read(rt.homeserver.config.server().public_baseurl);
+        auto const* const base_url = std::get_if<oauth::OAuthBaseUrl>(&base);
+        if (base_url == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const challenge = [base_url, device_id](std::string_view session) {
+            auto const url = oauth::account_action_address(base_url->url(oauth::account_path),
+                                                           oauth::account_action_cross_signing_reset, device_id);
+            auto const flow = [](std::string_view stage) {
+                return json_obj({json_member("stages", json_arr({json_str(std::string{stage})}))});
+            };
+            auto const params = [&url]() {
+                return json_obj({json_member("url", json_str(url))});
+            };
+            auto const body_json = json_obj({
+                json_member("flows", json_arr({flow("m.oauth"), flow(cross_signing_reset_unstable_stage)})),
+                json_member("params",
+                            json_obj({json_member("m.oauth", params()),
+                                      json_member(std::string{cross_signing_reset_unstable_stage}, params())})),
+                json_member("session", json_str(std::string{session})),
+            });
+            return OAuthResetStage{resp(401U, json_serialize(body_json)), 0U, {}};
+        };
+        // `auth`, when present, must be an object, and its `type` and `session`, when present, strings: anything else
+        // is answered with the challenge, as a foreign session is.
+        auto const* const auth_value = body.has_value() ? object_member(*body, "auth") : nullptr;
+        auto const* const auth = body.has_value() ? object_member_object(*body, "auth") : nullptr;
+        auto const* const type_value = auth != nullptr ? object_member(*auth, "type") : nullptr;
+        auto const* const type = auth != nullptr ? string_member(*auth, "type") : nullptr;
+        auto const* const session_value = auth != nullptr ? object_member(*auth, "session") : nullptr;
+        auto const* const session = auth != nullptr ? string_member(*auth, "session") : nullptr;
+        auto const well_formed = (auth_value == nullptr || auth != nullptr) &&
+                                 (type_value == nullptr || type != nullptr) &&
+                                 (session_value == nullptr || session != nullptr);
+        auto const issued_session =
+            session != nullptr && uia_session_is_valid(rt, cross_signing_reset_uia_purpose, *session, user);
+        auto const names_this_stage =
+            type == nullptr || *type == "m.oauth" || *type == cross_signing_reset_unstable_stage;
+        if (well_formed && names_this_stage && (session_value == nullptr || issued_session))
+        {
+            auto& approvals = rt.homeserver.cross_signing_reset_approvals;
+            auto const now_ms = oauth_wall_clock_ms();
+            auto bound_device = approvals.bound_device(user, now_ms).value_or(std::string{});
+            if (auto const expires_at_ms = approvals.take(user, device_id, now_ms); expires_at_ms.has_value())
+            {
+                return OAuthResetStage{std::nullopt, *expires_at_ms, std::move(bound_device)};
+            }
+        }
+        // Not approved yet, another stage, or a session this server did not issue for this: the challenge, naming the
+        // session the request named when it is a live one, else the user's newest live one, so polling issues none.
+        if (issued_session)
+        {
+            return challenge(*session);
+        }
+        if (auto const live = live_uia_session(rt, cross_signing_reset_uia_purpose, user); live.has_value())
+        {
+            return challenge(*live);
+        }
+        auto const issued = issue_uia_session(rt, cross_signing_reset_uia_purpose, user);
+        if (!issued.has_value())
+        {
+            return OAuthResetStage{uia_pool_full_response(rt, req).response, 0U, {}};
+        }
+        if (issued->empty())
+        {
+            return OAuthResetStage{err(500U, "M_UNKNOWN", "no authentication session could be issued"), 0U, {}};
+        }
+        return challenge(*issued);
+    }
+
+    // POST /_matrix/client/v3/keys/device_signing/upload: upload of the cross-signing keys, password-authenticated
+    // unless cross_signing_upload_is_uia_exempt.
     [[nodiscard]] auto handle_upload_cross_signing_keys(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
                                                         std::string_view user, std::string_view device_id,
                                                         LocalHttpRequest const& req) -> LocalHttpResponse
     {
-        // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
-        auto const cs_uia = json_obj({
-            json_member("flows",
-                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
-            json_member("params", json_obj({})),
-            json_member("session", json_str("cross_signing_upload")),
-        });
+        // Spec v1.19 POST /keys/device_signing/upload: UIA "MUST be performed for regular clients, except" when no
+        // master key is held, or when every key the request carries matches the one held; never for an application
+        // service (ADR-0794).
         auto const cs_body = parsed_json_object(req.body);
-        auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
-        if (cs_auth == nullptr)
+        auto const uia_exempt = cs_body.has_value() && cross_signing_upload_is_uia_exempt(rt, user, *cs_body, req);
+        // An OAuth session's replacing upload completes the `m.oauth` stage with an approval from the account page,
+        // which is taken here and put back on every way out except a stored upload (ADR-0797).
+        auto taken_approval = std::optional<TakenResetApproval>{};
+        if (!uia_exempt)
         {
-            return resp(401U, json_serialize(cs_uia));
-        }
-        auto const* cs_auth_type = string_member(*cs_auth, "type");
-        if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
-        {
-            return resp(401U, json_serialize(cs_uia));
-        }
-        auto const* cs_password = string_member(*cs_auth, "password");
-        if (cs_password == nullptr || cs_password->empty())
-        {
-            return resp(401U, json_serialize(cs_uia));
-        }
-        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
-        if (!password_verified.ok)
-        {
-            if (password_verified.retry_after_ms > 0U)
+            if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
             {
-                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
-                auto response =
-                    LocalHttpResponse{429U,
-                                      matrix_error("M_LIMIT_EXCEEDED",
-                                                   "Too many password attempts. Please try again later.", retry_after),
-                                      {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
-                apply_cors_headers(req, response, rt.cors);
-                return response;
+                auto const stage = oauth_cross_signing_reset_stage(rt, req, user, device_id, cs_body);
+                if (!stage.has_value())
+                {
+                    return err(403U, "M_FORBIDDEN", *refusal);
+                }
+                if (stage->answer.has_value())
+                {
+                    return *stage->answer;
+                }
+                taken_approval.emplace(rt, user, stage->approval_device_id, stage->approval_expires_at_ms);
             }
-            return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+            else
+            {
+                // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+                auto const cs_uia = json_obj({
+                    json_member("flows", json_arr({json_obj(
+                                             {json_member("stages", json_arr({json_str("m.login.password")}))})})),
+                    json_member("params", json_obj({})),
+                    json_member("session", json_str("cross_signing_upload")),
+                });
+                auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+                if (cs_auth == nullptr)
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const* cs_auth_type = string_member(*cs_auth, "type");
+                if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const* cs_password = string_member(*cs_auth, "password");
+                if (cs_password == nullptr || cs_password->empty())
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const password_verified =
+                    verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+                if (!password_verified.ok)
+                {
+                    if (password_verified.retry_after_ms > 0U)
+                    {
+                        auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                        auto response = LocalHttpResponse{
+                            429U,
+                            matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
+                                         retry_after),
+                            {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                        apply_cors_headers(req, response, rt.cors);
+                        return response;
+                    }
+                    return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+                }
+            }
         }
         for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
         {
@@ -13381,6 +13719,10 @@ namespace
             !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
         {
             return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        if (taken_approval.has_value())
+        {
+            taken_approval->spend();
         }
         // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
         // Self-notify so the user's own other devices re-query the new keys (required
@@ -14089,6 +14431,106 @@ namespace
 
 } // namespace
 
+auto remember_signed_in_device(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                               std::string_view display_name, SignedInDevice kind) -> void
+{
+    if (find_device(runtime, user_id, device_id) != nullptr)
+    {
+        return;
+    }
+    runtime.devices.push_back({std::string{user_id}, std::string{device_id}, std::string{display_name}});
+    if (kind == SignedInDevice::refreshed_session)
+    {
+        return;
+    }
+    // A new login creates a new device identity. Record a self
+    // device-list-change so the user's other devices see the user in
+    // device_lists.changed and re-query /keys/query, AND so this new
+    // device's own first /sync lists the user in device_lists.changed
+    // — prompting it to fetch the user's *existing* devices' keys
+    // before any m.key.verification.request can arrive. Without this,
+    // a new device (e.g. Element X) receives a verification request
+    // from an existing verified device but has not yet fetched the
+    // sender's device keys, so matrix-rust-sdk drops the request
+    // ("Could not retrieve the device data ... ignoring it"). Key
+    // upload alone records a self-DLC, but the new device's initial
+    // sync runs before its own key upload. The spec sanctions the HS
+    // adding a user to device_lists.changed when a device's cached
+    // list may be stale; a brand-new device's cache is empty.
+    auto const self_change =
+        database::PersistentDeviceListChange{0U, std::string{user_id}, std::string{user_id}, "changed"};
+    std::ignore = record_device_list_change(runtime, self_change);
+}
+
+auto end_device_session_and_announce(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                                     std::string_view audit_event) -> OperationResult
+{
+    // Read before the removal, as POST /logout does: afterwards the device is gone from the lists it is read from.
+    auto const destinations = remote_servers_for_user(runtime.homeserver, user_id);
+    auto result = end_device_session(runtime.homeserver, user_id, device_id, {}, audit_event);
+    if (result.ok)
+    {
+        announce_ended_device_session(runtime, user_id, device_id, destinations);
+    }
+    return result;
+}
+
+auto delete_device_and_announce(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    // The servers to tell, read before the device is removed.
+    auto const destinations = remote_servers_for_user(runtime.homeserver, user_id);
+    auto result = delete_local_device(runtime.homeserver, user_id, device_id);
+    if (!result.ok)
+    {
+        return result;
+    }
+    erase_runtime_device(runtime, user_id, device_id);
+    std::ignore = record_shared_room_device_changes(runtime, user_id, NotifyOwnDevices::no);
+    announce_deleted_devices(runtime, user_id, {std::string{device_id}}, destinations);
+    return result;
+}
+
+auto finish_account_deactivation(ClientServerRuntime& runtime, RuntimeLock& guard, std::string_view user_id,
+                                 std::optional<std::string> const& requested_id_server) -> std::string_view
+{
+    // F-07: a deactivated account holds no login token.
+    runtime.login_tokens.erase_user(user_id);
+    // Unbind every identity-server-bound 3PID the account holds. Spec: the
+    // 200 response's id_server_unbind_result is "success" only when *all*
+    // identifiers were unbound -- and when there were none to unbind --
+    // and "no-support" when one or more could not be, whether because the
+    // identity server refused or because none could be determined.
+    //
+    // Deactivation itself has already happened and is not undone by an
+    // unbind failure: the spec models a partial unbind as a 200 carrying
+    // "no-support", not as a failed deactivation. This is the opposite
+    // disposition to POST /account/3pid/unbind, which fails closed so the
+    // user can retry -- there is no retry after deactivation.
+    //
+    // Addresses are copied out before the loop: the outbound call drops the
+    // runtime lock, so the store vector can move and any iterator, pointer
+    // or index taken across it would dangle.
+    auto const user = std::string{user_id};
+    auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
+    for (auto const& record : runtime.homeserver.database.persistent_store.account_threepids)
+    {
+        if (record.user_id == user && record.bound)
+        {
+            pending_unbinds.emplace_back(record.medium, record.address);
+        }
+    }
+    auto unbind_result = std::string_view{"success"};
+    for (auto const& [medium, address] : pending_unbinds)
+    {
+        if (!unbind_threepid_for_deactivation(runtime, guard, user, medium, address, requested_id_server))
+        {
+            unbind_result = "no-support";
+        }
+    }
+    return unbind_result;
+}
+
 // Translate the operator-facing `config::ClientRateLimitsConfig` into the
 // engine's `http::RateLimitConfig`. Start from the design-doc defaults so
 // every client-server route has a sensible cap even when the operator leaves
@@ -14489,6 +14931,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
                              "request.rejected", "<unknown>", req.target, "413:request body too large");
+        // OAuth 2.0 client registration answers every refused body as an OAuth error (ADR-0781). This gate runs before
+        // runtime.mutex is taken, so it answers with the fixed refusal, which reads no state.
+        if (request_path == oauth::register_path.view() && req.method == "POST" &&
+            rt.homeserver.config.server().oauth.enabled)
+        {
+            return DispatchResult{DispatchResult::Status::complete, oauth_client_metadata_too_large(), {}};
+        }
         return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "request body too large");
     }
     // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
@@ -14525,6 +14974,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                            "<unknown>", req.target, "429:rate limit exceeded");
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
                             rate_limit_decision.retry_after_ms);
+    }
+    if (rt.homeserver.test_client_request_hook)
+    {
+        std::invoke(rt.homeserver.test_client_request_hook, request_path);
     }
     // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
     // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
@@ -15434,6 +15887,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 401U, errcode,
                                     "m.login.application_service requires a valid appservice as_token");
             }
+            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
+            auto const inhibit_login = inhibit_login_value != nullptr && *inhibit_login_value;
+            // Spec (POST /register, v1.17): without the legacy API the endpoint still serves application services,
+            // which "MUST set the "inhibit_login": true parameter"; otherwise 400 M_APPSERVICE_LOGIN_UNSUPPORTED.
+            // Judged before the user is created, so a refusal creates nothing.
+            if (!inhibit_login)
+            {
+                if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::appservice_registration_with_login);
+                    refused.has_value())
+                {
+                    return std::move(*refused);
+                }
+            }
             auto const* username = string_member(*registration_object, "username");
             if (username == nullptr)
             {
@@ -15475,8 +15941,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     result.reason, result.retry_after_ms);
             }
             auto const full_user_id = result.value;
-            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
-            if (inhibit_login_value != nullptr && *inhibit_login_value)
+            if (inhibit_login)
             {
                 return dispatch_resp(req, rt, 200U,
                                      json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
@@ -15503,6 +15968,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("user_id", json_str(full_user_id)),
                                      json_member("device_id", json_str(reg_device_id)),
                                  })));
+        }
+        // With the legacy API off (ADR-0801) a user registers through the OAuth 2.0 API: spec (POST /register 403)
+        // "registration is generally not supported by the homeserver". Before UIA, so no session is issued.
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::user_registration); refused.has_value())
+        {
+            return std::move(*refused);
         }
         // Spec (POST /register, 400): "Homeservers MUST perform the relevant checks and return
         // these codes before performing User-Interactive Authentication" -- M_INVALID_USERNAME,
@@ -15609,30 +16080,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a user ID");
             }
         }
-        if (!auth::localpart_is_valid_new(*body->localpart))
-        {
-            return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
-        }
-        // The server's own localparts (the remote media cache owner) are never given to an
-        // account; answer as for a name already in use (security audit run-1).
-        if (auth::localpart_is_reserved(*body->localpart))
-        {
-            return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
-        }
-        // Spec: "normal users who attempt to create users ... inside an
-        // application service-defined namespace will receive ... M_EXCLUSIVE
-        // ... but only if the application service has defined the namespace
-        // as exclusive." This path is reached only for an ordinary
-        // (non-appservice) registration — the m.login.application_service
-        // branch above already returned.
-        if (auto const desired_user_id = "@" + *body->localpart + ":" + rt.homeserver.config.server().server_name;
-            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
-            rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
-        {
-            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
-        }
-        auto const result =
-            register_local_user(rt.homeserver, *body->localpart, body->password, body->registration_token);
+        // The username checks (not valid, reserved, an appservice's exclusive namespace or sender) and every
+        // registration gate, shared with the OAuth 2.0 account page (ADR-0783). This path is reached only for an
+        // ordinary (non-appservice) registration: the m.login.application_service branch above already returned.
+        // The registration policy is judged for the fixed address 127.0.0.1 here, as it always has been.
+        auto const result = create_local_account(
+            rt.homeserver, {*body->localpart, body->password, body->registration_token, "127.0.0.1"});
         if (!result.ok)
         {
             // A refusal that names its own errcode (M_WEAK_PASSWORD, ADR-0236) keeps it.
@@ -15670,6 +16123,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && request_path == "/_matrix/client/v3/login")
     {
+        // Spec (GET /login 404): "the homeserver does not support the legacy authentication API" (ADR-0801).
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::login_flows); refused.has_value())
+        {
+            return std::move(*refused);
+        }
         auto flows = canonicaljson::Array{};
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.password"))}));
         // Matrix v1.19 Application Service API §"Server admin style
@@ -15718,6 +16176,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             flows.emplace_back(json_obj(std::move(sso_flow)));
         }
+        // Spec "OAuth 2.0 aware clients", server behaviour: with the OAuth 2.0 API on, `m.login.sso` with
+        // `oauth_aware_preferred: true`, its redirect handing the browser to the built-in pages (ADR-0802). The login
+        // token the hand-off returns is redeemed with `m.login.token`, offered here when get_token did not already.
+        // `m.login.password` stays ("If password authentication was previously enabled"). `server.sso.*` cannot be
+        // configured with OAuth on, so the flow above is never offered twice.
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            if (!login_tokens_enabled(rt))
+            {
+                flows.emplace_back(json_obj({json_member("type", json_str("m.login.token"))}));
+            }
+            flows.emplace_back(json_obj({
+                json_member("type", json_str("m.login.sso")),
+                json_member("oauth_aware_preferred", json_bool(true)),
+            }));
+        }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("flows", json_arr(std::move(flows))),
@@ -15730,6 +16204,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // -- like GET /login above -- because it is itself unauthenticated.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/login/sso/redirect")
     {
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
+        {
+            return std::move(*refused);
+        }
+        // With the OAuth 2.0 API on, the built-in pages answer the redirect (ADR-0802): sign-in or registration, a
+        // confirmation, then a login token back to `redirectUrl`.
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_login_hand_off(rt, req), {}};
+        }
         auto const redirect_url = query_param_value(req.target, "redirectUrl");
         auto const action = query_param_value(req.target, "action");
         auto const result = sso_redirect_target(rt.homeserver, {}, redirect_url.value_or(std::string{}),
@@ -15744,6 +16228,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && starts_with(req.target, "/_matrix/client/v3/login/sso/redirect/"))
     {
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
+        {
+            return std::move(*refused);
+        }
+        // The hand-off advertises no identity provider, so every `idpId` starts the same pages (ADR-0802).
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_login_hand_off(rt, req), {}};
+        }
         auto path_and_idp = req.target.substr(std::string_view{"/_matrix/client/v3/login/sso/redirect/"}.size());
         if (auto const query = path_and_idp.find('?'); query != std::string_view::npos)
         {
@@ -15764,6 +16257,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/login")
     {
+        // ADR-0801: with the legacy API off no user logs in here. Spec (m.login.application_service, v1.17): "If this
+        // login type is used and the server doesn't support logging in via the Legacy authentication API, it MUST
+        // return a 400 HTTP status code with an M_APPSERVICE_LOGIN_UNSUPPORTED error code." Every other type has no
+        // answer of its own and is answered as an absent endpoint. Judged on the body's `type` alone, before the body
+        // is parsed as a login or any credential is checked; the body is read for it only when a login is refused.
+        if (legacy_auth_refusal(rt.homeserver.config.server().oauth, LegacyAuthUse::user_login).has_value())
+        {
+            auto const login_object = parsed_json_object(req.body);
+            auto const* login_type = login_object.has_value() ? string_member(*login_object, "type") : nullptr;
+            auto const use = login_type != nullptr && *login_type == "m.login.application_service"
+                                 ? LegacyAuthUse::appservice_login
+                                 : LegacyAuthUse::user_login;
+            if (auto refused = legacy_auth_refused(req, rt, use); refused.has_value())
+            {
+                return std::move(*refused);
+            }
+        }
         auto body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
         {
@@ -15886,27 +16396,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
         }
-        if (find_device(rt, body->user_id, body->device_id) == nullptr)
-        {
-            rt.devices.push_back({body->user_id, body->device_id, body->display_name});
-            // A new login creates a new device identity. Record a self
-            // device-list-change so the user's other devices see the user in
-            // device_lists.changed and re-query /keys/query, AND so this new
-            // device's own first /sync lists the user in device_lists.changed
-            // — prompting it to fetch the user's *existing* devices' keys
-            // before any m.key.verification.request can arrive. Without this,
-            // a new device (e.g. Element X) receives a verification request
-            // from an existing verified device but has not yet fetched the
-            // sender's device keys, so matrix-rust-sdk drops the request
-            // ("Could not retrieve the device data ... ignoring it"). Key
-            // upload alone records a self-DLC, but the new device's initial
-            // sync runs before its own key upload. The spec sanctions the HS
-            // adding a user to device_lists.changed when a device's cached
-            // list may be stale; a brand-new device's cache is empty.
-            auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
-                                                                          std::string{body->user_id}, "changed"};
-            std::ignore = record_device_list_change(rt, self_change);
-        }
+        remember_signed_in_device(rt, body->user_id, body->device_id, body->display_name, SignedInDevice::new_session);
         auto response_body = canonicaljson::Object{
             json_member("access_token", json_str(result.value)),
             json_member("user_id", json_str(body->user_id)),
@@ -15954,11 +16444,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Repopulates the in-memory device cache only. refresh_local_session has
         // already established that the device row exists in the persistent
         // store, so this can no longer resurrect a deleted device — it only
-        // heals a cache that a restart or a worker split left incomplete.
-        if (find_device(rt, refreshed.user_id, refreshed.device_id) == nullptr)
-        {
-            rt.devices.push_back({refreshed.user_id, refreshed.device_id, refreshed.device_id});
-        }
+        // heals a cache that a restart or a worker split left incomplete, under
+        // the display name the device row holds (as the OAuth refresh grant does).
+        remember_signed_in_device(rt, refreshed.user_id, refreshed.device_id,
+                                  stored_device_display_name(rt.homeserver, refreshed.user_id, refreshed.device_id),
+                                  SignedInDevice::refreshed_session);
         auto response_body = canonicaljson::Object{
             json_member("access_token", json_str(refreshed.access_token)),
             json_member("refresh_token", json_str(refreshed.refresh_token)),
@@ -15982,14 +16472,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const r = call_local(req);
         if (r.status == 200U && logged_out_session.has_value())
         {
-            erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
-            std::ignore = record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
             // logout deletes the device, but only announce it if the row really went.
-            announce_deleted_devices(rt, logged_out_session->user_id,
-                                     devices_removed_since(rt.homeserver.database.persistent_store,
-                                                           logged_out_session->user_id,
-                                                           {logged_out_session->device_id}),
-                                     destinations);
+            announce_ended_device_session(rt, logged_out_session->user_id, logged_out_session->device_id, destinations);
         }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
@@ -16004,23 +16488,132 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                    : dispatch_err(req, rt, r.status, r.status == 401U ? unauthenticated_errcode : "M_UNKNOWN", r.body);
     }
 
-    // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
-    // auth_issuer before login to detect OIDC support.  We do not implement
-    // OIDC, so return 404 for the whole msc2965 namespace before the
-    // access-token gate, otherwise the probes produce a misleading 401.
-    if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
+    // GET /auth_metadata (spec "Server metadata discovery"), also at its MSC2965 unstable path, which clients still
+    // probe. Unauthenticated, so it is answered before the access-token gate; CORS is added at the boundary like
+    // every other answer. With the OAuth 2.0 API off both paths are 404 M_UNRECOGNIZED, the spec's answer of a server
+    // without it ("Authentication API discovery").
+    if (req.method == "GET" &&
+        (request_path == oauth::auth_metadata_path || request_path == oauth::auth_metadata_unstable_path))
     {
-        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
-    }
-    if (req.method == "GET" && request_path == "/_matrix/client/v1/auth_metadata")
-    {
-        auto const metadata = auth::make_auth_metadata(rt.homeserver.config.server().oidc);
-        if (!metadata.configured)
+        auto const& server_config = rt.homeserver.config.server();
+        if (!server_config.oauth.enabled)
         {
-            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "The OAuth 2.0 API is not enabled on this server.");
+        }
+        // validate() refused a base URL this cannot read when the API is on; a runtime built without validation
+        // answers 500 rather than advertise an address the reader refused.
+        auto base = oauth::OAuthBaseUrl::read(server_config.public_baseurl);
+        if (std::holds_alternative<core::Error>(base))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "The OAuth 2.0 base URL is not configured correctly.");
+        }
+        auto options = oauth::ServerMetadataOptions{};
+        options.device_grant_enabled = server_config.oauth.device_grant_enabled;
+        options.registration_enabled = rt.homeserver.config.security().registration.enabled;
+        // Spec "Account management": the account pages implement every action, so all six are listed.
+        for (auto const action : oauth::account_management_actions())
+        {
+            options.account_management_actions.emplace_back(action);
         }
         return dispatch_resp(req, rt, 200U,
-                             json_serialize(canonicaljson::Value{canonicaljson::Object{metadata.fields}}));
+                             json_serialize(oauth::server_metadata(std::get<oauth::OAuthBaseUrl>(base), options)));
+    }
+    // POST /_merovingian/oauth2/register (spec "Client registration", RFC 7591). Unauthenticated, so it is answered
+    // before the access-token gate; with the OAuth 2.0 API off the path is not served at all, so it is 404 whatever the
+    // method, as an unknown route is. Another method falls through to the 405 gate (client_static_route_allow).
+    // The handler is OAuthClientRegistration.cpp; its answers are OAuth errors, never Matrix ones (ADR-0781).
+    if (request_path == oauth::register_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete,
+                                  register_oauth_client(rt, request_header(req, "Content-Type"), req.body),
+                                  {}};
+        }
+    }
+    // GET and POST /_merovingian/oauth2/authorize (spec "Authorisation code grant"): the browser's sign-in pages,
+    // answered before the access-token gate, 404 with the OAuth 2.0 API off. Another method falls through to the 405
+    // gate. The handler is OAuthAuthorization.cpp (ADR-0787 to ADR-0789).
+    if (request_path == oauth::authorize_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "GET" || req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_authorize(rt, req), {}};
+        }
+    }
+    // POST /_merovingian/oauth2/token (spec "Token endpoint") and POST /_merovingian/oauth2/revoke (spec "Token
+    // revocation"): a client presents a code, a refresh token or the token to revoke, never an access token, so both
+    // are answered before the access-token gate, 404 with the OAuth 2.0 API off. Another method falls through to the
+    // 405 gate. The handlers are OAuthTokenEndpoint.cpp (ADR-0791 to ADR-0793) and OAuthRevocation.cpp (ADR-0795).
+    if (request_path == oauth::token_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_token(rt, req), {}};
+        }
+    }
+    if (request_path == oauth::revoke_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_revoke(rt, req), {}};
+        }
+    }
+    // POST /_merovingian/oauth2/device (spec "Device authorization grant", RFC 8628 section 3.1) and GET and POST
+    // /_merovingian/oauth2/link (its verification page): answered before the access-token gate, and 404 unless both
+    // the OAuth 2.0 API and the device grant are on (ADR-0804). Another method falls through to the 405 gate. The
+    // handlers are OAuthDeviceAuthorization.cpp and OAuthAuthorization.cpp.
+    if (request_path == oauth::device_path.view() || request_path == oauth::link_path.view())
+    {
+        auto const& oauth_config = rt.homeserver.config.server().oauth;
+        if (!oauth_config.enabled || !oauth_config.device_grant_enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (request_path == oauth::device_path.view() && req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_device_authorization(rt, req), {}};
+        }
+        if (request_path == oauth::link_path.view() && (req.method == "GET" || req.method == "POST"))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_link(rt, req), {}};
+        }
+    }
+    // GET and POST /_merovingian/account (spec "Account management"): the account pages, signed in with the account's
+    // password and their own short session (ADR-0796), so they are answered before the access-token gate, 404 with the
+    // OAuth 2.0 API off. Another method falls through to the 405 gate. The handler is AccountPage.cpp.
+    if (request_path == oauth::account_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "GET" || req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_account_page(rt, guard, req), {}};
+        }
+    }
+    // The rest of the MSC2965 namespace (`auth_issuer`, from an earlier draft of the MSC) is not served. It is
+    // answered 404 before the access-token gate, so a probe does not read a 401 as partial support.
+    if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
+    {
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
 
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
@@ -16396,7 +16989,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // authentication ("implemented, but the incorrect HTTP method is used").
     // CS8 (ADR-0548): with the feature off this endpoint is not served at all, so it is 404 whatever the method or
     // credentials, as before it was implemented.
-    if (request_path == get_login_token_path && !login_tokens_enabled(rt))
+    // With the legacy API off (ADR-0801) likewise.
+    if (request_path == get_login_token_path && !login_token_minting_served(rt))
     {
         return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
@@ -17068,6 +17662,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password")
     {
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
+        }
         auto const object = parsed_json_object(req.body);
         if (!object.has_value())
         {
@@ -17150,6 +17748,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // lock/suspend existed, and that is reversible rather than final.
     if (req.method == "POST" && request_path == "/_matrix/client/v3/account/deactivate")
     {
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
+        }
         auto const object = parsed_json_object(req.body);
         if (!object.has_value())
         {
@@ -17197,45 +17799,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
-        // F-07: a deactivated account holds no login token.
-        rt.login_tokens.erase_user(*user);
-        // Unbind every identity-server-bound 3PID the account holds. Spec: the
-        // 200 response's id_server_unbind_result is "success" only when *all*
-        // identifiers were unbound -- and when there were none to unbind --
-        // and "no-support" when one or more could not be, whether because the
-        // identity server refused or because none could be determined.
-        //
-        // Deactivation itself has already happened and is not undone by an
-        // unbind failure: the spec models a partial unbind as a 200 carrying
-        // "no-support", not as a failed deactivation. This is the opposite
-        // disposition to POST /account/3pid/unbind, which fails closed so the
-        // user can retry -- there is no retry after deactivation.
-        //
-        // Addresses are copied out before the loop: the outbound call drops the
-        // runtime lock, so the store vector can move and any iterator, pointer
-        // or index taken across it would dangle.
         // Optional per spec; when absent each binding's own recorded id_server is
         // used instead.
         auto const requested_id_server = [&object]() -> std::optional<std::string> {
             auto const* value = string_member(*object, "id_server");
             return value == nullptr || value->empty() ? std::nullopt : std::optional<std::string>{*value};
         }();
-        auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
-        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
-        {
-            if (record.user_id == result.value && record.bound)
-            {
-                pending_unbinds.emplace_back(record.medium, record.address);
-            }
-        }
-        auto unbind_result = std::string_view{"success"};
-        for (auto const& [medium, address] : pending_unbinds)
-        {
-            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address, requested_id_server))
-            {
-                unbind_result = "no-support";
-            }
-        }
+        auto const unbind_result = finish_account_deactivation(rt, guard, result.value, requested_id_server);
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(unbind_result))})));
     }
@@ -17262,6 +17832,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/add")
     {
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
+        }
         auto const body = parse_account_threepid_add_body(req.body);
         if (!body.has_value())
         {
@@ -17867,7 +18441,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
             json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
             // Spec (m.get_login_token, v1.7): whether the user may use POST /login/get_token.
-            json_member("m.get_login_token", json_obj({json_member("enabled", json_bool(login_tokens_enabled(rt)))})),
+            json_member("m.get_login_token",
+                        json_obj({json_member("enabled", json_bool(login_token_minting_served(rt)))})),
             // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
             // no allowed or disallowed list.
             json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
@@ -18755,6 +19330,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "DELETE" && starts_with(req.target, dev_prefix))
     {
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
+        }
         // Spec §10.7.1: DELETE /devices/{deviceId} requires UIA with
         // m.login.password to prove account ownership before deletion.
         auto const challenge = [&](bool password_failed) -> DispatchResult {
@@ -18807,21 +19386,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return challenge(true);
         }
         auto const device_id = device_id_from_device_path(request_path);
-        // The servers to tell, read before the device is removed.
-        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
-        auto const result = delete_local_device(rt.homeserver, *user, device_id);
+        auto const result = delete_device_and_announce(rt, *user, device_id);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, result.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN",
                                 result.reason);
         }
-        erase_runtime_device(rt, *user, device_id);
-        std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
-        announce_deleted_devices(rt, *user, {std::string{device_id}}, destinations);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/delete_devices")
     {
+        if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", *refusal);
+        }
         auto const challenge = [&](bool password_failed) -> DispatchResult {
             auto const session = issue_uia_session(rt, "delete_devices", *user);
             if (!session.has_value())
@@ -22196,6 +22774,28 @@ auto media_upload_authentication_refusal(ClientServerRuntime& rt, LocalHttpReque
     return dispatch_err(head, rt, 401U, errcode, "unauthenticated").response;
 }
 
+// Whether the request was routed to one of the server's own HTML pages: the authorisation, device link and account
+// pages, and the legacy SSO redirects while they hand off to those pages (ADR-0802). Judged on the same path, method
+// and configuration the routes match on, so an exception escaping a page handler is answered with a page (ADR-0803).
+static auto request_serves_page(ClientServerRuntime const& rt, LocalHttpRequest const& req, std::string_view path)
+    -> bool
+{
+    if (req.method != "GET" && req.method != "POST")
+    {
+        return false;
+    }
+    auto const& oauth_config = rt.homeserver.config.server().oauth;
+    if (oauth_config.enabled && (path == oauth::authorize_path.view() || path == oauth::account_path.view() ||
+                                 (path == oauth::link_path.view() && oauth_config.device_grant_enabled)))
+    {
+        return true;
+    }
+    auto constexpr sso_redirect = std::string_view{"/_matrix/client/v3/login/sso/redirect"};
+    return req.method == "GET" && legacy_login_hand_off_enabled(oauth_config) &&
+           (path == sso_redirect ||
+            (path.starts_with(sso_redirect) && path.substr(sso_redirect.size()).starts_with('/')));
+}
+
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
 {
     return handle_client_server_request(rt, req, ClientServerDispatchOptions{.can_wait = can_wait});
@@ -22233,15 +22833,49 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         apply_cors_headers(req, result.response, rt.cors);
         return result;
     }
+    catch (...)
+    {
+        // ADR-0803: any other exception a handler lets escape is answered here, so the client gets a 500 instead of
+        // a closed connection. The handler's RuntimeLock and RequestLockScope were unwound before this block runs
+        // (a RuntimeLockRelease scope re-acquires on unwind, and the guard then releases), so the lock is taken
+        // afresh, as the overflow_error answer does. The log names the route's template and the exception's type,
+        // never its message: what() can carry request data (a parser quoting its input, a path, a value).
+        auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
+        log_diagnostic("request.exception",
+                       {
+                           {"method", req.method,                          false},
+                           {"route",  normalized_target(req.target),       false},
+                           {"type",   core::current_exception_type_name(), false}
+        },
+                       observability::LogEventSeverity::error);
+        if (request_serves_page(rt, req, path))
+        {
+            // A browser is on the other end: a fixed page with the pages' own headers, and no CORS header (ADR-0785).
+            return DispatchResult{DispatchResult::Status::complete,
+                                  oauth_error_page_response(500U, oauth::HtmlText{"Something went wrong"},
+                                                            oauth::HtmlText{"The server could not answer this page. "
+                                                                            "Try again later."}),
+                                  {}};
+        }
+        result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "internal server error");
+        apply_cors_headers(req, result.response, rt.cors);
+        return result;
+    }
     if (fetch_scope.deferred())
     {
         return DispatchResult{DispatchResult::Status::needs_media_fetch, {}, {}};
     }
     if (result.status == DispatchResult::Status::complete)
     {
-        apply_cors_headers(req, result.response, rt.cors);
+        apply_client_response_headers(req, result.response, rt.cors);
     }
     return result;
+}
+
+auto apply_client_response_headers(LocalHttpRequest const& req, LocalHttpResponse& response,
+                                   config::CorsConfig const& cors) -> void
+{
+    apply_cors_headers(req, response, cors);
 }
 
 auto device_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t

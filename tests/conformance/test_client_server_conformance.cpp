@@ -28,9 +28,9 @@
 // +-------------------------------------------------------------------------+
 
 #include "../FederationSigningTestSupport.hpp"
-#include "../support/MockIdentityServer.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/MockIdentityServer.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
@@ -45,9 +45,9 @@
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1960,34 +1960,66 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
 // --- POST /_matrix/client/v3/keys/device_signing/upload ----------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysdevice_signingupload
 //
-// This endpoint uses the User-Interactive Authentication API (UIA).
-// A request without auth MUST return 401 with the UIA flows challenge.
+// "Changed in v1.11: UIA is not always required for this endpoint." "User-Interactive Authentication MUST be
+// performed for regular clients, except in these cases: there is no existing master signing key uploaded to the
+// homeserver, OR there is an existing master signing key and it exactly matches the master signing key provided in
+// the request body. If there are any additional keys provided in the request (self-signing key, user-signing key)
+// they MUST also match the existing keys stored on the server."
 // Success MUST return HTTP 200 with an empty JSON object {}.
-SCENARIO("POST /keys/device_signing/upload without auth returns 401 UIA challenge",
-         "[conformance][client-server][e2ee][keys]")
+SCENARIO("POST /keys/device_signing/upload asks for UIA only to change a held master key",
+         "[conformance][client-server][e2ee][keys][cross-signing-uia]")
 {
-    GIVEN("a logged-in device")
+    GIVEN("a logged-in device whose user holds no cross-signing key")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto const upload = [&](std::string body) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token, std::move(body)});
+        };
+        auto const first = merovingian::tests::make_cross_signing_set("@alice:example.org");
+        auto const first_members = first.selected_members(true, true, true);
 
-        WHEN("the device uploads cross-signing keys without providing auth")
+        WHEN("the device uploads its first keys without auth")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"user_id":"@alice:example.org","keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
-
-            THEN("the server issues a UIA challenge with m.login.password flow")
+            auto const response = upload("{" + first_members + "}");
+            THEN("they are stored without a UIA challenge")
             {
-                // Spec MUST: cross-signing upload uses UIA to prevent key takeover.
+                // Spec MUST NOT require UIA: "there is no existing master signing key uploaded to the homeserver".
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
+            }
+        }
+        WHEN("the same keys are uploaded again without auth")
+        {
+            REQUIRE(upload("{" + first_members + "}").response.status == 200U);
+            auto const repeated = upload("{" + first_members + "}");
+            auto const master_only = upload("{" + first.selected_members(true, false, false) + "}");
+            THEN("the repeat is accepted, since it holds no new key")
+            {
+                // Spec: the existing master key "exactly matches" and every other key "MUST also match".
+                REQUIRE(repeated.response.status == 200U);
+                REQUIRE(master_only.response.status == 200U);
+            }
+        }
+        WHEN("a different master key is uploaded without auth once one is held")
+        {
+            REQUIRE(upload("{" + first_members + "}").response.status == 200U);
+            auto const second = merovingian::tests::make_cross_signing_set("@alice:example.org");
+            auto const response = upload("{" + second.selected_members(true, true, true) + "}");
+            auto const self_signing_only = upload("{" + second.selected_members(false, true, false) + "}");
+            THEN("the server issues a UIA challenge with the m.login.password flow")
+            {
+                // Spec MUST: replacing a held master key requires UIA, to prevent key takeover.
                 REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
                 // Spec MUST: UIA challenge body contains flows, params, and session.
                 REQUIRE(object_member(body, "flows") != nullptr);
                 REQUIRE(object_member_as_object(body, "params") != nullptr);
                 REQUIRE(object_member(body, "session") != nullptr);
+                // Spec: a request without the matching master key is not one of the exempt cases.
+                REQUIRE(self_signing_only.response.status == 401U);
             }
         }
     }
@@ -4004,10 +4036,10 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
 
 // --- GET /_matrix/client/v1/auth_metadata ------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1auth_metadata
-// OIDC discovery is optional; unsupported servers should answer this
-// unauthenticated probe cleanly so clients do not mistake lack of OIDC for an
-// authentication failure.
-SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED when OIDC is unsupported",
+// The OAuth 2.0 API is optional; a server without it answers this
+// unauthenticated probe 404 M_UNRECOGNIZED so clients do not mistake its
+// absence for an authentication failure.
+SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED when the OAuth 2.0 API is off",
          "[conformance][client-server][session]")
 {
     GIVEN("a running client-server")
@@ -17695,21 +17727,21 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
 }
 
 // =============================================================================
-// OIDC DISCOVERY (MSC2965)
+// OAUTH 2.0 API DISCOVERY
 // =============================================================================
 
-// Spec: Matrix Client-Server API v1.19 — GET /auth_metadata (MSC2965)
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#openid-connect-discovery
+// Spec: Matrix Client-Server API v1.19 — Authentication API discovery
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#authentication-api-discovery
 //
-// Servers that do not support OIDC MUST return 404 M_UNRECOGNIZED so that
-// clients (Element, Cindy, etc.) can detect the absence of OIDC support and
-// fall back to password-based login. The server MUST NOT return 401 for this
-// unauthenticated discovery endpoint — returning 401 would mislead clients
-// into thinking OIDC is partially supported.
-SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers",
-         "[conformance][client-server][oidc][auth]")
+// A server without the OAuth 2.0 API SHOULD return 404 M_UNRECOGNIZED so that
+// clients (Element, Cinny, etc.) can detect its absence and fall back to the
+// legacy API. This unauthenticated discovery endpoint is never answered 401:
+// that would mislead clients into thinking the API is partially supported.
+// test_oauth_metadata_conformance.cpp covers the API switched on.
+SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED while the OAuth 2.0 API is off",
+         "[conformance][client-server][oauth][auth]")
 {
-    GIVEN("a running homeserver that does not implement OIDC")
+    GIVEN("a running homeserver with the OAuth 2.0 API left off")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -17721,8 +17753,8 @@ SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers"
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
-                // Spec: non-OIDC servers MUST return 404 M_UNRECOGNIZED so clients
-                // detect the absence of OIDC before attempting OIDC login.
+                // Spec SHOULD: a server without the OAuth 2.0 API returns 404 M_UNRECOGNIZED
+                // so clients detect its absence before attempting an OAuth login.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");

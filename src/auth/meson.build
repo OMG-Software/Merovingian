@@ -4,7 +4,6 @@ auth_sources = files(
   'FailureWindowTable.cpp',
   'Identity.cpp',
   'KeyApi.cpp',
-  'OidcDiscovery.cpp',
   'Password.cpp',
   'Session.cpp',
   'Token.cpp',

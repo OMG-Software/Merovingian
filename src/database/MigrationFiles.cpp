@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <merovingian/database/MigrationFiles.hpp>
+
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
@@ -11,8 +13,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-#include <merovingian/database/MigrationFiles.hpp>
 
 namespace merovingian::database
 {
@@ -177,7 +177,21 @@ auto build_offline_migration_plan(config::DatabaseConfig const& database_config,
     auto plan = migration_plan_between(current_version, target_version);
     if (!file_steps.empty())
     {
-        plan.steps = file_steps;
+        // The directory holds every migration ever written; the plan takes only the steps between its two versions,
+        // so `--plan 1 2` runs 002 alone rather than replaying 001 over a v1 database.
+        auto const upgrade = plan.direction == MigrationDirection::upgrade;
+        auto const lowest = upgrade ? current_version : target_version;
+        auto const highest = upgrade ? target_version : current_version;
+        plan.steps.clear();
+        for (auto const& step : file_steps)
+        {
+            auto const in_range = upgrade ? step.version > lowest && step.version <= highest
+                                          : step.version >= lowest && step.version < highest;
+            if (step.direction == plan.direction && in_range)
+            {
+                plan.steps.push_back(step);
+            }
+        }
     }
     auto const validation = migration_plan_is_valid(plan);
     if (!validation.valid)

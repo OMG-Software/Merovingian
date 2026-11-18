@@ -121,6 +121,7 @@ nav:
   - Road to 1.0:
       - Production milestone: todos/production-milestone.md
       - Capability gaps: todos/capability-gaps.md
+      - OAuth 2.0 API plan: todos/oauth-2-0-api.md
 
 markdown_extensions:
   - admonition

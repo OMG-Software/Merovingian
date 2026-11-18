@@ -13,6 +13,11 @@ Built only when `-Dbuild_fuzz=true` is passed to Meson.
 | `fuzz_config_parser.cpp` | Key-value config parser (`parse_key_value_config`) |
 | `fuzz_stream_token.cpp` | Stream token decoder (`decode_stream_token`) |
 | `fuzz_query_params.cpp` | Query-string parser and percent-decoder |
+| `fuzz_form_fields.cpp` | Strict `application/x-www-form-urlencoded` reader (`core::FormFields::parse`) |
+| `fuzz_request_cookies.cpp` | `Cookie` header reader (`core::RequestCookies::parse`); bytes after the first NUL are the name looked up |
+| `fuzz_oauth_redirect_uri.cpp` | OAuth URI reader, client URI and redirect URI rules (`oauth::ParsedUri::read`, `validate_redirect_uri`, `match_redirect_uri`); bytes before the first NUL are the redirect URI, after it the client URI |
+| `fuzz_oauth_scope.cpp` | OAuth scope parser (`oauth::parse_scope`) |
+| `fuzz_oauth_client_metadata.cpp` | OAuth client metadata validator and serialisers (`oauth::ClientMetadata::validate`) on whatever JSON the bytes parse to |
 | `fuzz_srv_record.cpp` | Portable DNS SRV record parser (`parse_srv_records`) |
 | `fuzz_multipart_upload.cpp` | multipart/mixed parser for a remote's federation media download (`parse_federation_media_multipart`); bytes before the first NUL are the Content-Type |
 | `fuzz_url_preview_html.cpp` | URL preview HTML/OpenGraph extractor, content-type check and reference resolver |
@@ -32,6 +37,8 @@ Add a new `fuzz_<surface>.cpp` that:
 2. Feeds the raw bytes into the parsing surface under test
 3. Asserts that the parser does not crash, corrupt memory, or loop infinitely
 4. Does **not** assert a specific output — fuzzing is about stability, not correctness
+   A target may abort (`std::abort`) when a property that must hold for every input breaks, such as
+   `fuzz_oauth_redirect_uri.cpp`'s CSP source, exact match and self-match checks; never on one input's expected value.
 
 Register the target in `tests/fuzz/meson.build`.
 

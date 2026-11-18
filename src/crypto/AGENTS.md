@@ -18,10 +18,12 @@ or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for b
 | `ConstantTime.cpp` | Constant-time byte comparison (wraps `sodium_memcmp`) |
 | `Random.cpp` | Bounded random byte generation (wraps `randombytes_buf`) |
 | `GenericHash.cpp` | Domain-separated BLAKE2b hashing helpers |
+| `Sha256.cpp` | `sha256`: SHA-256 for protocols that name it (PKCE `S256`, the page policy's style hash); a hash of the project's own choosing uses `GenericHash` |
 | `Encoding.cpp` | Hex and base64 (URL-safe and original) encoding wrappers |
 | `MasterKey.cpp` | Loads and validates the operator master key into locked memory; fails closed if it cannot be locked |
 | `SecretBox.cpp` | `SecretBoxKey` — encrypts server signing secrets at rest (`secretbox:v1:` format) |
-| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived key for `v3`/`v4` access-token hashing |
+| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived keys for `v3`/`v4` access-token hashing, cached together (`cached_token_hmac_keys`), and the OAuth client ID key (own label, ADR-0779), derived per registration by `derive_oauth_client_id_key_from_file` and never cached: every cached key is a locked page held for the life of the process, from a per-process budget (`RLIMIT_MEMLOCK`, 64 KiB by default on FreeBSD) the other secrets need too, so `TokenHmacKeys` holds the two access-token keys only (ADR-0779, amended) |
+| `OAuthClientId.cpp` | `oauth_client_id`: keyed BLAKE2b of canonical OAuth client metadata, 43 URL-safe base64 characters (ADR-0779) |
 | `IpcAuthKey.cpp` | `IpcAuthKey` — master-key-derived key that authenticates the federation-worker IPC handshake |
 | `IpcStreamCipher.cpp` | `crypto_kx` session keys and `secretstream` AEAD framing for the IPC channel |
 
@@ -59,6 +61,7 @@ Do **not** bypass this interface by calling libsodium functions directly.
 - Access-token hashing — the `crypto_generichash` call over the token stays in `src/auth/Token.cpp`;
   only the `v3`/`v4` HMAC key it uses is derived here, in `TokenKey.cpp`
 - SHA-256 content/reference hashes — used directly in `src/events/` via the canonical JSON pipeline
+  (every other SHA-256 goes through `crypto::sha256`)
 
 ## Key spec sections
 

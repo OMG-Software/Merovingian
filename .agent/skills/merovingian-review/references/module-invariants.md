@@ -57,6 +57,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - UIA sessions are capped and answer 429, never evicting (ADR-0683). Login on an existing device deletes earlier
   rows (ADR-0590). Login tokens are never persisted (ADR-0548). `#UIAA`
 - The production password cost is pinned by `tests/password_cost/` (ADR-0510).
+- An OAuth session is created only by `grant_oauth_session` with a finite access token; the refresh endpoints refuse
+  each other's sessions before rotating; a UIA endpoint refuses an OAuth session first; revocation goes through
+  `end_device_session` (ADR-0791 to ADR-0795). `#OAuth 2.0 sessions (ADR-0791 to ADR-0795)`
 
 ## src/canonicaljson
 
@@ -105,6 +108,10 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - Reads go by index, never scan. `PersistentStore` mutexes follow ADR-0517. A member added to `PersistentStore`
   is added to every hand-written copy, move and serialise path too.
 - Schema changes go only through `migrations/` (ADR-0224). Nothing but SQLite opens an SQLite file (ADR-0157).
+- A path that deletes a `devices` row deletes its `oauth_sessions` row in the same transaction, and no path deletes
+  an OAuth client that has a session (ADR-0776, ADR-0777). Whatever replaces a device's credentials replaces its
+  `oauth_sessions` row in the same transaction; a grant's audit row is in its transaction (ADR-0792).
+  `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
 
 ## src/email
 
@@ -179,6 +186,17 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   secret into an owned `SecretBuffer` first. `src/homeserver/AGENTS.md#The runtime lock and blocking calls`
 - Work under the lock is linear in request input. Per-user row counts are capped with the documented errcodes:
   `400 M_TOO_LARGE` (ADR-0173). `#Work under the runtime lock is bounded by the request`
+- OAuth answers come from `oauth_json_response` / `oauth_error_response`; client IDs only from `oauth_client_id_of`;
+  registrations are capped and never evict a client with a session (ADR-0779 to ADR-0781). Pending authorisations
+  and codes live only in their hashed, bounded, never-evicting stores (ADR-0782); a password is checked only by
+  `verify_login_credentials` and a session-less account made only by `create_local_account` (ADR-0783); a page is
+  marked `LocalHttpResponse::page` and gets no CORS header (ADR-0785); an OAuth target's query is never logged
+  (ADR-0786). A grant is one transaction, a session ends only through `end_device_session_and_announce`, and every
+  UIA endpoint calls `oauth_session_uia_refusal` first (ADR-0792, ADR-0794, ADR-0795). Account-page sessions and
+  reset approvals live only in `AccountSessionStore` and `CrossSigningResetApprovals`; a page action calls the client
+  API's own function; a password change, reset or deactivation calls `end_account_page_access`; a taken approval is
+  spent only after the keys are stored (ADR-0796 to ADR-0798).
+  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0812, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`
@@ -239,6 +257,26 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   most 1/16 of the parked budget (ADR-0719).
 - Shutdown order: stop accepting, stop the parker, drain the pools.
 
+## src/oauth
+
+- No state, I/O or logging; caps stated and refused at, never truncated; errors quote no input; `normalise_user_code`
+  is the only reader that normalises (ADR-0805). `src/oauth/AGENTS.md#Rules`
+- Client addresses only through `ParsedUri::read`; redirect URIs matched byte for byte by `match_redirect_uri`
+  (ADR-0770). No redirect before the client and its redirect URI are validated.
+- HTML only through `Page` with `HtmlText` or compile-time parts; every page sends `page_headers()`; only a matched
+  redirect URI adds a `form-action` source (ADR-0772). PKCE `S256` only, constant-time. Pages send
+  `Referrer-Policy: same-origin`, and a form post is accepted only by `form_post_origin_is_accepted` (ADR-0784).
+- Every absolute OAuth address comes from `OAuthBaseUrl` with a path from `OAuthPaths.hpp` (ADR-0773). A hand-off
+  allowlist entry is an https origin or a bare private-use scheme, never a prefix (ADR-0774).
+- The legacy API switch is `legacy_auth_refusal` alone; a route that issues a legacy session asks it (ADR-0801).
+  `src/homeserver/AGENTS.md`
+- The legacy login hand-off confirms before every redirect, re-reads `redirectUrl` with `hand_off_redirect_target`,
+  and is a kind of `PendingAuthorisation`, not a copied handler (ADR-0802). `src/homeserver/AGENTS.md`
+- The device grant keeps its entries only in `DeviceAuthorisationStore` and its wrong codes only in
+  `UserCodeAttemptThrottle`, both on `oauth_device_clock_ms`; the link page checks origin, cookie and throttle before
+  any lookup; one browser answers a code; a device sign-in creates no account and its consent page warns first; a
+  redeemed device code is `expired_token` (ADR-0804 to ADR-0806). `src/homeserver/AGENTS.md`
+
 ## src/observability
 
 - Never log secrets. One record is one physical line. Field values are capped. URLs are logged without the query.
@@ -297,6 +335,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 
 - Never edit an applied migration. `001_initial_schema.sql` is frozen (ADR-0224). A change is a new numbered
   file, plus its step in `upgrade_migration_catalog()` and its downgrade. `migrations/AGENTS.md#Safety rules`
+- A migration's tables go in their own per-version arrays in `Schema.cpp`, never into an earlier version's; the file
+  equals the generated step (ADR-0778). `migrations/AGENTS.md#Migration 002: the OAuth 2.0 tables (1.1.0, ADR-0776, ADR-0778)`
 - Next number is the maximum plus one, contiguous. Check that parallel branches have not taken it. Format and
   header follow `#File format`.
 - Every new table is classified for the federation worker. `#Federation worker classification`

@@ -783,12 +783,14 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                // The whole schema is the single v1 migration.
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 1U);
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
-                        merovingian::database::MigrationDirection::upgrade);
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
-                        "initial_schema");
+                // The frozen v1 migration, then migration 002 (the OAuth 2.0 tables), one ledger row each.
+                auto const& applied = started.runtime.database.persistent_store.schema.applied_migrations;
+                REQUIRE(applied.size() == merovingian::database::current_schema_version());
+                REQUIRE(applied.front().direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(applied.front().name == "initial_schema");
+                REQUIRE(applied.back().name == "oauth_tables");
+                REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "oauth_clients"));
+                REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "oauth_sessions"));
             }
         }
     }
@@ -814,7 +816,8 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 1U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() ==
+                        merovingian::database::current_schema_version());
             }
         }
     }

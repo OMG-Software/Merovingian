@@ -26,7 +26,25 @@ This is the largest and most complex module — read this file carefully before 
 | `RoomService.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `AppserviceDelivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
-| `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, OAuth 2.0 session rows whose device holds no live access or refresh token (judged again in the hold that deletes them, ADR-0808), and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
+| `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response` / `oauth_empty_response`: every OAuth JSON (or empty) answer, with `no-store` (ADR-0781) |
+| `OAuthTokenEndpoint.cpp` | `POST /_merovingian/oauth2/token` (`handle_oauth_token`): the authorization code grant, the refresh grant (ADR-0791 to ADR-0793) and the device code grant (ADR-0804) |
+| `OAuthRevocation.cpp` | `POST /_merovingian/oauth2/revoke` (`handle_oauth_revoke`): ends the session of an access or refresh token as `/logout` does (ADR-0795) |
+| `OAuthClientCredentials.cpp` | `oauth_client_credentials_refusal`: refuses a `client_secret` field or `Authorization: Basic` (only public clients exist) at the token and revocation endpoints |
+| `OAuthAuthorization.cpp` | `GET` and `POST /_merovingian/oauth2/authorize` (`handle_oauth_authorize`): the authorisation request, the browser cookie, the login, registration and consent pages, and the redirect with a code or an error (ADR-0787 to ADR-0789); the legacy SSO hand-off (`handle_login_hand_off`, ADR-0802); the device grant's link page (`handle_oauth_link`) and its consent and answer (ADR-0806) |
+| `OAuthClock.cpp` | `oauth_wall_clock_ms`: the wall-clock milliseconds every OAuth store and handler passes; `oauth_device_clock_ms`, the same plus `HomeserverRuntime::test_device_grant_clock_advance_ms`, which the device grant's stores are given |
+| `OAuthDeviceAuthorization.cpp` | `POST /_merovingian/oauth2/device` (`handle_oauth_device_authorization`): the device grant's codes (ADR-0804) |
+| `DeviceAuthorisationStore.cpp` | `DeviceAuthorisationStore` (`HomeserverRuntime::oauth_device_authorisations`): device authorisations, 10 minutes, under the hash of the device code with an index by the hash of the user code; 4096 in all and 8 per client address, never evicting a live entry; one browser attached at a time (ADR-0805, ADR-0806). Guarded by `runtime.mutex` |
+| `UserCodeAttemptThrottle.cpp` | `UserCodeAttemptThrottle` (`HomeserverRuntime::oauth_user_code_attempts`): five wrong user codes per client address key in ten minutes, 8192 windows, failing closed at the cap (ADR-0805). Guarded by `runtime.mutex` |
+| `AccountPage.cpp` | `GET` and `POST /_merovingian/account` (`handle_account_page`): the account pages' sign-in, overview, devices, device sign-out, password change, deactivation and cross-signing reset approval (ADR-0796 to ADR-0798) |
+| `AccountSessionStore.cpp` | `AccountSessionStore` (`HomeserverRuntime::account_sessions`): account-page sessions, 15 minutes fixed, hashed secret, 4096 in all and 4 per user (the user's oldest goes), and the session's form token (ADR-0796). Guarded by `runtime.mutex` |
+| `CrossSigningResetApprovals.cpp` | `CrossSigningResetApprovals` (`HomeserverRuntime::cross_signing_reset_approvals`): one approval per user, 10 minutes, taken by a replacing upload and restored unless the keys are stored (ADR-0797). Guarded by `runtime.mutex` |
+| `OAuthPageResponse.cpp` | Module-internal helpers both page handlers share: `oauth_page_response`, `oauth_plain_page`, `oauth_error_page_response`, `request_target_query`, `single_request_header`, `request_secret_cookie`, `retry_after_seconds` |
+| `RequestHeaders.cpp` | `request_header` (first value, case-insensitive name) and `request_header_values` (every value, for a check that refuses a repeated header) |
+| `PendingAuthorisationStore.cpp` | `PendingAuthorisationStore` (`HomeserverRuntime::oauth_pending_authorisations`): OAuth 2.0 authorization requests in progress, 10 minutes, under a 32-byte identifier kept as a hash and bound to a browser token compared in constant time; 8192 in all and 16 per client address, never evicting a live entry (ADR-0782). Guarded by `runtime.mutex` |
+| `AuthorizationCodeStore.cpp` | `AuthorizationCodeStore` (`HomeserverRuntime::oauth_codes`): authorization codes, 60 s, hashed, bound to client, redirect URI, PKCE challenge, user, device and scope; 8192, never evicted; a redeemed code is remembered until its expiry so a replay is told apart (ADR-0782). Guarded by `runtime.mutex` |
+| `OAuthSecret.cpp`, `HashedSecretTable.hpp` | `make_oauth_secret` / `oauth_secret_hash` (32 random bytes, BLAKE2b) and the digest-indexed, constant-time, expiry-ordered table both stores keep their entries in |
 | `LoginTokenStore.cpp` | `LoginTokenStore`: the in-memory, bounded, single-use login tokens `POST /login/get_token` mints (CS8, ADR-0548). Hash only, constant-time scan, never evicts; guarded by `runtime.mutex` |
 | `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488), and an index by (user ID, device ID) behind `erase_device` (F-08), which a login on a held device and a refresh call after their database commit (ADR-0590); `rows_examined()` counts the sessions it visits |
 | `DeferredPduRetry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
@@ -65,6 +83,17 @@ This is the largest and most complex module — read this file carefully before 
 | `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
 | `LocalSmokeFlow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
 
+## An escaped exception is answered at the dispatch boundary (ADR-0803)
+
+`handle_client_server_request` catches `std::overflow_error` (the sync stream counter) and then anything else, which it
+answers `500 M_UNKNOWN` (`internal server error`) and logs as `request.exception` with the method, `normalized_target`
+and `core::current_exception_type_name()`. Never log `what()` of a request's exception, and never add a catch-all in a
+handler or a transport call site in its place: handlers still return errors as values, and this is the backstop.
+`HomeserverRuntime::test_client_request_hook` is the test seam that makes a request throw.
+A request `request_serves_page` names (the authorisation, device link and account pages, and the SSO redirects while
+they hand off) gets a fixed HTML error page instead (`oauth_error_page_response`, ADR-0810); a new page route must be
+added there too.
+
 ## Architecture boundaries
 
 ```
@@ -99,6 +128,151 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
+
+## OAuth 2.0 API (ADR-0812, ADR-0773)
+
+`GET /_matrix/client/v1/auth_metadata` and its MSC2965 unstable path are answered in `ClientServerRuntime.cpp` before
+authentication: `404 M_UNRECOGNIZED` while `server.oauth.enabled` is false, otherwise `oauth::server_metadata`. Every
+absolute OAuth address a handler writes comes from `oauth::OAuthBaseUrl` read from `server.public_baseurl`, with a path
+constant from `oauth/OAuthPaths.hpp`; never join the base URL and a path here. The two paths stay in the generic
+rate-limit tier (ADR-0775); the other OAuth endpoints take `auth_sensitive`.
+
+The authorisation pages are `handle_oauth_authorize` (`OAuthAuthorization.cpp`); `ClientServerRuntime.cpp` holds only
+the route match. They build on these; use them, never a copy:
+
+- `verify_password_login` and `create_local_account` (`AuthService.cpp`, ADR-0783) are the only password check and the
+  only session-less account creation. The page passes `rate_limit_client_key` as the client source and client key.
+- `PendingAuthorisationStore` and `AuthorizationCodeStore` (ADR-0782) are the only places an authorisation in progress
+  or a code is kept. Pass `oauth_wall_clock_ms()`; never evict, never keep a secret unhashed.
+- A page response sets `LocalHttpResponse::page` and carries `oauth::page_headers()`; the boundary then adds no CORS
+  header and `wrap()` leaves it alone (ADR-0785). A form post is refused unless `oauth::form_post_origin_is_accepted`
+  accepts its `Origin` and `Sec-Fetch-Site` (ADR-0784).
+- Never log a target's query by hand: `sanitized_http_target` drops the whole query under `/_merovingian/oauth2` and
+  `/_merovingian/account` (ADR-0786).
+
+Rules for the authorisation pages:
+
+- **Nothing is redirected before the client and its redirect URI are validated.** A failure of either is a 400 page;
+  every later refusal goes to the matched URI, whose text is the one the request sent.
+- **A pending authorisation is found with the `pending` field and the `__Host-mv-oauth` cookie together** (ADR-0788).
+  Read `Origin`, `Sec-Fetch-Site` and `Cookie` with `request_header_values`; a header sent twice counts as absent.
+- **`verify_password_login` and `create_local_account` release `runtime.mutex`.** Nothing read before them is trusted
+  after: `record_user` finds the entry again, and `approve` consumes it and judges the account again with
+  `account_sign_in_gate`.
+- **A sign-in carries the credential stamp of its password check** (ADR-0807). `record_user` stores
+  `user_credential_stamp` (`AuthService.cpp`, the only place it is computed); it travels in `AuthorizationGrant` and the
+  device authorisation's approval, and `approve` and the token endpoint's code and device-code grants call
+  `user_credential_stamp_matches` after `account_sign_in_gate`. A new step that acts on an earlier password check
+  compares it too. Never log it, and never put the password hash itself in a store.
+- **No browser session is kept** (ADR-0787): every authorisation asks for the password, and `prompt=none` is
+  `login_required`.
+- **An approval leaves one authorization code and nothing else**: no device, token or `oauth_sessions` row; the token
+  endpoint creates those.
+- Log under `oauth` with `client_id`, `application_type`, `error`, `user_id` and `device_id` only. Granted, and denied
+  after a sign-in, are durable audit rows.
+The token and revocation endpoints are `handle_oauth_token` and `handle_oauth_revoke`, answered before the authentication
+gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
+
+- **A grant is one transaction** (`grant_oauth_session` and `database::store_oauth_grant`, ADR-0792): the device, the
+  deletion of the device's earlier credentials and OAuth row, both tokens, the `oauth_sessions` row and the audit row.
+  Then `remember_signed_in_device` adds the device to the runtime's list as `POST /login` does; never add a write after
+  the commit that a failure could leave behind.
+- **The code grant's checks are in order**: client and grant type, verifier shape, redeem (a spent code whatever
+  follows), then client, redirect URI byte for byte and PKCE, then `account_sign_in_gate`, the credential stamp and the
+  device checks. A
+  replayed code ends only the session that code produced (`AuthorizationCodeStore::record_issued_session`, matched on
+  client and `created_at_ms`), recorded at the redemption's instant before the grant commits, so nothing that can fail
+  follows the commit.
+- **The refresh grant heals the runtime's device list with the device row's stored display name**, never the device
+  ID: `stored_device_display_name` (`StoredDeviceDisplayName.cpp`), which `POST /refresh` calls too.
+- **A session ends through `end_device_session_and_announce`** (`ClientDeviceSessions.hpp`), shared with `POST /logout`:
+  revocation, a replayed code, any new path that ends a session.
+- **A UIA endpoint calls `oauth_session_uia_refusal` first** (ADR-0794): `GET`/`POST /login/get_token`,
+  `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `DELETE /devices/{deviceId}`,
+  `POST /delete_devices`, and `POST /keys/device_signing/upload` when the upload is not UIA-exempt, which then offers
+  the `m.oauth` stage instead of the 403 (ADR-0797). An application service's masquerade token is never refused.
+- Never log a code, a verifier, a token or the body; log `client_id`, `grant_type`, `error`, `user_id`, `device_id`.
+  A refusal logs `client_id` only once `find_registered_oauth_client` found it, in the token and the device
+  authorization endpoints: before then it is text of the caller's choosing.
+
+The account pages are `handle_account_page` (`AccountPage.cpp`); `ClientServerRuntime.cpp` holds only the route match.
+Rules (ADR-0796 to ADR-0798):
+
+- **A form post is checked in order**: `form_post_origin_is_accepted` (403, before the body is read), the content
+  type, the form; then, for anything but `sign_in`, the cookie's live session (`AccountSessionStore::find`, then
+  `account_sign_in_gate`) and the session's form token (`form_token_matches`). Never act on a post before all of these.
+- **Each action calls the client API's function, never a copy**: `delete_device_and_announce` (shared with
+  `DELETE /devices/{deviceId}`), `deactivate_user_account` then `finish_account_deactivation` (shared with
+  `POST /account/deactivate`), `change_password_on_account_page` (the email reset's core,
+  `replace_password_without_device`). A new page action finds or factors out the client API's core first.
+- **`verify_password_login` releases `runtime.mutex`**: after it, find the session again (`still_signed_in`) before
+  acting.
+- **Every password change, reset and deactivation calls `end_account_page_access`** (`AuthService.cpp`), which ends the
+  user's account-page sessions and withdraws a reset approval. A new path that changes a password or closes an account
+  does too.
+- **A device the user does not hold is the same 404 page**, whether unknown or another user's.
+- **The `m.oauth` stage** (`oauth_cross_signing_reset_stage` in `ClientServerRuntime.cpp`) is offered only to an OAuth
+  session's replacing upload; a legacy session keeps `m.login.password` and never touches an approval. The approval is
+  taken into a `TakenResetApproval`, which restores it on every way out; `spend()` only after `store_key_api_payload`
+  succeeds. A password stage from an OAuth session is answered with the challenge and never checked. A retry with no
+  `auth` or no `session` completes the stage when an approval is live (clients poll that way); a `session` this server
+  did not issue for this does not. The challenge names `live_uia_session` before issuing one, so polling never costs a
+  session per request (ADR-0799); keep both when changing the stage. The challenge URL carries the requesting device,
+  and the reset page binds the approval to it only when it is one of the user's OAuth devices
+  (`reset_requesting_device`); a bound approval is taken only by that device's upload and restored bound (ADR-0809).
+  Never show or bind a `device_id` that check refuses.
+- Log `user_id` only (`account.page.*`); never a password, the cookie, a form token or the query.
+
+The legacy API switch (`server.oauth.legacy_api_enabled`, ADR-0801) is decided by `legacy_auth_refusal`
+(`LegacyAuthPolicy.cpp`) alone. `GET /login`, `POST /login`, `POST /register`, both SSO redirects and
+`POST /login/get_token` (and its capability) ask it, through `legacy_auth_refused`, before they judge credentials or
+create anything. A new route that lists the legacy logins or issues a user a session asks it too; never test the key
+in a route. A session already issued, `/refresh`, `/logout` and UIA are not uses and are never gated.
+
+With both APIs on, the SSO redirects call `handle_login_hand_off` (`OAuthAuthorization.cpp`, ADR-0802). It starts a
+`PendingAuthorisation` of kind `login_token_hand_off` through the same `start_sign_in` as `/authorize`; only the
+consent page, `approve` and `deny` branch on the kind. A hand-off never redirects before the user confirmed, reads its
+`redirectUrl` again with `oauth::hand_off_redirect_target` at every step, and mints only into `rt.login_tokens`.
+
+The device authorization grant (ADR-0804 to ADR-0806) is `handle_oauth_device_authorization`, `handle_oauth_link` and
+the token endpoint's `device_code_grant`; `ClientServerRuntime.cpp` holds only the route matches, which answer 404
+unless `server.oauth.enabled` and `server.oauth.device_grant_enabled` are both true. Rules:
+
+- **`DeviceAuthorisationStore` is the only place a device authorisation is kept, `UserCodeAttemptThrottle` the only
+  count of wrong user codes.** Pass `oauth_device_clock_ms`; never `oauth_wall_clock_ms` to either, or the tests' clock
+  and the server's disagree. Never evict a live entry, never keep a device code unhashed.
+- **The link page's post is checked in order**: `form_post_origin_is_accepted` (403, before the body is read), the
+  content type and form, the cookie (missing: the form again with a cookie, not counted), the throttle (429 before any
+  lookup), then the code. A code that does not read and a code no live pending entry has are the same 400 page and both
+  count. Never look a code up for a blocked address, and never tell a wrong code from an expired or answered one.
+- **One browser at a time** (ADR-0806): `attach` on the right code, `renew` when the user signs in, `decide` only with
+  the attachment the pending entry carries; `release` whenever the sign-in ends without an answer (a failed start, a
+  refused account). A device sign-in is a `PendingAuthorisation` of kind `device_authorization` and goes through
+  `start_sign_in` and the `/authorize` form posts; only the consent page, `approve` and `deny` branch on the kind.
+- **A device sign-in never creates an account**: `register` and `show_register` are 403, and the login page offers no
+  registration.
+- **The consent page's warning is the first thing on it**, before the code and the client. Do not move it below them.
+- **A redeemed device code is `expired_token`**: the store removes an approved entry when the poll takes it. The
+  approval is judged again with `account_sign_in_gate` and its credential stamp, and written with
+  `grant_oauth_session`, never another path.
+- `authorization_pending` is never logged (a device polls every five seconds). Log `client_id`, `user_id`, `device_id`
+  and, for the throttle, `client_key`; never a device code, a user code, the cookie or the query.
+
+`POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
+authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
+
+- Every OAuth answer is built by `oauth_json_response` or `oauth_error_response` (`OAuthJsonResponse.cpp`):
+  `application/json`, `Cache-Control: no-store`, `{"error", "error_description"}`. Never build OAuth JSON by hand.
+- The client ID is `oauth_client_id_of` (keyed hash of `canonical_bytes()`, ADR-0779); never mint one another way.
+  Its key is derived per registration (`crypto::derive_oauth_client_id_key_from_file`) and dropped on return; never
+  cache it or add it to `TokenHmacKeys`: a locked page held for the life of the process, even with OAuth off, spent the
+  FreeBSD `RLIMIT_MEMLOCK` budget and cost the server its registration token (ADR-0779, amended 2026-11-16). A key
+  that cannot be derived is the 500 `server_error` "cannot issue client IDs", logged as `oauth.client.id_key_unavailable`.
+- At `ClientApiLimits::max_oauth_clients` a new client evicts at most `max_oauth_client_evictions_per_registration`
+  idle clients, never one with a session or one `oauth_client_has_pending_authorisation` names, else 503 with nothing
+  stored (ADR-0780). A repeat registration is never refused by the cap.
+- Log `client_id`, `application_type` and the `client_uri` host only; never the body.
+- Read a client back with `find_registered_oauth_client`, which re-validates the stored metadata.
 
 ## Password reset by email (ADR-0481)
 
@@ -180,6 +354,12 @@ M_INVALID_SIGNATURE` for a missing or wrong signature, ADR-0421). The three keys
 refused whole (`room_key_batch_refusal`, 400 `M_BAD_JSON`) for a missing or non-object `rooms`, room, `sessions` or
 session, and writes its sessions with `database::store_key_backup_sessions` in one transaction; a failed write is a 500,
 never a 200 with an etag. Do not skip a malformed entry or ignore a write result.
+
+The upload asks for User-Interactive Authentication only when it changes a held key (spec v1.11 "Cross-signing", ADR-0794):
+`cross_signing_upload_is_uia_exempt` exempts an application service, a user with no master key, and an upload whose
+master key and every other key sent equal the held ones (canonical JSON). While a master key is held, an upload
+without one, or with any key that differs from the held one, is UIA: `m.login.password` for a password session, the
+`m.oauth` stage and a one-use account-page approval for an OAuth session (ADR-0797; 403 with OAuth off).
 
 ## The runtime lock and blocking calls
 
@@ -757,7 +937,8 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
-- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`) reads
+- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`, OAuth
+  revocation and a replayed code) reads
   `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
   went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
   position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.

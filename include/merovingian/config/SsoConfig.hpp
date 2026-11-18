@@ -11,7 +11,7 @@ namespace merovingian::config
 {
 
 // SSO login configuration (Matrix v1.19 CS API §"Client login via SSO").
-// Disabled by default, mirroring OidcConfig's opt-in pattern. `enabled`
+// Disabled by default, like the other opt-in server features. `enabled`
 // gates both advertising `m.login.sso` from `GET /login` and routing
 // `GET /login/sso/redirect[/{idpId}]` — a misconfigured or disabled SSO
 // setup fails closed (flow not advertised, redirect endpoints 404) rather

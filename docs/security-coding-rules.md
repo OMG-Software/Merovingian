@@ -637,6 +637,22 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: a limit one server can fill would let its forks keep out another server's ban or demotion (ADR-0374, ADR-0602).
   Source: `src/homeserver/AGENTS.md`.
 
+- **A device's OAuth session row is deleted in the transaction that deletes the device, and an OAuth client that has
+  a session is never deleted.** Every device-deleting path goes through `database::delete_device`; the retention sweep
+  and any cap choose candidates with `oauth_clients_without_sessions`, and `delete_oauth_clients` refuses a set that
+  names a client with a session.
+  Why: a session row that outlives its device would mark a later device of the same ID as an OAuth device, and the
+  spec forbids deleting a client registration that has an active session (ADR-0776, ADR-0777).
+  Source: `src/database/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **An OAuth session row never outlives every credential of its device.** A path that revokes all of a device's or a
+  user's tokens calls `revoke_user_credentials`, `revoke_device_tokens` or `revoke_device_credentials`, which delete
+  the matching `oauth_sessions` rows in the same transaction; the retention sweep deletes a row whose device holds no
+  live token, judging it again in the hold that deletes it.
+  Why: a row left behind keeps an ended session's client from being evicted or aged out, and keeps judging a device
+  with no live credential as an OAuth device at the UIA gate (ADR-0808, CWE-613).
+  Source: `src/database/AGENTS.md`.
+
 - **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied
   through the normal write path.**
   Why: a resolution reads both, and `current_state` has other writers, so a stale or skipped result leaves state a
@@ -985,6 +1001,143 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `sp02.is-token-crlf-header-injection`).
   Source: `src/identity/AGENTS.md`.
 
+## OAuth 2.0 API
+
+- **The `oauth` module holds no state, does no I/O and logs nothing; every reader has a stated cap, refuses rather
+  than truncates or repairs, and never quotes its input in an error.** The one reader that normalises is
+  `normalise_user_code`, which RFC 8628 section 6.1 requires; it skips only four separators and folds only case.
+  Why: its inputs are attacker-chosen and some are secrets (PKCE verifiers, page passwords); a validator that repairs
+  input checks one value and lets another through (CWE-20), and an error that echoes input leaks it into logs and
+  pages (CWE-532).
+  Source: `src/oauth/AGENTS.md`.
+
+- **Every address a client supplies is read with `oauth::ParsedUri::read`, and a redirect URI is matched byte for
+  byte (`match_redirect_uri`), except a native loopback URI's port.** Never `http::parse_outbound_url` or a private
+  parser.
+  Why: the redirect URI decides who receives the authorisation code. Two parsers, or a normalising one, can disagree
+  with the browser about where a URI points, which is an open redirect and code theft (CWE-601).
+  Source: `src/oauth/AGENTS.md`.
+
+- **No redirect before the client and its redirect URI are validated.**
+  Why: redirecting with an error to an unvalidated URI turns the authorisation endpoint into an open redirector
+  (CWE-601).
+  Source: `src/oauth/AGENTS.md`.
+
+- **HTML is built only by `oauth::Page`, whose parts accept only `HtmlText` (escaped) or compile-time values; every
+  page carries `page_headers()`, and only a matched redirect URI's origin is added to `form-action` (its scheme alone
+  for a bracketed IPv6 loopback host, which CSP cannot name; ADR-0811).**
+  Why: the pages take passwords and show text an unauthenticated client chose; one unescaped value is script
+  injection on the login page (CWE-79), and a policy source built from raw input can add directives (CWE-116).
+  Source: `src/oauth/AGENTS.md`.
+
+- **No data member of type `HtmlText`, `HtmlLiteral`, `HtmlName` or `PagePath` has a default member initialiser other
+  than empty braces** (`page-text-member-initialiser-tooling`).
+  Why: clang 18 compiles the compile-time text check there as a run-time call, so text that needs escaping is found
+  only when a request throws, not when the build runs (ADR-0800).
+  Source: `src/oauth/AGENTS.md`.
+
+- **PKCE is `S256` only, compared in constant time.**
+  Why: `plain` sends the verifier through the browser, which defeats PKCE, and a variable-time comparison leaks how
+  much of a guess matched (CWE-208).
+  Source: `src/oauth/AGENTS.md`.
+
+- **A client ID is only ever the keyed hash of the accepted metadata (`oauth_client_id_of`), and the number of
+  registrations is capped: at the cap only idle clients without a session or pending authorisation are evicted, a
+  bounded number per request, else 503 with nothing stored. Registration logs the client ID, application type and
+  client host, never the body.**
+  Why: registration is unauthenticated, so without the cap rows grow without bound (CWE-770); deleting a client in
+  use breaks the spec's MUST NOT; the body is attacker-chosen text (CWE-117) (ADR-0779, ADR-0780).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **Pending authorisations and authorization codes are kept only as the hash of a 32-byte random secret, found through
+  a digest index and a constant-time comparison, bounded, and never evicted while live; a wrong browser token answers
+  as an unknown identifier.**
+  Why: a stored secret is a live grant to whoever reads memory or a dump (CWE-312); a timing or answer difference
+  tells an attacker which identifiers exist (CWE-208, CWE-204); evicting a live entry lets an unauthenticated flood
+  cancel every real login (CWE-400) (ADR-0782).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A password is checked only through `verify_login_credentials` (POST /login, `verify_password_login`) and a
+  password account is created only through `register_password_account` (`register_local_user`,
+  `create_local_account`).** Never copy the throttle, admission, dummy-hash, re-validation or account-state steps.
+  Why: a check present on one path and missing on the other is an authentication bypass (CWE-287) or an account
+  enumeration oracle (CWE-204) (ADR-0783).
+  Source: `src/auth/AGENTS.md`.
+
+- **An OAuth page sends `Referrer-Policy: same-origin`, gets no CORS header (`LocalHttpResponse::page`), and accepts
+  a form post only when `oauth::form_post_origin_is_accepted` does; the query of `/_merovingian/oauth2/*` and
+  `/_merovingian/account/*` is never logged.**
+  Why: a cross-site post forges a login or a consent (CWE-352); a CORS header lets another origin read a page that
+  holds a pending authorisation identifier (CWE-942); the query holds a state, a code or a login hint under names the
+  marker redaction misses (CWE-532) (ADR-0784, ADR-0785, ADR-0786).
+  Source: `src/oauth/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **An OAuth authorisation request is redirected only after its client and redirect URI are validated; a form post
+  finds its pending authorisation only with the `pending` field and the `__Host-mv-oauth` cookie together, and an
+  `Origin`, `Sec-Fetch-Site` or `Cookie` header sent twice counts as absent.**
+  Why: a redirect to an unvalidated address is an open redirector that can leak a code (CWE-601); a pending
+  identifier usable without the cookie lets a page another browser loaded be approved (CWE-352, login CSRF); resolving
+  a duplicated header picks the copy an attacker chose (CWE-444) (ADR-0788).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **An OAuth grant is written in one transaction, an authorization code is spent on redemption whatever follows, and a
+  replayed code ends the session it produced; the two refresh endpoints refuse each other's sessions before rotating.**
+  Why: a partial grant leaves a device or token the client was never told of; a code usable after a failed check can
+  be guessed at (CWE-307); a replay is the sign of a stolen code (RFC 6749 section 4.1.2); a refresh token accepted at
+  the wrong endpoint escapes its client binding (ADR-0792, ADR-0793).
+  Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`, `src/database/AGENTS.md`.
+
+- **An OAuth sign-in carries the credential stamp of its password check, and every later step (`approve`, the code and
+  device-code grants) refuses it once the stamp no longer matches.**
+  Why: a sign-in in progress outlives the password check by up to ten minutes; without the stamp, someone who knew
+  the old password signs in, waits for the user's change or reset, and still gets tokens (CWE-613). The stamp is a
+  hash of the salted stored hash, never the hash itself, and is never logged (ADR-0807).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **Every endpoint that asks for User-Interactive Authentication refuses an OAuth session with 403 before checking a
+  password, except a replacing cross-signing upload, which offers only the `m.oauth` stage; revocation or a replay
+  ends a session only through the path `POST /logout` uses.**
+  Why: a session the user granted to an application must not be able to change the password, deactivate the account
+  or delete devices with a password the application may have captured (CWE-306); a second end-of-session path forgets
+  a token, the device list or the remote servers (ADR-0794, ADR-0795).
+  Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`.
+
+- **An account-page form is accepted only with this server's `Origin`, the `__Host-mv-account` session and that
+  session's form token (constant time); each page action calls the client API's own function; every password change,
+  reset and deactivation ends the user's account-page sessions and reset approvals; a cross-signing reset approval is
+  spent only by a stored upload and is never usable by a password session or with a password stage; an approval given
+  on a page that named the requesting OAuth device is spent only by that device, and a `device_id` that is not one of
+  the user's OAuth devices is never shown or bound; the `m.oauth` challenge reuses the user's live UIA session, so a
+  polling client costs one session.**
+  Why: a forged post signs out a device or deactivates an account (CWE-352); one session's token must not act for
+  another; a copied action drifts and misses a revocation step (CWE-613); a page session or approval that outlives a
+  password change keeps a stolen credential's reach (CWE-613); a token alone must not replace a user's cross-signing
+  identity (CWE-306); another of the user's OAuth sessions must not spend an approval given for the device that asked
+  (CWE-863); a session issued per poll fills the user's UIA pool (CWE-770) (ADR-0796 to ADR-0799, ADR-0809).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **With `server.oauth.legacy_api_enabled=false` no legacy route issues a user a new session or lists the legacy
+  logins, and the decision is `legacy_auth_refusal` alone; an application service registers only with
+  `"inhibit_login": true`, judged before the user is created.**
+  Why: a route that tests the key itself is the one a later change forgets, leaving a password login that bypasses
+  the OAuth consent and device checks the operator chose (CWE-288); a refused registration that still created the
+  user leaves an account behind (ADR-0801).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **The legacy login hand-off sends a login token only to a `redirectUrl` that `oauth::hand_off_redirect_target`
+  accepts, read again at every step, and only after the signed-in user confirmed on a page naming it.**
+  Why: the spec's own example is a link that sends a victim's login token to `evil.com` (CWE-601, CWE-352); an
+  allowlist alone does not stop a link spending the victim's session on a listed application (ADR-0802).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A device authorization grant's user code is looked up only for an address the wrong-code throttle lets through,
+  a wrong, expired and answered code are one answer, one browser at a time answers a code, and the consent page warns
+  first and never creates an account.**
+  Why: a user code has about 34.5 bits, so its strength is the throttle (CWE-307); a different answer for an expired
+  code tells a guesser it was once right (CWE-204); and the grant lets an attacker send a victim a code for the
+  attacker's device, which only the victim's informed refusal stops (CWE-451, ADR-0804 to ADR-0806).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
@@ -1000,6 +1153,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   decision) sent with different casing, silently falling through to a default that may be
   less strict.
   Source: `src/http/AGENTS.md`.
+
+- **A response head that cannot be written safely is refused with a 500, never repaired or
+  trimmed** (`http::format_response_head`, ADR-0767): an invalid header name, a value with CR,
+  LF or another control character, a handler's framing header, or a second `Content-Type`.
+  Why: a dropped header can be a security control (a content security policy, a cookie
+  deletion), and a second `Content-Length` or `Content-Type`, which a federation worker could
+  supply, lets a proxy or browser read a different response than the one intended.
+  Source: `src/http/AGENTS.md`.
+
+- **Form bodies and cookies are read by the strict readers in `core`** (`FormFields`,
+  `RequestCookies`, ADR-0817, ADR-0766), and cookies are written only by `host_cookie`.
+  Why: a lenient reader that resolves a repeated parameter or cookie silently lets one value
+  be checked and another used; a cookie without the `__Host-` prefix can be overwritten by a
+  sibling host.
+  Source: `src/core/AGENTS.md`.
 
 - **Route all outbound federation requests through `OutboundClient.hpp` — no ad-hoc HTTP
   calls from other modules.**
@@ -1828,10 +1996,10 @@ For finding everything a specific file contributed, without re-reading the whole
 |---|---|
 | `docs/coding-rules.md` (required by root `AGENTS.md`) | Memory safety and resource ownership |
 | `security/AGENTS.md`, `security/coding-rules.md` | Memory safety; Secrets and logging; Cryptography; Process |
-| `src/core/AGENTS.md` | Memory safety; Secrets and logging; Sync |
+| `src/core/AGENTS.md` | Memory safety; Secrets and logging; HTTP and network boundary; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
-| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |
+| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; OAuth 2.0 API; Database |
 | `src/events/AGENTS.md` | Cryptography; Authentication and authorization |
 | `src/rooms/AGENTS.md` | Authentication and authorization |
 | `src/federation/AGENTS.md` | Federation |
@@ -1839,9 +2007,10 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Media; Sync |
+| `src/oauth/AGENTS.md` | OAuth 2.0 API |
+| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
-| `src/database/AGENTS.md` | Database |
+| `src/database/AGENTS.md` | OAuth 2.0 API; Database |
 | `migrations/AGENTS.md` | Database |
 | `src/config/AGENTS.md` | Secrets and logging |
 | `src/observability/AGENTS.md` | Secrets and logging |

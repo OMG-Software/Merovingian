@@ -10,19 +10,20 @@
 #include "merovingian/observability/AdminSurface.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/HealthStatus.hpp"
 #include "merovingian/observability/MetricLabel.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/ObservabilityInternal.hpp"
 #include "merovingian/observability/ObservabilitySnapshot.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
-#include "merovingian/observability/ObservabilityInternal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <optional>
@@ -197,6 +198,18 @@ namespace
             ++index;
         }
         return decoded;
+    }
+
+    // Whether `path` is an OAuth 2.0 page or endpoint (`oauth/OAuthPaths.hpp`): `/_merovingian/oauth2` and
+    // `/_merovingian/account`, each alone or followed by `/`. `[observability][oauth]` in test_observability.cpp holds
+    // every path of OAuthPaths.hpp to this. Compared as bytes, as the router matches.
+    [[nodiscard]] auto query_is_withheld_from_logs(std::string_view path) noexcept -> bool
+    {
+        constexpr auto withheld =
+            std::array{std::string_view{"/_merovingian/oauth2"}, std::string_view{"/_merovingian/account"}};
+        return std::ranges::any_of(withheld, [path](std::string_view prefix) {
+            return path.starts_with(prefix) && (path.size() == prefix.size() || path[prefix.size()] == '/');
+        });
     }
 
     [[nodiscard]] auto sanitize_query(std::string_view query) -> std::string
@@ -515,6 +528,12 @@ auto sanitized_http_target(std::string_view target) -> std::string
         return std::string{target};
     }
     auto sanitized = std::string{target.substr(0U, query_start)};
+    // The OAuth 2.0 pages and endpoints carry a state, a code, a login hint or a session identifier in their query,
+    // under names no marker list can be trusted to cover; their query is never logged, not even redacted (ADR-0786).
+    if (query_is_withheld_from_logs(sanitized))
+    {
+        return sanitized;
+    }
     sanitized.push_back('?');
     sanitized.append(sanitize_query(target.substr(query_start + 1U)));
     return sanitized;

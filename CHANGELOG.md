@@ -3,6 +3,152 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.0
+
+## Features
+
+* A built-in OAuth 2.0 API, which Element X needs to create accounts, planned in `docs/todos/oauth-2-0-api.md`
+  (ADR-0812 to ADR-0816).
+* Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, which the OAuth 2.0
+  pages and endpoints read and write with (ADR-0817, ADR-0766).
+* A module `oauth` of pure OAuth 2.0 building blocks the endpoints call: PKCE `S256` and the scope parser
+  (ADR-0768, ADR-0769).
+* A strict URI reader, redirect URI rules with byte-exact matching, and RFC 7591 client metadata validation with a
+  canonical form (ADR-0770, ADR-0771).
+* The one HTML page renderer, which accepts only escaped text, and the headers every page carries (ADR-0772).
+* `crypto::sha256` for protocols that name SHA-256.
+* `server.oauth.enabled` serves the OAuth 2.0 server metadata at `auth_metadata` and its MSC2965 path; off, both
+  answer 404. The issuer is `server.public_baseurl`, endpoints sit under `/_merovingian/oauth2/` (ADR-0773, ADR-0775).
+* `server.oauth.legacy_api_enabled`, `server.oauth.device_grant_enabled` and `server.oauth.hand_off_redirect_allowlist`
+  (https origins or bare private-use schemes, never prefixes) are parsed and checked; all need a restart (ADR-0774).
+* With OAuth on, `server.public_baseurl` must be an https URL with a host and no query, and
+  `server.sso.authorization_url` is refused.
+* Migration 002 adds the `oauth_clients` and `oauth_sessions` tables, hydrated on both backends; deleting a device
+  deletes its OAuth session in the same transaction (ADR-0776, ADR-0778).
+* The retention sweep deletes OAuth clients with no session unused for 30 days, never one with a session, and a
+  client's last use is written at most once a day (ADR-0777).
+* `POST /_merovingian/oauth2/register` registers OAuth 2.0 clients (RFC 7591); the client ID is a keyed hash of the
+  accepted metadata, so a repeat registration is the same client (ADR-0779, ADR-0781).
+* At most 10000 OAuth clients are held: at the cap idle ones go least recently used first, else 503 (ADR-0780).
+* `/_merovingian/oauth2/*` and `/_merovingian/account*` take the `auth_sensitive` rate limit; `201 Created` has its
+  reason phrase.
+* In-memory, hashed, bounded OAuth 2.0 pending authorisations and authorization codes that never evict a live entry;
+  the sweep and the client cap keep a client that holds one (ADR-0782).
+* The password check of `POST /login` and the account creation of `POST /register` are each one function, shared
+  with the OAuth 2.0 pages; both routes answer as before (ADR-0783).
+* OAuth 2.0 pages send `Referrer-Policy: same-origin`, get no CORS headers, and accept a form post only from this
+  server's origin (ADR-0784, ADR-0785).
+* `GET` and `POST /_merovingian/oauth2/authorize` serve the sign-in, account creation and consent pages and send the
+  browser back to the client with an authorization code or an error (ADR-0787, ADR-0789).
+* Every OAuth authorisation asks for the password; a sign-in is bound to its browser by a `__Host-` cookie and the
+  form's pending identifier, at most 16 in progress per address (ADR-0787, ADR-0788).
+* An approval judges the account again, is audited, and its redirect sends no referrer; it creates no device, token
+  or OAuth session (ADR-0790).
+* `POST /_merovingian/oauth2/token` serves the code grant (PKCE, exact redirect URI, one transaction) and the
+  refresh grant, for public clients only; an OAuth access token always expires (ADR-0791, ADR-0792).
+* `POST /_merovingian/oauth2/revoke` ends the session of an access or refresh token as `/logout` does, and answers
+  200 for an unknown token (ADR-0795).
+* A replayed authorization code ends only the session it produced; `POST /refresh` and the refresh grant each refuse
+  the other kind of session, before the token is spent (ADR-0792, ADR-0793).
+* Endpoints that ask for User-Interactive Authentication answer an OAuth session `403 M_FORBIDDEN` naming the
+  account page; application services are not refused (ADR-0794).
+* `GET` and `POST /_merovingian/account` serve the account pages: sign-in, devices, device sign-out, password
+  change, deactivation and cross-signing reset approval, with all six spec actions advertised (ADR-0796).
+* An account-page session lives a fixed 15 minutes in memory behind a strict `__Host-` cookie and a form token; its
+  sign-in shares the `POST /login` throttle (ADR-0796).
+* An OAuth session replaces its cross-signing keys through the `m.oauth` stage: one approval on the account page,
+  valid 10 minutes, spent only by a stored upload (ADR-0797).
+* Each account-page action calls the client API's own function; a page password change logs every session out and
+  keeps the devices (ADR-0798).
+* The `m.oauth` stage accepts a polling retry with no `auth` once approved, reuses the user's live UIA session, and
+  also offers its pre-standard name `org.matrix.cross_signing_reset` (ADR-0799).
+* A tooling test refuses a default member initialiser holding OAuth page text, which clang 18 checks only at run
+  time (ADR-0800).
+* `server.oauth.legacy_api_enabled=false` stops legacy logins and registrations; appservices register with
+  `inhibit_login`, and sessions already issued carry on (ADR-0801).
+* With OAuth on, `GET /login` prefers `m.login.sso`, whose redirect signs in on the built-in pages, confirms, and
+  returns a single-use 30-second `loginToken` to `redirectUrl` (ADR-0802).
+* `server.oauth.device_grant_enabled` serves the device authorization grant: `POST /_merovingian/oauth2/device`, the
+  code page `/_merovingian/oauth2/link` and the device code grant, as RFC 8628 answers it (ADR-0804).
+* Device sign-ins are held in memory, 4096 at most and 8 per address; five wrong codes block an address for the rest
+  of ten minutes (ADR-0805).
+* A device sign-in's consent page warns first that another device is being signed in, never creates an account, and
+  one browser at a time answers a code (ADR-0806).
+* The threat model and the security review checklist cover the OAuth 2.0 API: its pages, form posts, redirects,
+  stores, sessions and logging, with the risks the ADRs accept.
+* The OAuth 2.0 plan records phases 1 to 10 as done and lists what is still open: Element X, PostgreSQL and the
+  upgrade fixture, QR-code login, the documentation site and `response_mode`.
+
+## Security Fixes
+
+* The query of a `/_merovingian/oauth2/*` or `/_merovingian/account*` request is never logged, so a state, code or
+  login hint cannot reach the log (ADR-0786).
+* Every password change, reset and deactivation now ends the user's account-page sessions and withdraws a
+  cross-signing reset approval (ADR-0798).
+* A response header that would frame the message (`Content-Length`, `Connection`, ...) or holds CR or LF now turns
+  the response into a 500 instead of being written or silently dropped (ADR-0767).
+* A password change, reset or deactivation now ends an OAuth sign-in already past the password, an unredeemed code
+  and an unpolled device approval: they are refused, not granted (ADR-0807).
+* An OAuth session's row now goes with the last credential of its device (a password change, reset, deactivation,
+  refresh-token reuse or expiry), so its client can be evicted or aged out (ADR-0808).
+* A cross-signing reset approved on a page that named the asking OAuth device can be used only by that device; the
+  `m.oauth` URL now carries `device_id` (ADR-0809).
+* A refused OAuth token or device request logs its `client_id` only when it names a registered client, so a caller
+  cannot write text of its choosing into the log.
+* A client URI host whose last label is a number to a browser (`app.0x7f`, the WHATWG rule) is refused (ADR-0771).
+* A client name holding an invisible character (soft hyphen, zero-width characters, word joiner, BOM, tag characters
+  and others) is refused, so two names cannot look alike (ADR-0771).
+* The legacy SSO hand-off refuses a private-use scheme address with an authority, such as `com.example.app://host/`,
+  which an allowlisted bare scheme never named (ADR-0802).
+* The URI reader takes an IPv6 host only in the RFC 3986 grammar, not any run of hex digits, `:` and `.` (ADR-0811).
+
+## Bug fixes
+
+* An exception a client-server handler lets escape is answered `500 M_UNKNOWN` instead of closing the connection,
+  and its log line names the route and type but never the message (ADR-0803).
+* A handler's `Content-Type` spelled in another letter case no longer adds a second `Content-Type` to the response,
+  and 302, 303, 409, 504 and other statuses now carry their reason phrase instead of `OK`.
+* `merovingian-db-migrate --plan 1 2 --migrations` now plans only the files between the two versions, instead of
+  every file in the directory.
+* `POST /keys/device_signing/upload` asks for UIA only to change held keys: a first upload or a repeat of the held
+  keys succeeds without it, and an application service never needs it, as the spec says (ADR-0794).
+* The code grant names the session a replayed code ends before it commits, so no step that can fail follows the
+  commit (ADR-0792).
+* An exception escaping the authorisation, device link, account or SSO hand-off page is answered with an HTML error
+  page under the pages' headers, not JSON (ADR-0810).
+* The OAuth refresh grant lists a device after a restart with its stored display name, not its device ID.
+* `POST /refresh` now does the same, through the function the refresh grant uses: a device it lists again after a
+  restart keeps its stored display name.
+* The server builds on FreeBSD again: the exception type name of ADR-0803 now includes `<typeinfo>`, which FreeBSD's
+  `cxxabi.h` does not.
+* A native client on an `http://[::1]` redirect URI completes its sign-in: CSP cannot name an IPv6 host, so
+  `form-action` gets `http:` for it (ADR-0811).
+* The hand-off confirmation page shows the destination's port, so two loopback applications are told apart.
+* The page queries of `/authorize`, `/link`, `/account` and the SSO redirect read a bare name or an empty field as
+  not sent, as RFC 6749 section 3.1 asks, instead of refusing the request (ADR-0817).
+* The device and token inserts of a login, a grant and a refresh share one statement each; the SQL is unchanged.
+* `POST /register` works again on FreeBSD's 64 KiB locked-memory limit: the OAuth client ID key is derived per
+  registration, not locked for life, and an unreadable token file logs `registration.token_file_unusable` (ADR-0779).
+* The FreeBSD rc.d script sets the service's locked-memory limit itself (`merovingian_limits`, default `-l 128m`),
+  so the room for secrets no longer depends on the login class; `rc.conf` can override it.
+* The PostgreSQL role tests remove the whole schema, not only the v1 tables, before they bootstrap it again: the
+  tables of migration 002 were left behind and the next open failed creating them.
+* The compile-time checks of `HtmlLiteral`, `HtmlName` and `PagePath` throw `std::logic_error`, not a string
+  literal, so a check that does run at run time is caught as a standard exception.
+* The percent-escape decoders of `FormFields` and `ParsedUri` advance by the bytes each branch read, and
+  `ClientMetadata::validate` and `ParsedUri::read` say why each step is there (CodeQL).
+* `PendingAuthorisationStore::find` and `record_user` no longer name a hash they do not use; twelve long OAuth
+  test scenarios gained comments and three test helpers were tidied (CodeQL).
+
+## Release notes
+
+1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
+keys and set `server.oauth.enabled` instead (ADR-0816). The authorisation, token and revocation endpoints and the
+account pages at `/_merovingian/account` are served; a user signed in through OAuth changes a password, signs out a
+device, deactivates the account or approves a cross-signing reset there. The device authorization grant is off by
+default; turn on `server.oauth.device_grant_enabled` only if your users sign in devices without a browser. 1.1.0
+migrates the database: on first start it applies migration 002, which adds two empty tables and changes no existing
+one. A 1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go back.
 # Version 1.0.3
 
 ## Features

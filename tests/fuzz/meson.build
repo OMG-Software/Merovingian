@@ -41,7 +41,7 @@ fuzz_targets = [
     include_directories: inc,
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
-    link_with: [config_lib, http_lib, observability_lib, core_lib, platform_lib],
+    link_with: [config_lib, http_lib, oauth_lib, observability_lib, core_lib, platform_lib],
   ),
   executable(
     'fuzz-stream-token',
@@ -60,6 +60,49 @@ fuzz_targets = [
     link_with: [core_lib],
   ),
   executable(
+    'fuzz-form-fields',
+    sources: files('fuzz_form_fields.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    link_with: [core_lib],
+  ),
+  executable(
+    'fuzz-request-cookies',
+    sources: files('fuzz_request_cookies.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    link_with: [core_lib],
+  ),
+  executable(
+    'fuzz-oauth-redirect-uri',
+    sources: files('fuzz_oauth_redirect_uri.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    dependencies: [libsodium_dep, openssl_dep],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
+  ),
+  executable(
+    'fuzz-oauth-scope',
+    sources: files('fuzz_oauth_scope.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    dependencies: [libsodium_dep, openssl_dep],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
+  ),
+  executable(
+    'fuzz-oauth-client-metadata',
+    sources: files('fuzz_oauth_client_metadata.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    dependencies: [libsodium_dep, openssl_dep],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
+  ),
+  executable(
     'fuzz-srv-record',
     sources: files('fuzz_srv_record.cpp'),
     include_directories: inc,
@@ -75,7 +118,7 @@ fuzz_targets = [
 fuzz_server_libs = [
   appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib,
   events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib,
-  observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib,
+  oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib,
 ]
 fuzz_server_deps = [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep]
 

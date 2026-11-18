@@ -13,7 +13,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `MigrationFiles.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
 | `Connection.cpp` | Connection lifecycle and pool management |
 | `PreparedStatement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
-| `Schema.cpp` | The frozen v1 schema: `core_tables` and `core_indexes`, the `SchemaTableDefinition`/`SchemaIndexDefinition` lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0224: a schema change is a new numbered migration, never an edit to v1) |
+| `Schema.cpp` | The schema by version: the frozen v1 arrays `core_tables` and `core_indexes` (ADR-0224: a schema change is a new numbered migration, never an edit to v1), the v2 arrays `oauth_tables` and `oauth_indexes`, `schema_definitions_added_by`/`schema_indexes_added_by`, the initial (v1) and current lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0778) |
+| `OAuthTables.cpp` | `OAuthTables`, the in-memory copy of `oauth_clients` and `oauth_sessions`: clients by ID, sessions by (user, device), a per-user index, a session count per client and the sessionless clients ordered by last use (ADR-0776, ADR-0777) |
+| `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
 | `PersistentServerSigningKey.cpp` | A stored server signing-key row; wipes the secret on destruction and on overwrite |
@@ -190,6 +192,29 @@ hash of the version and that digest. A new writer of `key_backup_sessions` goes 
 bypasses them does not compile. Status and room are not in the key: the reader judges them. Never scan the
 table to find the children of an event.
 
+## OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)
+
+`PersistentStore::oauth` is an `OAuthTables`: write it only through `OAuthStore.hpp` (hydration uses `insert_client` and
+`insert_session`). A client row is never changed after insert except `last_used_at_ms`, which `touch_oauth_client` writes
+at most once a day. `delete_oauth_clients` refuses a set holding a client with a session, so no caller can delete one
+(spec: "The server MUST NOT delete client registrations that have an active session"); find candidates with
+`oauth_clients_without_sessions`, which walks the sessionless clients oldest first and never the session table.
+A session row is written in the caller's transaction: `prepare_oauth_session_insert` gives the statement, the caller
+commits it with the device and tokens, and only then calls `remember_oauth_session`. **Every path that deletes a
+`devices` row deletes its `oauth_sessions` row in the same transaction**: today that is `delete_device`, which appends
+`delete_oauth_session_of_device_statement` and erases the memory row after the commit. A new device-deleting path does
+the same. **Whatever replaces a device's credentials replaces its `oauth_sessions` row in the same transaction**
+(ADR-0792): `store_oauth_grant` deletes the device's earlier tokens and row and inserts the new ones, and
+`store_device_and_access_token` (a legacy login) deletes the row, so the device is then a legacy device. **A row never
+outlives every credential of its device** (ADR-0808): `revoke_user_credentials`, `revoke_device_tokens` and
+`revoke_device_credentials` delete the matching rows in the transaction that revokes the tokens, and the retention
+sweep deletes a row whose device holds no access or refresh token that is neither revoked nor expired
+(`oauth_sessions_without_live_credentials`, then `delete_oauth_sessions_without_live_credentials`, which judges each
+again). A new path that revokes all of a device's or a user's tokens uses one of those functions, never the
+single-table revokes. The grant's
+`oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
+`remember_audit_event` after the commit). Neither table is read by the federation worker.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.backend = sqlite | postgresql`).
@@ -199,7 +224,8 @@ All higher-level modules receive a `PersistentStore&` — they must not downcast
 
 See `migrations/AGENTS.md` for the migration file format.
 Migrations run automatically at startup via `Migration.hpp`; the runner is idempotent. The whole schema is one
-v1 step (ADR-0224), frozen since 1.0.0: a schema change is a new numbered migration. Both stores refuse a ledger that names a migration this build does not have
+v1 step (ADR-0224), frozen since 1.0.0: a schema change is a new numbered migration, the first of which is 002
+(the OAuth 2.0 tables, ADR-0778). Both stores refuse a ledger that names a migration this build does not have
 (`schema_ledger_is_known`) before migrating or hydrating anything, and the PostgreSQL bootstrap, like every migration,
 runs as `database.migration_role` when one is configured.
 

@@ -148,6 +148,10 @@ The `outbound_client` module logs `request.success`, `request.error` and
 port and path of the request, never its query (ADR-0418): a query can carry an
 identity server's `client_secret`, or text a user chose.
 
+The `client_server` module's request lines (`request.received`, `request.route_not_found`, `request.auth.*`) keep a
+target's query, with marked parameters redacted, except under `/_merovingian/oauth2` and `/_merovingian/account`, whose
+query is never written, even at debug (ADR-0786).
+
 ## Join Failure Diagnostics
 
 For failed room joins, enable debug/file logging and inspect events with these

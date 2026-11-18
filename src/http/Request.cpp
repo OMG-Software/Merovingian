@@ -3,6 +3,7 @@
 
 #include "merovingian/http/Request.hpp"
 
+#include "merovingian/core/HttpToken.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/http/HttpVersion.hpp"
 #include "merovingian/http/RequestErrorCode.hpp"
@@ -18,14 +19,6 @@ namespace merovingian::http
 {
 namespace
 {
-
-    [[nodiscard]] auto is_tchar(char value) noexcept -> bool
-    {
-        return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') ||
-               value == '!' || value == '#' || value == '$' || value == '%' || value == '&' || value == '\'' ||
-               value == '*' || value == '+' || value == '-' || value == '.' || value == '^' || value == '_' ||
-               value == '`' || value == '|' || value == '~';
-    }
 
     [[nodiscard]] auto is_optional_whitespace(char value) noexcept -> bool
     {
@@ -189,20 +182,7 @@ auto request_error_status(RequestErrorCode code) noexcept -> std::uint16_t
 
 auto header_name_is_valid(std::string_view name) noexcept -> bool
 {
-    if (name.empty())
-    {
-        return false;
-    }
-
-    for (auto const character : name)
-    {
-        if (!is_tchar(character))
-        {
-            return false;
-        }
-    }
-
-    return true;
+    return core::http_token_is_valid(name);
 }
 
 auto header_value_is_valid(std::string_view value) noexcept -> bool
@@ -216,6 +196,25 @@ auto header_value_is_valid(std::string_view value) noexcept -> bool
         }
     }
 
+    return true;
+}
+
+auto header_names_equal(std::string_view left, std::string_view right) noexcept -> bool
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+    for (auto index = std::size_t{0U}; index < left.size(); ++index)
+    {
+        auto const fold = [](char value) noexcept {
+            return value >= 'A' && value <= 'Z' ? static_cast<char>(value - 'A' + 'a') : value;
+        };
+        if (fold(left[index]) != fold(right[index]))
+        {
+            return false;
+        }
+    }
     return true;
 }
 

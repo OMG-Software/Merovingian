@@ -3,9 +3,9 @@
 
 #include "merovingian/crypto/TokenKey.hpp"
 
+#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/crypto/TokenHmacKey.hpp"
 #include "merovingian/crypto/TokenHmacKeys.hpp"
-#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -32,6 +32,9 @@ namespace
     // prevents key reuse across cryptographic purposes.
     constexpr auto k_context_v4 = std::string_view{"merovingian:access-token-hmac:1"};
     constexpr auto k_context_v3 = std::string_view{"merovingian:access-token-hmac:legacy-v3:1"};
+    // The OAuth 2.0 client ID key (ADR-0779). Its own label: a client ID is published, so the key that makes it
+    // must never be one that also hashes a secret.
+    constexpr auto k_context_oauth_client_id = std::string_view{"merovingian:oauth-client-id:1"};
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -74,6 +77,37 @@ auto derive_token_hmac_key(std::span<std::uint8_t const> master_key_material) no
 auto derive_token_hmac_key_v3(std::span<std::uint8_t const> master_key_material) noexcept -> std::optional<TokenHmacKey>
 {
     return derive_with_label(master_key_material, k_context_v3);
+}
+
+auto derive_oauth_client_id_key(std::span<std::uint8_t const> master_key_material) noexcept
+    -> std::optional<TokenHmacKey>
+{
+    return derive_with_label(master_key_material, k_context_oauth_client_id);
+}
+
+auto derive_oauth_client_id_key_from_file(std::string_view path) -> std::optional<TokenHmacKey>
+try
+{
+    if (path.empty())
+    {
+        return std::nullopt;
+    }
+    // ISO-7: the bytes come from this one open, never from a second open by path.
+    auto const opened = open_master_key_file(path);
+    if (!opened.has_value())
+    {
+        return std::nullopt;
+    }
+    auto const material = load_master_key_material(*opened);
+    if (!material.has_value())
+    {
+        return std::nullopt;
+    }
+    return derive_oauth_client_id_key(material->bytes());
+}
+catch (std::bad_alloc const&)
+{
+    return std::nullopt;
 }
 
 auto cached_token_hmac_keys(std::string_view path)

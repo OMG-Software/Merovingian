@@ -5,13 +5,17 @@
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/config/RegistrationSecurityConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
+#include "merovingian/homeserver/AccountCreationRequest.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
 #include "merovingian/homeserver/DeactivationAudit.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalSession.hpp"
+#include "merovingian/homeserver/OAuthGrantRequest.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PasswordLoginRequest.hpp"
+#include "merovingian/homeserver/PasswordLoginVerification.hpp"
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/SessionRefreshResult.hpp"
 #include "merovingian/homeserver/SsoRedirectResult.hpp"
@@ -27,6 +31,14 @@ namespace merovingian::homeserver
 
 [[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
                                        std::string_view password, std::string_view registration_token = {})
+    -> OperationResult;
+// Creates a password account and nothing else: no device, no token, no session (ADR-0783). The username checks POST
+// /register makes after user-interactive auth (not valid: 400 M_INVALID_USERNAME; reserved: 400 M_USER_IN_USE; an
+// application service's exclusive namespace or sender: 400 M_EXCLUSIVE), then every gate of register_local_user with
+// `request.client_key` given to the registration policy. A refusal sets `status`, `reason` and, where the status
+// cannot name it, `errcode`. POST /register calls it with "127.0.0.1". The caller holds runtime.mutex through a
+// RequestLockScope.
+[[nodiscard]] auto create_local_account(HomeserverRuntime& runtime, AccountCreationRequest const& request)
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
@@ -51,6 +63,36 @@ namespace merovingian::homeserver
 [[nodiscard]] auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id,
                                           std::string_view device_id, bool with_ttl = false,
                                           std::string_view display_name = {}) -> OperationResult;
+// The full user ID a typed login identifier names: unchanged when it starts with `@`, else `@<identifier>:<server>`.
+// POST /login and the OAuth 2.0 login page both normalise through it (ADR-0783).
+[[nodiscard]] auto login_identifier_user_id(std::string_view server_name, std::string_view identifier) -> std::string;
+// The password check POST /login makes, for a caller that wants no session (the OAuth 2.0 login page, ADR-0783), then
+// the account-state gate. In order: the failed-login throttle (`throttled`), an Argon2id admission slot (`busy`), the
+// stored hash or the dummy hash for an unknown user, the verification with runtime.mutex released, the re-validation
+// that the user and its hash are unchanged (else `invalid_login`, counted as a failed attempt), then deactivated
+// (`account_deactivated`) and locked (`invalid_login`); a suspended account is `verified`, as POST /login lets it log
+// in (spec v1.19 "Account suspension"). Creates no device and no token. The caller holds
+// runtime.mutex, published through a RequestLockScope as the request dispatchers publish it, exactly as for
+// login_local_user: the verification releases it with RuntimeLockRelease and takes it back.
+[[nodiscard]] auto verify_password_login(HomeserverRuntime& runtime, PasswordLoginRequest const& request)
+    -> PasswordLoginVerification;
+// The account-state gate verify_password_login ends with, for a user whose password was verified earlier (the OAuth 2.0
+// consent page's approval, which may come minutes after the check): `verified` when the account exists and may log in,
+// `account_deactivated`, or `invalid_login` for an unknown or locked account. Audits a refusal as login.rejected, as
+// the login does. The caller holds runtime.mutex; makes no call that releases it.
+[[nodiscard]] auto account_sign_in_gate(HomeserverRuntime& runtime, std::string_view user_id,
+                                        std::string_view device_id) -> PasswordLoginVerification::Outcome;
+// The credential stamp of `user_id` (ADR-0807): `oauth_secret_hash` of the stored password hash, 64 hex digits. Every
+// password change, reset or deactivation writes a new stored hash with a fresh salt, so the stamp changes with it;
+// the stamp names no password and cannot test a guess. An OAuth 2.0 sign-in records it when the password is verified
+// or the account created, and every later step compares it (`user_credential_stamp_matches`). nullopt for an unknown
+// user or a failed hash. The caller holds runtime.mutex; never logged, never sent.
+[[nodiscard]] auto user_credential_stamp(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<std::string>;
+// Whether `stamp` is still `user_id`'s credential stamp, compared in constant time. False for an empty stamp, an
+// unknown user or a failed hash, so a sign-in that recorded none never passes.
+[[nodiscard]] auto user_credential_stamp_matches(HomeserverRuntime const& runtime, std::string_view user_id,
+                                                 std::string_view stamp) -> bool;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's
@@ -62,8 +104,38 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
-[[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
+// Rotates a refresh token (ADR-0074, ADR-0590). `oauth_client_id` says which API presents it (ADR-0793): nullopt for
+// the legacy POST /refresh, which refuses a token of a device that has an `oauth_sessions` row; a client ID for the
+// OAuth 2.0 token endpoint, which refuses a token of a device whose row does not name that client, or that has none.
+// Either refusal is a 401 "refresh token rejected" decided before anything is rotated or revoked. An OAuth rotation's
+// access token always expires (oauth::access_token_lifetime_ms, ADR-0791). Every other refusal and the lost-response
+// retry are unchanged; a status of 500 or more is a server failure the client may retry.
+[[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token,
+                                         std::optional<std::string_view> oauth_client_id = std::nullopt)
     -> SessionRefreshResult;
+// The OAuth 2.0 authorization code grant's session (ADR-0792): every check login_local_user_by_id makes (the account
+// exists and passes the account-state gate, the device ID is valid and not a cross-signing key ID, a new device fits
+// under the device count), the same access token, a refresh token, and ONE transaction that writes the device (created
+// with `request.display_name`, or kept when the user holds it), deletes the device's earlier tokens and OAuth session,
+// and inserts the access row, the refresh row and the `oauth_sessions` row. Memory changes only after the commit. A
+// refused check keeps the status POST /login would answer (4xx); a token the server could not make or a failed commit
+// is 500 with nothing written. Audits `oauth.session.granted`. The caller holds runtime.mutex.
+[[nodiscard]] auto grant_oauth_session(HomeserverRuntime& runtime, OAuthGrantRequest const& request)
+    -> SessionRefreshResult;
+// Ends the session of (`user_id`, `device_id`) as POST /logout does (P13, ADR-0491, ADR-0795): in one transaction
+// `presented_access_hash` (may be empty) and every access and refresh token of the device are revoked, the store is
+// checked, the in-memory sessions are marked, then the device is deleted (with its `oauth_sessions` row; a failure
+// there is logged, the tokens stay revoked) and `audit_event` is audited. 500 when the revocation did not persist,
+// with nothing marked, so the call can be retried. The caller holds runtime.mutex and announces the deleted device.
+[[nodiscard]] auto end_device_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                                      std::string_view presented_access_hash, std::string_view audit_event)
+    -> OperationResult;
+// The session `token` authenticates, for OAuth 2.0 revocation (ADR-0795): a live access token (not revoked, not
+// expired) or an unrevoked, unexpired refresh token, whichever it is, found through the digest indexes and confirmed in
+// constant time. nullopt for anything else, an application service token included: none is held as a session. The
+// session's `access_token_hash` is set only when `token` is an access token.
+[[nodiscard]] auto revocable_session_of_token(HomeserverRuntime const& runtime, std::string_view token)
+    -> std::optional<LocalSession>;
 // True when `user_id` is a registered, not-deactivated local account. Identity
 // assertion (Application Service API) must act only as such a user (AUTH-12):
 // asserting an unregistered or deactivated user is refused with 403
@@ -119,6 +191,13 @@ namespace merovingian::homeserver
 // that is no longer active.
 [[nodiscard]] auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id,
                                              std::string_view new_password, bool logout_devices) -> OperationResult;
+// Sets a new password for `user_id`, signed in to the account page with the current password re-verified (ADR-0798).
+// The same change as `reset_local_user_password` with `logout_devices`, the client API's default: a page holds no
+// device, so every access token, refresh token, OpenID token and pusher of the account goes, and no device is deleted.
+// Audited as `auth.password_changed`. Like every password change, it ends the user's account-page sessions and any
+// cross-signing reset approval.
+[[nodiscard]] auto change_password_on_account_page(HomeserverRuntime& runtime, std::string_view user_id,
+                                                   std::string_view new_password) -> OperationResult;
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> PasswordVerificationResult;
 // Returns true when the presented access token exists in the session store but

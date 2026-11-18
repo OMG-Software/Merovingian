@@ -1,21 +1,21 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The schema's upgrade path (ADR-0216, ADR-0224). Every pre-1.0 migration is
-// collapsed into the one v1 step, so these scenarios show what the path does
-// today: a fresh database is built at v1 in its final shape, the forward-only
-// seam (migrate_*_schema_to) never moves past this build or backwards, and a
-// database a pre-1.0 build created is refused rather than misread. Upgrade
-// compatibility is promised from 1.0.0; when a v2 migration exists, the
-// "any older schema version" scenario starts to cover it, and when 1.1 starts
-// a fixture written by the last 1.0.x release joins them.
+// The schema's upgrade path (ADR-0216, ADR-0224, ADR-0778). Every pre-1.0
+// migration is collapsed into the one v1 step and 1.1.0 adds migration 002 (the
+// OAuth 2.0 tables), so these scenarios show what the path does: a database is
+// built at v1 exactly as 1.0.x built it, a v1 database is migrated to the
+// current version and then holds exactly the schema a fresh one does, the
+// forward-only seam (migrate_*_schema_to) never moves past this build or
+// backwards, and a database a pre-1.0 build created is refused rather than
+// misread. A fixture written by the last 1.0.x release joins them.
 #include "../support/TempDirectory.hpp"
 #include "ScratchPostgresqlDatabase.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
 #include "merovingian/database/Schema.hpp"
+#include "merovingian/database/SchemaState.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>
@@ -102,6 +102,18 @@ public:
         return statement_ != nullptr && sqlite3_step(statement_.get()) == SQLITE_DONE;
     }
 
+    // The first column of every row, as text.
+    [[nodiscard]] auto first_column_texts() -> std::vector<std::string>
+    {
+        auto texts = std::vector<std::string>{};
+        while (statement_ != nullptr && sqlite3_step(statement_.get()) == SQLITE_ROW)
+        {
+            auto const* text = sqlite3_column_text(statement_.get(), 0);
+            texts.emplace_back(text == nullptr ? "" : reinterpret_cast<char const*>(text));
+        }
+        return texts;
+    }
+
     // The first column of the first row as an integer, or -1 when there is none.
     [[nodiscard]] auto first_integer() -> std::int64_t
     {
@@ -128,6 +140,16 @@ private:
                                 std::vector<std::string> values = {}) -> std::int64_t
 {
     return SqliteQuery{path, sql, std::move(values)}.first_integer();
+}
+
+// Every table and index SQLite records, as its type, name and normalised DDL, in a fixed order.
+[[nodiscard]] auto sqlite_schema_shape(std::filesystem::path const& path) -> std::vector<std::string>
+{
+    return SqliteQuery{path,
+                       "SELECT type || ' ' || name || ' ' || coalesce(sql, '') FROM sqlite_master "
+                       "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+                       {}}
+        .first_column_texts();
 }
 
 struct PgFinish final
@@ -183,6 +205,33 @@ struct PgClear final
     return std::stoll(PQgetvalue(result.get(), 0, 0));
 }
 
+// The first column of every row, as text; empty when the query fails.
+[[nodiscard]] auto pg_texts(std::string const& conninfo, std::string const& sql) -> std::vector<std::string>
+{
+    auto const result = pg_query(conninfo, sql, {});
+    auto texts = std::vector<std::string>{};
+    if (PQresultStatus(result.get()) != PGRES_TUPLES_OK)
+    {
+        return texts;
+    }
+    for (auto row = 0; row < PQntuples(result.get()); ++row)
+    {
+        texts.emplace_back(PQgetvalue(result.get(), row, 0));
+    }
+    return texts;
+}
+
+// Every column (with its type, nullability and default) and every index definition of the public schema.
+[[nodiscard]] auto pg_schema_shape(std::string const& conninfo) -> std::vector<std::string>
+{
+    auto shape = pg_texts(conninfo, "SELECT table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable "
+                                    "|| ' ' || coalesce(column_default, '') FROM information_schema.columns WHERE "
+                                    "table_schema = 'public' ORDER BY table_name, column_name");
+    auto indexes = pg_texts(conninfo, "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY indexname");
+    shape.insert(shape.end(), std::make_move_iterator(indexes.begin()), std::make_move_iterator(indexes.end()));
+    return shape;
+}
+
 [[nodiscard]] auto postgresql_uri_from_environment() -> std::string
 {
     auto const* value = std::getenv("MEROVINGIAN_TEST_POSTGRESQL_URI");
@@ -225,12 +274,9 @@ struct FoldedColumn final
 }
 
 constexpr auto v1_index_names = std::array{
-    std::string_view{"event_edges_prev_event_id"},
-    std::string_view{"idx_to_device_messages_recipient_age"},
-    std::string_view{"idx_deferred_pdus_room_id"},
-    std::string_view{"idx_media_pending_uploads_owner"},
-    std::string_view{"idx_events_room_id"},
-    std::string_view{"idx_state_groups_room_id"},
+    std::string_view{"event_edges_prev_event_id"}, std::string_view{"idx_to_device_messages_recipient_age"},
+    std::string_view{"idx_deferred_pdus_room_id"}, std::string_view{"idx_media_pending_uploads_owner"},
+    std::string_view{"idx_events_room_id"},        std::string_view{"idx_state_groups_room_id"},
 };
 
 // Versions 2 to 26 of the ledger every pre-1.0 build up to 0.12.46 wrote, after
@@ -278,17 +324,20 @@ SCENARIO("A SQLite schema is built at v1 and stops there", "[database][upgrade][
         {
             auto const migrated = merovingian::database::migrate_sqlite_schema_to(path.string(), 1U);
 
-            THEN("the schema is at v1, recorded by one ledger row, with every current table")
+            THEN("the schema is at v1, recorded by one ledger row, with every v1 table and no later one")
             {
                 REQUIRE(migrated.ok);
                 REQUIRE(migrated.state.version == 1U);
                 REQUIRE(migrated.state.applied_migrations.size() == 1U);
                 REQUIRE(migrated.state.applied_migrations.front().name == "initial_schema");
-                for (auto const table : merovingian::database::current_schema_tables())
+                for (auto const table : merovingian::database::initial_schema_tables())
                 {
                     INFO("table " << table);
                     REQUIRE(has_table(migrated.state, table));
                 }
+                REQUIRE_FALSE(has_table(migrated.state, "oauth_clients"));
+                REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'") == 0);
             }
         }
         std::filesystem::remove(path);
@@ -432,6 +481,44 @@ SCENARIO("A SQLite database at any older schema version opens at the current ver
     }
 }
 
+SCENARIO("A SQLite database migrated from v1 holds exactly the schema a fresh one does",
+         "[database][upgrade][sqlite][oauth]")
+{
+    GIVEN("a database built at v1 and no fresh database yet")
+    {
+        auto const migrated_path = unique_sqlite_path("v1-to-current");
+        auto const fresh_path = unique_sqlite_path("fresh-current");
+        std::filesystem::remove(migrated_path);
+        std::filesystem::remove(fresh_path);
+        REQUIRE(merovingian::database::migrate_sqlite_schema_to(migrated_path.string(), 1U).ok);
+
+        WHEN("the v1 database and a fresh one are each opened as a persistent store")
+        {
+            auto const migrated = merovingian::database::open_sqlite_persistent_store(migrated_path.string());
+            auto const fresh = merovingian::database::open_sqlite_persistent_store(fresh_path.string());
+
+            THEN("migration 002 ran on the v1 database, both tables are empty, and the two schemas are identical")
+            {
+                REQUIRE(migrated.ok);
+                REQUIRE(fresh.ok);
+                REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
+                REQUIRE(migrated.store.schema.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM schema_migrations") == 2);
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_clients") == 0);
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_sessions") == 0);
+                REQUIRE(migrated.store.oauth.client_count() == 0U);
+                auto const migrated_shape = sqlite_schema_shape(migrated_path);
+                REQUIRE_FALSE(migrated_shape.empty());
+                REQUIRE(migrated_shape == sqlite_schema_shape(fresh_path));
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
+                                                    "name = 'idx_oauth_sessions_client_id'") == 1);
+            }
+        }
+        std::filesystem::remove(migrated_path);
+        std::filesystem::remove(fresh_path);
+    }
+}
+
 SCENARIO("A fresh SQLite database has every column and index of the v1 schema", "[database][upgrade][sqlite][collapse]")
 {
     GIVEN("no database file")
@@ -518,16 +605,20 @@ SCENARIO("A PostgreSQL schema is built at v1 and stops there", "[database][upgra
         {
             auto const migrated = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 1U);
 
-            THEN("the schema is at v1, recorded by one ledger row, with every current table")
+            THEN("the schema is at v1, recorded by one ledger row, with every v1 table and no later one")
             {
                 REQUIRE(migrated.ok);
                 REQUIRE(migrated.state.version == 1U);
                 REQUIRE(migrated.state.applied_migrations.size() == 1U);
-                for (auto const table : merovingian::database::current_schema_tables())
+                for (auto const table : merovingian::database::initial_schema_tables())
                 {
                     INFO("table " << table);
                     REQUIRE(has_table(migrated.state, table));
                 }
+                REQUIRE_FALSE(has_table(migrated.state, "oauth_clients"));
+                REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
+                REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
+                                                     "table_schema = 'public' AND table_name LIKE 'oauth%'") == 0);
             }
         }
     }
@@ -627,6 +718,45 @@ SCENARIO("A PostgreSQL server that cannot be reached is refused", "[database][up
             THEN("it refuses")
             {
                 REQUIRE_FALSE(migrated.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("A PostgreSQL database migrated from v1 holds exactly the schema a fresh one does",
+         "[database][upgrade][postgresql][integration][oauth]")
+{
+    GIVEN("a database built at v1 and an empty one")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const migrated_scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
+        auto const fresh_scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
+        REQUIRE(migrated_scratch.created());
+        REQUIRE(fresh_scratch.created());
+        REQUIRE(merovingian::database::migrate_postgresql_schema_to(migrated_scratch.conninfo(), 1U).ok);
+
+        WHEN("each is opened as a persistent store")
+        {
+            auto const migrated = merovingian::database::open_postgresql_persistent_store(migrated_scratch.conninfo());
+            auto const fresh = merovingian::database::open_postgresql_persistent_store(fresh_scratch.conninfo());
+
+            THEN("migration 002 ran on the v1 database, both tables are empty, and the two schemas are identical")
+            {
+                INFO("migrated: " << migrated.reason << " fresh: " << fresh.reason);
+                REQUIRE(migrated.ok);
+                REQUIRE(fresh.ok);
+                REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM schema_migrations") == 2);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_clients") == 0);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_sessions") == 0);
+                auto const migrated_shape = pg_schema_shape(migrated_scratch.conninfo());
+                REQUIRE_FALSE(migrated_shape.empty());
+                REQUIRE(migrated_shape == pg_schema_shape(fresh_scratch.conninfo()));
             }
         }
     }

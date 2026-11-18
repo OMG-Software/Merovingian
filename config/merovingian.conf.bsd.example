@@ -629,24 +629,26 @@ security.media.decode_in_sandbox=true
 # server.sso.identity_providers.com.example.idp.github.brand=github
 # server.sso.identity_providers.com.example.idp.github.icon=mxc://example.org/githubicon
 
-# OIDC authorisation server metadata (MSC2965 discovery)
-# Advertisement only: enabling this makes GET /_matrix/client/v1/auth_metadata
-# return RFC 8414 metadata built from these fields. No OAuth flow is
-# implemented here -- the endpoints named below belong to your authorisation
-# server, and this block only tells clients where to find them. With
-# enabled=false the endpoint returns 404 M_UNRECOGNIZED.
-# account_management_uri and the supported-actions list are what an OAuth-aware
-# client is told to send users to instead of calling POST /account/deactivate
-# directly (spec: OAuth 2.0 aware clients).
-# server.oidc.enabled=true
-# server.oidc.issuer=https://auth.example.org/
-# server.oidc.authorization_endpoint=https://auth.example.org/authorize
-# server.oidc.token_endpoint=https://auth.example.org/token
-# server.oidc.registration_endpoint=https://auth.example.org/register
-# server.oidc.revocation_endpoint=https://auth.example.org/revoke
-# server.oidc.device_authorization_endpoint=https://auth.example.org/device
-# server.oidc.account_management_uri=https://auth.example.org/account
-# server.oidc.account_management_actions_supported=org.matrix.profile,org.matrix.sessions_list,org.matrix.account_deactivate
+# OAuth 2.0 API (Matrix v1.19 "OAuth 2.0 API"), off by default.
+# With enabled=true, GET /_matrix/client/v1/auth_metadata (and its MSC2965
+# unstable path) returns the server metadata, and server.public_baseurl must be
+# an https URL with no query: the issuer is that URL and every OAuth endpoint
+# sits under it at /_merovingian/oauth2/. Cannot be combined with
+# server.sso.authorization_url. Every key here needs a restart.
+# legacy_api_enabled=false (only with enabled=true) turns off the legacy
+# /login and /register API. device_grant_enabled=true (only with enabled=true)
+# serves the device authorization grant: POST /_merovingian/oauth2/device and
+# the code page /_merovingian/oauth2/link, which a reverse proxy must pass.
+# hand_off_redirect_allowlist (only with enabled=true, at most 32 entries) lists
+# https origins (https://app.example.org) and bare private-use schemes
+# (io.element.app:) the legacy SSO redirect's hand-off may return a login
+# token to; never a URL prefix. Empty accepts any https address, a loopback
+# http address or a private-use scheme, always after a confirmation page.
+# The former server.oidc.* keys are refused at start-up.
+# server.oauth.enabled=false
+# server.oauth.legacy_api_enabled=true
+# server.oauth.device_grant_enabled=false
+# server.oauth.hand_off_redirect_allowlist=
 
 # Application Services (Matrix v1.19 Application Service API)
 # Each path is a registration document describing one appservice: its as_token,

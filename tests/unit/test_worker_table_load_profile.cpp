@@ -198,6 +198,10 @@ namespace
         // ADR-0212: mxc:// URIs reserved by POST /_matrix/media/v1/create.
         // The client API and the federation media download run in main.
         "media_pending_uploads",
+        // ADR-0776: OAuth 2.0 client registrations and sessions (migration 002). Every OAuth 2.0 endpoint and the
+        // token checks run in main; the worker serves no client API.
+        "oauth_clients",
+        "oauth_sessions",
         // Vestigial: declared in src/database/Schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside
@@ -268,6 +272,8 @@ SCENARIO("The federation_worker load profile excludes every table outside the al
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("login_tokens", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("openid_tokens", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("account_threepids", profile));
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("oauth_clients", profile));
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("oauth_sessions", profile));
         }
         AND_THEN("an arbitrary non-allowlisted table is excluded, proving this is a fail-closed allowlist "
                  "rather than a denylist")

@@ -25,6 +25,10 @@ Contains the package metadata and init scripts for each supported OS.
   package files are included.
 - **Service files must drop privileges.** The systemd unit and rc.d scripts must run
   merovingian as an unprivileged user (`merovingian` or `_merovingian`), never as root.
+- **The FreeBSD rc.d script sets its own locked-memory limit** (`merovingian_limits`, default `-l 128m`), after
+  `load_rc_config` so `rc.conf` can override it. Every secret needs a locked page and FreeBSD's default login class
+  allows 64 KiB; do not remove the default or rely on the `daemon` class for it.
+  `tests/tooling/test_rcd_locked_memory.py` checks it. See `docs/hardening.md`, "Locked memory".
 - **Do not hardcode paths.** Use the install prefix from the build system (`/usr/local` on BSD,
   `/usr` on Linux distros). Paths are substituted at build time by `meson install`.
 - **BSD packages install the BSD example config, never the Linux one.** The sample is

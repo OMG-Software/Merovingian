@@ -85,6 +85,11 @@ is full.
   `access_token`/`refresh_token`/`session_token` — needed because
   `GET /_matrix/client/v1/register/m.login.registration_token/validity`
   passes the plaintext registration token as `?token=`.
+- `sanitized_http_target` drops the whole query, `?` included, of a target whose path is `/_merovingian/oauth2` or
+  `/_merovingian/account`, alone or followed by `/` (ADR-0786): the OAuth pages and endpoints carry `state`, `code`,
+  `login_hint` and pending authorisation identifiers under names no marker covers. Every request-target log site
+  (`request.received`, `request.rejected`, `request.route_not_found`, `request.auth.*`, `rate_limit.exceeded` and the
+  transport's lines) goes through it; audit rows already drop every query (`sanitized_audit_target`).
 - Stable request-correlation fields (`request_id`, `trace_id`, `span_id`) for
   local HTTP router diagnostics.
 - Health, metric, and hardening snapshot helpers.
@@ -268,7 +273,7 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `auth.account_deactivated`, `auth.password_changed`,
   `auth.openid.request_token`, `auth.sso.login_token.issued`,
   `auth.sso.login_token.redeemed`, `auth.login_token.issued`,
-  `auth.login_token.redeemed` (tokens from `POST /login/get_token`),
+  `auth.login_token.redeemed` (tokens from `POST /login/get_token`, and from the OAuth hand-off, issued with reason `hand_off`),
   `auth.refresh.reuse_detected`, `auth.refresh.predecessor_revoke`,
   `auth.password_reset`.
 - `device.*` (`src/homeserver/AuthService.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
@@ -540,6 +545,96 @@ available only when the process starts with --debug; it is not an audit event
 and is never persisted. Its connection identifier data is limited to presence
 and byte length, and it contains no request bodies, tokens, event content, or
 encryption material.
+
+## OAuth 2.0 client registration diagnostics (ADR-0779, ADR-0780)
+
+`POST /_merovingian/oauth2/register` logs under the `oauth` module with the fields `client_id`, `application_type`
+and `client_host` (the host of `client_uri`) only, never the request body or any other metadata value:
+`oauth.client.registered` (info, a new row), `oauth.client.registered_again` (debug, a held client),
+`oauth.client.evicted` (info, idle clients removed at the cap, with `clients` and `limit` in place of the client fields), `oauth.client.cap_reached` (warning, a
+503), and `oauth.client.store_failed` and `oauth.client.touch_failed` (warning). A stored row that no longer
+validates is logged as `oauth.client.stored_metadata_refused` (warning, `client_id` only) each time it is read.
+A registration whose client ID key cannot be derived from the master key file (unreadable, insecure or invalid, or no
+locked memory left) is logged as `oauth.client.id_key_unavailable` (error, no fields) and answered 500 `server_error`;
+the key is derived per registration and never cached (ADR-0779, amended).
+Registration writes no audit row: it is unauthenticated, grants nothing, and is bounded by the `auth_sensitive` rate
+limit, whose 429s are audited as `rate_limit.exceeded`.
+
+## OAuth 2.0 authorisation diagnostics and audit (ADR-0787, ADR-0788)
+
+`GET` and `POST /_merovingian/oauth2/authorize` log under the `oauth` module: `oauth.authorization.started` (debug,
+`client_id` and `application_type`), `oauth.authorization.refused` (debug, `error` and, once the client is known,
+`client_id`; a refused form post's origin is `error=forbidden_origin`), and `oauth.authorization.granted` and
+`oauth.authorization.denied` (info, `client_id`, `user_id`, `device_id`). Never the query, the `state`, the code
+challenge, the code, the cookie, the pending identifier or a password. `oauth.authorization.granted` is also a durable
+audit row (category `auth`, actor the user, target the client ID, reason the device ID), as a successful `auth.login`
+is; `oauth.authorization.denied` is audited the same way only when a user had signed in, since a denial before the
+password is anyone's to send. `oauth.authorization.credentials_changed` (info, `client_id` and `user_id`) records an
+`approve` refused because the account's password changed since the sign-in (ADR-0807); the stamp itself is never
+logged.
+
+The legacy login hand-off (ADR-0802) logs under the same module: `oauth.hand_off.started` (debug, no field),
+`oauth.hand_off.refused` (debug for a refused `redirectUrl` or a store refusal, no field; info with `user_id` when the
+account fails `account_sign_in_gate` or the login token store is full), `oauth.hand_off.granted` and
+`oauth.hand_off.cancelled` (info, `user_id` once signed in). Never the `redirectUrl`, the login token, the cookie or
+the pending identifier. A granted hand-off writes the durable `auth.login_token.issued` row (actor the user, reason
+`hand_off`); its redemption is `auth.login_token.redeemed`, as for a get_token token.
+
+## OAuth 2.0 token and revocation diagnostics and audit (ADR-0791 to ADR-0795)
+
+`POST /_merovingian/oauth2/token` logs under the `oauth` module: `oauth.token.refused` (debug, `grant_type`, `error`
+and, once read, `client_id`), `oauth.session.granted` (info, `user_id`, `device_id`, `client_id`) and
+`oauth.session.persistence_failed` (warning, the same fields). A replayed authorization code is logged
+`oauth.code.replayed` (warning, `client_id`, `user_id`, `device_id` and `session_ended`). `POST /_merovingian/oauth2/revoke` logs
+`oauth.revocation.refused` (debug, `error`) and `oauth.revocation.accepted` (info, `user_id`, `device_id` and, for an
+OAuth session, `client_id`). Never a code, a code verifier, an access or refresh token, or the request body.
+
+Durable audit rows (category `auth`, actor the user): `oauth.session.granted` (target the client ID, reason the device
+ID), written in the grant's own transaction; `oauth.session.revoked` and `oauth.code.replayed` (target the device ID,
+reason `revoked`), written when the session ends, as `auth.logout` is. A refresh grant writes the `auth.refresh` rows of the legacy
+refresh.
+
+## OAuth 2.0 device authorization grant diagnostics and audit (ADR-0804 to ADR-0806)
+
+`POST /_merovingian/oauth2/device` logs under the `oauth` module: `oauth.device.started` (info, `client_id`) and
+`oauth.device.refused` (debug, `error` and, once read, `client_id`). The link page logs `oauth.device.throttled`
+(warning, `client_key`: the client address key the rate limiter uses) once, when an address reaches five wrong codes;
+the wrong codes themselves are not logged. A user's answer is `oauth.device.approved` or `oauth.device.denied` (info,
+`client_id`, `user_id`, `device_id`), and each is also a durable audit row (category `auth`, actor the user, target the
+client ID, reason the device ID). The device code grant logs as the other grants: `oauth.token.refused` (debug,
+`grant_type` `urn:ietf:params:oauth:grant-type:device_code`, `error`, `client_id`), except `authorization_pending`,
+which a polling device answers every few seconds and is not logged, then `oauth.session.granted` with its audit row.
+Never the device code, the user code, the cookie, the pending identifier or the query.
+
+## OAuth 2.0 account page diagnostics and audit (ADR-0796 to ADR-0798)
+
+`/_merovingian/account` logs under the `oauth` module, with `user_id` only: `account.page.signed_in`,
+`account.page.signed_out`, `account.page.device_deleted`, `account.page.password_changed`, `account.page.deactivated`
+and `account.page.cross_signing_reset_approved` (info), and `account.page.forbidden_origin` (debug, no field). Never a
+password, the session cookie, a form token or the query.
+
+Durable audit rows (category `auth`): `cross_signing.reset_approved` (actor and target the user, reason `account
+page`) when the user approves a cross-signing reset, and `cross_signing.reset_used` (actor and target the user, reason
+`m.oauth`) when an OAuth session's replacing upload is stored with it. The page's actions write the rows of the client
+API functions they call: `device.deleted` for a device sign-out, `auth.password_changed` (reason `changed on the account
+page; revoked all devices`) and `auth.account_deactivated` (reason `deactivated on the account page`).
+
+## Exceptions at the client-server dispatch boundary (ADR-0803)
+
+An exception a client-server handler lets escape is answered `500 M_UNKNOWN` by `handle_client_server_request` and
+logged once under `client_server` at error level as `request.exception`, with `method`, `route` (the normalised route
+template, no ID and no query) and `type` (the exception's mangled type name, `unknown` where the ABI cannot name it).
+The exception's message is never logged: it can quote request data. A `std::overflow_error` from the sync stream
+counter keeps its own answer and is not logged this way.
+
+## Registration token file diagnostics
+
+When `security.registration.token_file` is set but yields no token hash, every `POST /register` that needs the token
+is refused `403 M_FORBIDDEN` ("registration token rejected"), which a client cannot tell from a wrong token. The `auth`
+module logs `registration.token_file_unusable` (warning) once per outage, not once per request, with one field,
+`reason`: the file could not be read into locked memory (unreadable, insecure, over 4096 bytes, or no locked memory
+left under `RLIMIT_MEMLOCK`), or the token was empty or could not be hashed. The next hash produced re-arms it. The
+token, the file's contents and the hash are never logged.
 
 ## Outbound client request diagnostics (F-76, ADR-0418)
 

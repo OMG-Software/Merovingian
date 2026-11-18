@@ -17,16 +17,21 @@
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/AccountSessionStore.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
 #include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
 #include "merovingian/homeserver/AppservicePendingEphemeral.hpp"
+#include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
+#include "merovingian/homeserver/CrossSigningResetApprovals.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/MediaUploadNotifier.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/homeserver/PendingFederatedJoin.hpp"
 #include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
@@ -37,6 +42,7 @@
 #include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
+#include "merovingian/homeserver/UserCodeAttemptThrottle.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
@@ -234,6 +240,28 @@ struct HomeserverRuntime final
     // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
     // request would (C21). Always empty in production.
     std::function<void()> test_after_upgrade_room_created{};
+    // Test-only: called by handle_client_server_request for every request, with the request's path, after the rate
+    // limit and with runtime.mutex held, so a test can make one request throw and see what the dispatch boundary
+    // answers (ADR-0803). Always empty in production.
+    std::function<void(std::string_view)> test_client_request_hook{};
+    // The OAuth 2.0 authorisation requests waiting for their user, and the authorisation codes minted by approvals
+    // (plan P5, ADR-0782). In memory only, hashed, bounded, never evicting a live entry. Guarded by `mutex`. A client
+    // either names is never deleted (`oauth_client_has_pending_authorisation`).
+    PendingAuthorisationStore oauth_pending_authorisations{};
+    AuthorizationCodeStore oauth_codes{};
+    // The device authorization grant's authorisations and the wrong user codes typed on its link page, counted per
+    // address (plan P11, ADR-0804, ADR-0805). In memory only, bounded. Guarded by `mutex`. Both take their time from
+    // `oauth_device_clock_ms`; a client a live device authorisation names is never deleted either.
+    DeviceAuthorisationStore oauth_device_authorisations{};
+    UserCodeAttemptThrottle oauth_user_code_attempts{};
+    // Test-only: added to the wall clock by `oauth_device_clock_ms`, so a test moves the device grant's time (expiry,
+    // polling interval, the wrong-code window) without sleeping. Always 0 in production.
+    std::uint64_t test_device_grant_clock_advance_ms{0U};
+    // The signed-in sessions of the account pages at `/_merovingian/account` (plan P6, ADR-0796) and the cross-signing
+    // reset approvals they grant (ADR-0797). In memory only, bounded. Here, not on `ClientServerRuntime`, because a
+    // password change, a password reset and a deactivation (`AuthService.cpp`) end them. Guarded by `mutex`.
+    AccountSessionStore account_sessions{};
+    CrossSigningResetApprovals cross_signing_reset_approvals{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,

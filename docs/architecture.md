@@ -82,6 +82,7 @@ touched ([ADR-0466](adr/0466-define-one-class-or-struct-per-file.md),
 | `ipc` | Encrypted AF_UNIX IPC channel (ephemeral key exchange, AEAD framing) |
 | `media` | Media repository: upload, download, quarantine |
 | `net` | TCP listener, thread pool, shutdown signal |
+| `oauth` | OAuth 2.0 API building blocks, pure functions only: PKCE, scope parser, strict URI reader, redirect URI and client metadata validation, the page renderer and page headers (`src/oauth/AGENTS.md`, ADR-0768) |
 | `observability` | Logging, health checks, structured diagnostics |
 | `platform` | POSIX file metadata, hardening self-checks |
 | `push` | Push rule evaluation (default and per-user rules), push gateway client with retry queue, circuit breaker and in-flight limiter, and the email digest queue |
@@ -118,6 +119,7 @@ flowchart TB
     subgraph services["Protocol & domain services"]
         appservice["appservice<br/>registration, namespaces"]
         auth["auth"]
+        oauth["oauth<br/>PKCE, scope, redirect URIs, pages"]
         rooms["rooms"]
         events["events"]
         federation["federation"]
@@ -151,6 +153,7 @@ flowchart TB
     events --> crypto & canonicaljson & rooms & auth
     federation --> crypto & canonicaljson & events & rooms & config
     auth --> crypto & canonicaljson
+    oauth --> auth & crypto & canonicaljson & core
     database --> canonicaljson
     sync --> canonicaljson
     services --> observability
@@ -160,7 +163,8 @@ flowchart TB
 
 Most foundation modules use `core` (RAII utilities, `not_null`,
 `secret_buffer`); it is the leaf of the graph. `observability` and `config`
-do not use it directly. `http` and `email` link it.
+do not use it directly. `http`, `email` and `canonicaljson` link it (`canonicaljson`
+for `core::utf8_is_valid`), so `src/meson.build` builds `core` first.
 
 ## Runtime model
 
@@ -638,7 +642,7 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 - **Admin**: `GET /admin/safety/reports`, quarantine/release/remove media
 - **Push notifications**: `GET /pushers`, `POST /pushers/set`, the Push Rules API (`GET`/`PUT`/`DELETE /pushrules/...`; a user's rules are their `m.push_rules` account data applied over the server defaults by `push::UserPushRules`, ADR-0204), `GET /notifications`. Unread counts are decided by the same rules (`homeserver::PushRuleUnreadClassifier`, ADR-0205), and a failed notification is retried with backoff by the `push-retry` job thread from a bounded in-memory queue (`push::PushRetryQueue`, ADR-0206). Gateway delivery is gated on `server.push.enabled` (default `false`); when enabled, `RoomService.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram. `GET /notifications` history recording (`database::store_notification`, a synchronous local write, not gateway I/O) happens in that same rule-evaluation step regardless of `push.enabled` or whether the recipient has a pusher — a user with push turned off still needs to see their notifications. Kind `"email"` pushers have their own switch, `server.email.smtp_url` (ADR-0219, ADR-0220): the same step notes a notification in `push::EmailDigestQueue` (no network), and the `email-push` job thread (`homeserver/EmailPush.cpp`) sends each due digest, re-reading the pusher, the account's email 3PID and the badge count under `runtime.mutex` and sending through `email::send_smtp_message` with the mutex released. Only the main process sends email; the federation worker clears `server.email` in its config copy.
 - **Search**: `POST /search` — in-memory full-text search (`content.body`/`content.name`/`content.topic`) over `PersistentStore::events`, scoped to the caller's currently-joined, unencrypted rooms; bounded by `ClientApiLimits::max_search_events_scanned` rather than a SQL full-text index (SQLite FTS5/PostgreSQL `tsvector`), to avoid a second, divergent search backend in an architecture that does not otherwise read events from SQL at request time. See `docs/todos/capability-gaps.md` for the deliberately-left-out spec corners.
-- **Other**: `GET /capabilities`, `GET /voip/turnServer`, MSC2965 OIDC discovery
+- **Other**: `GET /capabilities`, `GET /voip/turnServer`, OAuth 2.0 server metadata (`auth_metadata`, ADR-0773)
 
 ## Sync subsystem
 

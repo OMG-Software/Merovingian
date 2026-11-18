@@ -277,6 +277,7 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 | `generate-sbom-tooling` | `scripts/generate_sbom.py` names every shipped licence row with its licence and wrap pin, is deterministic, and refuses an unmapped row, wrap or section (ADR-0598) |
 | `release-workflow-tooling`, `stage-release-tarball-tooling` | A release tag must name the `meson.build` version, 0.x releases are prereleases, and release tarballs carry every executable `meson install` installs, both workers included (ADR-0597) |
 | `docs-site-tooling` | The documentation site builds strictly on every branch, only `main` deploys it, its dependencies are hash-locked, and every published document has a `mkdocs.yml` nav entry |
+| `page-text-member-initialiser-tooling` | No data member of type `HtmlText`, `HtmlLiteral`, `HtmlName` or `PagePath` has a default member initialiser other than `{}`: clang 18 runs their compile-time check at run time there (ADR-0800) |
 | `catch-report-capture-tooling` | A test binary writing its CI skip report still lets a test capture `std::cout` (ADR-0546) |
 | `tests/tooling/test_packages_workflow.py` | Version consistency and packaging requirements |
 | `workflow-action-pinning-tooling` | The GitHub Action pinning policy |

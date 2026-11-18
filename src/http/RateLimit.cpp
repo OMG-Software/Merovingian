@@ -51,9 +51,12 @@ auto rate_limit_tier_for(std::string_view target) noexcept -> RateLimitTier
     // against /login is the same enumeration surface as a POST, and the
     // /requestToken family spans several parents
     // (/account/3pid/email|msisdn/requestToken, /register/*/requestToken),
-    // so it is matched by suffix.
+    // so it is matched by suffix. The OAuth 2.0 endpoints and pages (client registration, the authorisation and
+    // token endpoints, the account pages) are unauthenticated credential surfaces like /login and /register; the two
+    // `auth_metadata` paths are not among them and stay generic (ADR-0775).
     if (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/refresh") ||
         starts_with(target, "/_matrix/client/v3/register") || starts_with(target, "/_matrix/client/v1/register") ||
+        starts_with(target, "/_merovingian/oauth2/") || starts_with(target, "/_merovingian/account") ||
         target.find("/requestToken") != std::string_view::npos || target.find("/submitToken") != std::string_view::npos)
     {
         return RateLimitTier::auth_sensitive;

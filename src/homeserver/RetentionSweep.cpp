@@ -3,12 +3,17 @@
 
 #include "merovingian/homeserver/RetentionSweep.hpp"
 
+#include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
+#include "merovingian/homeserver/AuthorizationCodeStore.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -20,12 +25,20 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 #include <vector>
 
 namespace merovingian::homeserver
 {
+
+// A batch of the client sweep must fit in the idle-client walk after it skipped every client a pending authorisation,
+// an unredeemed code or a device authorisation can name, or a walk that stopped at its bound could hide a client that
+// may go (ADR-0782, ADR-0805).
+static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes +
+                  DeviceAuthorisationStore::max_entries + retention_batch_rows <=
+              database::max_idle_client_rows_examined);
 
 namespace
 {
@@ -166,14 +179,109 @@ namespace
         return done;
     }
 
+    // Returns true when every OAuth session row whose device holds no live credential was deleted (or there was none),
+    // false when the sweep stopped at its batch cap or was asked to stop (ADR-0808). Each batch is chosen and deleted
+    // in one hold of the lock, so a grant between batches is seen: a re-granted device holds live tokens again.
+    [[nodiscard]] auto sweep_oauth_sessions(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now,
+                                            StopFlag const& stop) -> bool
+    {
+        auto batches = std::size_t{0U};
+        auto deleted = std::size_t{0U};
+        auto done = false;
+        while (batches < retention_max_batches && !stop.stop_requested())
+        {
+            auto const guard = RuntimeLock{runtime.mutex};
+            auto const ended = database::oauth_sessions_without_live_credentials(runtime.database.persistent_store, now,
+                                                                                 retention_batch_rows);
+            if (ended.empty())
+            {
+                done = true;
+                break;
+            }
+            auto const removed =
+                database::delete_oauth_sessions_without_live_credentials(runtime.database.persistent_store, ended, now);
+            if (!removed.has_value())
+            {
+                LOG_WARNING("Retention sweep could not delete a batch of ended OAuth 2.0 sessions; will retry");
+                return true;
+            }
+            deleted += *removed;
+            ++batches;
+        }
+        if (deleted != 0U)
+        {
+            LOG_INFO("Retention sweep deleted ended OAuth 2.0 sessions; sessions=" + std::to_string(deleted));
+        }
+        return done;
+    }
+
+    // Returns true when every expired sessionless client was deleted (or there was none), false when the sweep
+    // stopped at its batch cap or was asked to stop. Each batch is chosen and deleted in one hold of the lock, so a
+    // session granted between batches is seen by the next choice: delete_oauth_clients refuses a client with one.
+    [[nodiscard]] auto sweep_oauth_clients(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now,
+                                           StopFlag const& stop) -> bool
+    {
+        auto const now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+        auto const keep_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(oauth_client_retention).count());
+        if (now_ms <= keep_ms)
+        {
+            return true;
+        }
+        auto const used_before_ms = now_ms - keep_ms;
+        auto const pending = [&runtime, now_ms](std::string_view client_id) {
+            return oauth_client_has_pending_authorisation(runtime, client_id, now_ms);
+        };
+        auto batches = std::size_t{0U};
+        auto deleted = std::size_t{0U};
+        auto done = false;
+        while (batches < retention_max_batches && !stop.stop_requested())
+        {
+            auto const guard = RuntimeLock{runtime.mutex};
+            auto const expired = database::oauth_clients_without_sessions(
+                runtime.database.persistent_store, retention_batch_rows, used_before_ms, pending);
+            if (expired.empty())
+            {
+                done = true;
+                break;
+            }
+            if (!database::delete_oauth_clients(runtime.database.persistent_store, expired))
+            {
+                LOG_WARNING("Retention sweep could not delete a batch of unused OAuth 2.0 clients; will retry");
+                return true;
+            }
+            deleted += expired.size();
+            ++batches;
+        }
+        if (deleted != 0U)
+        {
+            LOG_INFO("Retention sweep deleted unused OAuth 2.0 clients; clients=" + std::to_string(deleted));
+        }
+        return done;
+    }
+
 } // namespace
+
+// Two lookups by client ID, each answered from the latest expiry the store holds for the client: no scan.
+auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id,
+                                            std::uint64_t now_ms) -> bool
+{
+    return runtime.oauth_pending_authorisations.holds_live_entry_for_client(client_id, now_ms) ||
+           runtime.oauth_codes.holds_unredeemed_code_for_client(client_id, now_ms) ||
+           runtime.oauth_device_authorisations.holds_live_entry_for_client(
+               client_id, now_ms + runtime.test_device_grant_clock_advance_ms);
+}
 
 auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now, StopFlag const& stop)
     -> std::chrono::milliseconds
 {
     auto const credentials_done = sweep_credentials(runtime, now, stop);
     auto const audit_done = sweep_audit_log(runtime, now, stop);
-    if (credentials_done && audit_done)
+    // Before the clients, so a client whose only session ended this way may go in the same sweep.
+    auto const sessions_done = sweep_oauth_sessions(runtime, now, stop);
+    auto const oauth_done = sweep_oauth_clients(runtime, now, stop);
+    if (credentials_done && audit_done && sessions_done && oauth_done)
     {
         return std::chrono::duration_cast<std::chrono::milliseconds>(retention_sweep_interval);
     }

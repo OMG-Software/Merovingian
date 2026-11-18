@@ -12,17 +12,17 @@
 #include <merovingian/canonicaljson/Serializer.hpp>
 #include <merovingian/config/Config.hpp>
 #include <merovingian/core/FileDescriptor.hpp>
-#include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/Migration.hpp>
+#include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/PostgresqlStore.hpp>
 #include <merovingian/database/Schema.hpp>
 #include <merovingian/events/EventId.hpp>
 #include <merovingian/events/EventSigner.hpp>
 #include <merovingian/federation/RemoteKeyCache.hpp>
 #include <merovingian/homeserver/HomeserverRuntime.hpp>
-#include <merovingian/homeserver/WorkerPool.hpp>
 #include <merovingian/homeserver/LocalHttpRouter.hpp>
 #include <merovingian/homeserver/RoomService.hpp>
+#include <merovingian/homeserver/WorkerPool.hpp>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1388,10 +1388,12 @@ namespace
 }
 
 // Removes the whole schema, ledger included, so the next open has the v1
-// bootstrap to run: with every migration folded into v1, that bootstrap is the
-// only DDL an open can be made to perform. Drops the tables the v1 step
-// creates, in its downgrade's order. Idempotent: Catch2 re-runs a WHEN once per
-// leaf section, so a second call must find the schema already gone.
+// bootstrap and every later migration to run. Drops what each applied
+// migration created, newest first: the downgrade plan from the version the
+// ledger records down to nothing. Dropping only the v1 tables left the tables
+// of migration 002 behind, and the next open then failed creating them again.
+// Idempotent: Catch2 re-runs a WHEN once per leaf section, so a second call
+// must find the schema already gone.
 [[nodiscard]] auto make_schema_absent(std::string_view uri) -> bool
 {
     auto connection = merovingian::database::open_postgresql_connection(uri);
@@ -1412,11 +1414,27 @@ namespace
     {
         return true;
     }
-    for (auto const& statement : merovingian::database::downgrade_initial_schema_migration().statements)
+    // `version` is TEXT, so the newest row is found as a number.
+    auto const applied = connection.connection.execute(
+        {"schema_migrations_newest", "SELECT COALESCE(MAX(CAST(version AS INTEGER)), 0) FROM schema_migrations", {}});
+    if (!applied.ok || applied.rows.size() != 1U || applied.rows.front().empty())
     {
-        if (!connection.connection.execute(statement).ok)
+        return false;
+    }
+    auto const version = static_cast<std::uint32_t>(std::stoul(applied.rows.front().front()));
+    if (version > merovingian::database::current_schema_version())
+    {
+        // A ledger newer than this build names tables this helper cannot know to drop.
+        return false;
+    }
+    for (auto const& step : merovingian::database::migration_plan_between(version, 0U).steps)
+    {
+        for (auto const& statement : step.statements)
         {
-            return false;
+            if (!connection.connection.execute(statement).ok)
+            {
+                return false;
+            }
         }
     }
     return true;

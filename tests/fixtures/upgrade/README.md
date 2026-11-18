@@ -5,15 +5,20 @@ release, so a test can prove the current server opens, migrates and serves it.
 Nothing in these files is hand-written: the old `merovingian-server` produced
 every row through its real HTTP Client-Server API (ADR-0216).
 
-## No fixture until 1.1
+## No fixture yet
 
 There is none today. In 0.12.47 every pre-1.0 migration collapsed into one v1
 schema (ADR-0224), so no database a pre-1.0 release wrote can be opened any more,
 and the 0.11.13 fixture that stood here was removed with the chain it tested.
-Upgrade compatibility is promised from 1.0.0, which is cut. When the 1.1 series starts, the
-last 1.0.x release writes the next fixture into `tests/fixtures/upgrade/<release>/`,
-and `tests/integration/test_database_upgrade_flow.cpp` gains the scenarios that
-open, migrate and serve it.
+Upgrade compatibility is promised from 1.0.0, which is cut.
+
+1.1.0 adds migration 002, the first migration after 1.0, so it is where the next
+fixture belongs: the last 1.0.x release writes it into
+`tests/fixtures/upgrade/<release>/`, and `tests/integration/test_database_upgrade_flow.cpp`
+gains the scenarios that open, migrate and serve it. It has not been generated
+yet: the generator needs the PostgreSQL server binaries (`initdb`, `pg_ctl`),
+and the build VM has none. Until it exists, nothing proves that 1.1.0 opens a
+database a 1.0.x release wrote.
 
 ## Generating
 

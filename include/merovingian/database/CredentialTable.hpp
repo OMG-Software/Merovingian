@@ -125,6 +125,28 @@ public:
         return any_unrevoked(positions_of_device(user_id, device_id));
     }
 
+    // Whether the device holds a row that is neither revoked nor expired at `now` (a row with no expiry never expires).
+    // Costs the device's own rows, counted in `rows_examined`.
+    [[nodiscard]] auto has_live_for_device(std::string_view user_id, std::string_view device_id,
+                                           std::chrono::system_clock::time_point now) const -> bool
+    {
+        auto const* positions = positions_of_device(user_id, device_id);
+        if (positions == nullptr)
+        {
+            return false;
+        }
+        for (auto const position : *positions)
+        {
+            examined_.add(1U);
+            auto const& row = rows_[position];
+            if (!row.revoked && (!row.expires_at.has_value() || *row.expires_at > now))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Whether the user holds a row that is not revoked.
     [[nodiscard]] auto has_unrevoked_for_user(std::string_view user_id) const -> bool
     {

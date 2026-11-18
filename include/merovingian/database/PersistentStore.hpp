@@ -6,18 +6,19 @@
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
-#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/ForwardExtremityTable.hpp"
+#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
 #include "merovingian/database/MigrationApplyResult.hpp"
 #include "merovingian/database/MigrationValidationResult.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAdminAction.hpp"
@@ -50,6 +51,7 @@
 #include "merovingian/database/PersistentMediaBlob.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentOneTimeKey.hpp"
 #include "merovingian/database/PersistentOpenidToken.hpp"
 #include "merovingian/database/PersistentPendingMediaUpload.hpp"
@@ -442,9 +444,9 @@ struct PersistentStore final
     // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
     // version) and the versions of each user. Same trust rule as above. A deleted session or version erases by
     // moving the last row into the gap, so `key_backup_sessions` has no meaningful order.
-    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions` and
-    // rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds it
-    // stale recomputes from the rows without storing the result.
+    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions`
+    // and rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds
+    // it stale recomputes from the rows without storing the result.
     std::unordered_map<std::string, KeyBackupDigest> key_backup_digests{};
     RowKeyIndex key_backup_session_index{};
     RowGroupIndex key_backup_version_session_index{};
@@ -565,6 +567,9 @@ struct PersistentStore final
     // audit log (C26).
     ExaminedRows audit_type_queries{};
     std::vector<PersistentLoginToken> login_tokens{};
+    // Migration 002 (ADR-0776, ADR-0777): `oauth_clients` and `oauth_sessions`, with their indexes. Read and write
+    // through OAuthStore.hpp; `delete_device` removes a device's session in the transaction that deletes the device.
+    OAuthTables oauth{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
@@ -756,10 +761,21 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // One transaction: the device row when `device` is set, the access token, and, with `replace_device_credentials`, the
 // DELETE of every earlier access and refresh row of the token's (user, device) first (F-08, ADR-0590: a login on a
 // device the user holds replaces its credentials; deleted, not revoked, because a presented revoked refresh row counts
-// as reuse). Memory changes only after the commit; a failed commit changes nothing.
+// as reuse). A replacement also deletes the device's `oauth_sessions` row, if it has one, in the same transaction: a
+// legacy login on an OAuth device makes it a legacy device (ADR-0792). Memory changes only after the commit; a failed
+// commit changes nothing.
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token, bool replace_device_credentials = false)
     -> bool;
+// An OAuth 2.0 authorization code grant's writes in ONE transaction (ADR-0792): the device row when `device` is set,
+// the DELETE of every earlier access and refresh row of the device and of its `oauth_sessions` row, then the access
+// row, the refresh row, the new `oauth_sessions` row `session` and the `audit` row. The three session rows must name
+// the same (user, device). False, with nothing written and memory unchanged, when they do not, a token hash is held
+// already, the device row is held already, the session row is refused (`prepare_oauth_session_insert`) or the commit
+// fails. Memory changes only after the commit.
+[[nodiscard]] auto store_oauth_grant(PersistentStore& store, std::optional<PersistentDevice> device,
+                                     PersistentAccessToken access, PersistentRefreshToken refresh,
+                                     PersistentOAuthSession session, PersistentAuditEvent audit) -> bool;
 // A refresh rotation's writes in one transaction (F-08, ADR-0590): every earlier access row of the device is deleted,
 // the new access and refresh rows are inserted, and `evicted_refresh_hashes` (rows the caller found retired, from
 // `CredentialTable::oldest_retired_beyond`) are deleted. False, with nothing changed, if a named row is not retired.
@@ -789,6 +805,16 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // "restore" helper: revocation is one-way by design. Do not add one.
 [[nodiscard]] auto revoke_tokens_for_user_except_device(PersistentStore& store, std::string_view user_id,
                                                         std::string_view keep_device_id) -> std::size_t;
+// Revokes every access and refresh token of `user_id` (but those of `keep_device_id`, if given) and deletes the
+// matching `oauth_sessions` rows, in one transaction; memory changes only after the commit. False when the commit
+// failed, and then nothing changed. The path every password change, reset, deactivation and logout of all devices
+// takes, so no OAuth session row outlives its device's credentials (ADR-0808).
+[[nodiscard]] auto revoke_user_credentials(PersistentStore& store, std::string_view user_id,
+                                           std::optional<std::string_view> keep_device_id) -> bool;
+// Revokes every access and refresh token of the device and deletes its `oauth_sessions` row, in one transaction
+// (ADR-0808). False when the commit failed, and then nothing changed.
+[[nodiscard]] auto revoke_device_tokens(PersistentStore& store, std::string_view user_id, std::string_view device_id)
+    -> bool;
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
                                               std::string_view device_id, std::string_view display_name) -> bool;
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;
@@ -1262,8 +1288,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
 // Stores every signature in one transaction (one commit, whatever the count): all are written or, when the write
 // fails, none is. A row with an empty target key or an empty payload is refused and the rest are still written; the
 // result is false when any row was refused. An empty list succeeds and writes nothing. Run-3 C14 (ADR-0672).
-[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures)
-    -> bool;
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures) -> bool;
 // Calls `visit` with the (target user, target key) of each signature `signer_user_id` holds; stops when it returns
 // false. Reads the signer's rows only, counted in `key_rows_examined`.
 auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,

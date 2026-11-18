@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <string_view>
 
 namespace merovingian::homeserver
 {
@@ -24,12 +26,26 @@ inline constexpr auto retention_max_batches = std::size_t{20U};
 // An access token stays on record this long after it expired, so a request that presents it is still answered
 // "token expired" in the audit log rather than "session not found". A revoked one goes at once.
 inline constexpr auto expired_access_token_grace = std::chrono::hours{24 * 7};
+// An OAuth 2.0 client registration with no session is deleted once it has gone unused this long (ADR-0777). A client
+// with a session is never deleted: "The server MUST NOT delete client registrations that have an active session."
+inline constexpr auto oauth_client_retention = std::chrono::hours{24 * 30};
+
+// Whether, at `now_ms` (milliseconds since the epoch), a live pending authorisation, a live unredeemed authorisation
+// code or a live device authorisation names `client_id`, so its client must not be deleted under it (ADR-0780,
+// ADR-0782, ADR-0805). O(1): it asks `HomeserverRuntime::oauth_pending_authorisations`, `oauth_codes` and
+// `oauth_device_authorisations` (at `now_ms` plus `test_device_grant_clock_advance_ms`), never scans them. The
+// retention sweep and the registration cap (`register_oauth_client`) both ask it before deleting a client. Called with
+// HomeserverRuntime::mutex held.
+[[nodiscard]] auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id,
+                                                          std::uint64_t now_ms) -> bool;
 
 // One sweep at `now`:
 //  - deletes the sessions and tokens that can no longer authenticate (revoked or long-expired access tokens,
 //    expired refresh tokens), from the database in batches of `retention_batch_rows`, then once from memory;
 //  - when `security.audit_log_retention_days` is not 0, deletes the audit rows older than that, in batches,
-//    and writes one `audit.retention.purged` audit row saying up to when and in how many batches.
+//    and writes one `audit.retention.purged` audit row saying up to when and in how many batches;
+//  - deletes the OAuth 2.0 clients with no session and none pending, last used over `oauth_client_retention`
+//    ago, least recently used first, in batches of `retention_batch_rows` (database and memory together).
 // Locks: HomeserverRuntime::mutex is taken for one scan of the in-memory tokens, once per batch (one
 // transaction of at most `retention_batch_rows` rows) and once for the final in-memory erase; it is released
 // between batches. The audit existence probe reads on a connection of its own with no lock held. A failed

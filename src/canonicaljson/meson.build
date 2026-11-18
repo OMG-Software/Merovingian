@@ -13,4 +13,5 @@ canonicaljson_lib = static_library(
   canonicaljson_sources,
   include_directories: inc,
   dependencies: [yyjson_dep],
+  link_with: [core_lib],
 )

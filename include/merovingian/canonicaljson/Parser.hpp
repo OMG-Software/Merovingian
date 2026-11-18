@@ -25,6 +25,7 @@ namespace merovingian::canonicaljson
 inline constexpr auto max_object_members = std::size_t{65536U};
 
 [[nodiscard]] auto parse_error_name(ParseError error) noexcept -> char const*;
+// core::utf8_is_valid under its older name: well-formed UTF-8, no overlong form, surrogate or code point past U+10FFFF.
 [[nodiscard]] auto utf8_is_valid(std::string_view value) noexcept -> bool;
 // Canonical JSON parser: rejects floating-point/exponent numbers per Matrix v1.19.
 [[nodiscard]] auto parse_lossless(std::string_view input) -> ParseResult;

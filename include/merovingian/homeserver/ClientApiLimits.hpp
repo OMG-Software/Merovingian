@@ -78,6 +78,11 @@ struct ClientApiLimits final
     // PUT /devices/{deviceId} answer 400 M_TOO_LARGE over it. The per-user device count is
     // `device_count_limit`, a constant, because device creation has no ClientApiLimits.
     std::size_t max_device_display_name_bytes{device_display_name_byte_limit};
+    // ADR-0780: the most OAuth 2.0 client registrations held. Registration is unauthenticated, so the table needs a
+    // bound; one row per distinct client application (ADR-0779) is far below it on any real server, and 10000 rows of
+    // at most 16 KiB stay small in memory. At the cap a new registration first evicts idle clients, least recently
+    // used first; tests lower it.
+    std::size_t max_oauth_clients{10000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

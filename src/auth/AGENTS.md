@@ -11,7 +11,6 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `Token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
 | `Identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `Password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
-| `OidcDiscovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
 | `FailureWindowTable.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `KeyApi.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
@@ -68,6 +67,33 @@ account must not be consulted by user-interactive-auth password checks, which ha
 failures must not feed the login tables either. A successful login clears only the (account,
 source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
 path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
+
+## One password check, one account creation (ADR-0783)
+
+A password login is checked only by `verify_login_credentials` (`src/homeserver/AuthService.cpp`), which `POST /login`
+(`login_local_user`) and the OAuth 2.0 login page (`verify_password_login`) both call. Its order is fixed: log
+`login.started`; the throttle; an Argon2id slot; the stored hash or the dummy hash; the hash with the lock released;
+re-find the user and require its hash unchanged; count a failure against the claimed ID or clear the source's
+failures. The account-state gate is `account_state_refusal`, one function called after it (`/login` calls it after
+its device checks, so keep it out of the verification). A password account is created only by
+`register_password_account`, through `register_local_user` or `create_local_account` (the username checks of
+`/register` first). Never copy any of these steps into a route or a page: change the shared function.
+
+## OAuth 2.0 sessions (ADR-0791 to ADR-0795)
+
+An OAuth 2.0 session is a legacy session (an access and a refresh row in `SessionTable`, rotated by the same
+`refresh_local_session`) plus an `oauth_sessions` row naming the client. Rules:
+
+- `grant_oauth_session` (`src/homeserver/AuthService.cpp`) is the only path that creates one. It reuses
+  `admit_device_login` and `mint_login_token`, never a copy, and always gives the access token an expiry
+  (`oauth::access_token_lifetime_ms`: one hour when `security.access_token_lifetime_ms` is `0`).
+- The refresh endpoints do not mix kinds: `POST /refresh` refuses a token of a device with an `oauth_sessions` row, and
+  the token endpoint's refresh grant refuses one without a row for the client that asks (ADR-0793). The check runs
+  before the rotation, so a refused token is never spent.
+- A UIA endpoint answers an OAuth session `403 M_FORBIDDEN` before the password check (`oauth_session_uia_refusal`,
+  ADR-0794): the password is not the credential such a session was given. A new UIA endpoint calls it first.
+- Revocation and a replayed code end the session through `end_device_session` exactly as `POST /logout` does
+  (ADR-0795); never revoke only the tokens.
 
 ## Session lookup and retention
 

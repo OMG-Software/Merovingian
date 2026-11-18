@@ -34,6 +34,11 @@ struct LocalHttpResponse final
     // ADR-0574: when set, `body` is empty and the HTTP layer sends these bytes, read from the database in chunks
     // as it writes, with Content-Length set to `size_bytes`.
     std::optional<MediaBodyStream> body_stream{};
+    // An OAuth 2.0 HTML page (ADR-0785), built with `oauth::page_headers`. A page is served to the browser at its own
+    // origin and never read cross-origin, so the client-server boundary adds no CORS header to it
+    // (`apply_client_response_headers` adds only `X-Content-Type-Options`), and nothing downstream rewrites it: the
+    // client API's `wrap()` of a router answer returns a page unchanged. Internal only, never written to the wire.
+    bool page{false};
 };
 
 } // namespace merovingian::homeserver

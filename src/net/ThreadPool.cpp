@@ -3,6 +3,7 @@
 
 #include "merovingian/net/ThreadPool.hpp"
 
+#include "merovingian/core/CurrentException.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -13,13 +14,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#if __has_include(<cxxabi.h>) && defined(__GNUC__)
-#include <cxxabi.h>
-#define MEROVINGIAN_HAS_CXXABI 1
-#else
-#define MEROVINGIAN_HAS_CXXABI 0
-#endif
 
 namespace merovingian::net
 {
@@ -35,21 +29,9 @@ namespace
 
     // The thread_pool catch-all previously logged only {"action":"swallowed"}.
     // For a security-first homeserver an unhandled exception in a worker is a
-    // signal worth keeping; capture the mangled type name and the
-    // std::exception message so postmortem can identify the throwing site. We
-    // log the raw mangled name (not demangled) to keep this portable across
-    // libstdc++ / libc++ / MSVC, and fall back to "unknown" on toolchains
-    // without <cxxabi.h>.
-    [[nodiscard]] auto current_exception_type_name() noexcept -> char const*
-    {
-#if MEROVINGIAN_HAS_CXXABI
-        auto const* type = abi::__cxa_current_exception_type();
-        return type == nullptr ? "unknown" : type->name();
-#else
-        return "unknown";
-#endif
-    }
-
+    // signal worth keeping; capture the mangled type name
+    // (core::current_exception_type_name) and the std::exception message so
+    // postmortem can identify the throwing site.
     [[nodiscard]] auto current_exception_message() noexcept -> std::string
     {
         try
@@ -206,9 +188,9 @@ auto ThreadPool::worker_loop() -> void
             // exception escape the worker loop — std::thread::join would
             // call std::terminate.
             log_diagnostic("worker.exception", {
-                                                   {"action", "swallowed",                   false},
-                                                   {"type",   current_exception_type_name(), false},
-                                                   {"what",   current_exception_message(),   false}
+                                                   {"action", "swallowed",                         false},
+                                                   {"type",   core::current_exception_type_name(), false},
+                                                   {"what",   current_exception_message(),         false}
             });
         }
     }

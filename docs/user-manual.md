@@ -493,7 +493,7 @@ change them.
 | Key | Default | When to change |
 |---|---|---|
 | `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `matrix.example.org`. |
-| `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
+| `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. With `server.oauth.enabled=true` it is also the OAuth issuer, and must have a host and no query, fragment or userinfo. |
 | `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The client is the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (ADR-0073), so a proxy may append to the header or overwrite it; list every proxy hop you control. The shipped example sets `127.0.0.1`. |
 
 #### CORS policy — `server.cors.*`
@@ -822,24 +822,151 @@ support.
 > Set the same value as coturn's `static-auth-secret`, and keep
 > `server.turn.ttl_seconds` at or below coturn's own limits.
 
-#### OIDC discovery — `server.oidc.*`
+#### OAuth 2.0 API — `server.oauth.*`
 
-`GET /_matrix/client/v1/auth_metadata` (MSC2965) returns 404 `M_UNRECOGNIZED`
-until `server.oidc.enabled=true`. Merovingian does not implement an OAuth 2.0
-authorization server itself — these keys only describe an external one for
-clients to discover.
+Merovingian has a built-in OAuth 2.0 API (Matrix v1.19 "OAuth 2.0 API"), which
+clients such as Element X use to create accounts and log in through pages the
+homeserver serves. It is **off by default**: `GET /_matrix/client/v1/auth_metadata`
+and its unstable form `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata`
+answer `404 M_UNRECOGNIZED`, as the spec asks of a server without the API. With
+`server.oauth.enabled=true` both answer the server metadata. In 1.1.0 the API
+is being built in phases; this release serves the metadata, client
+registration (`POST /_merovingian/oauth2/register`), the sign-in pages
+(`/_merovingian/oauth2/authorize`, where a user signs in or creates an account
+and allows the application), the token endpoint
+(`POST /_merovingian/oauth2/token`, the authorization code and refresh grants)
+revocation (`POST /_merovingian/oauth2/revoke`), the account pages
+(`/_merovingian/account`) and, when turned on, the device authorization grant
+(see [The device authorization grant](#the-device-authorization-grant)). Every authorisation asks
+for the password; the server keeps no browser session for it. At most 10000
+client registrations are held; once every held one is in use, a new client is
+answered `503 temporarily_unavailable` until one is freed.
+
+The account pages are where a user signed in through OAuth manages the account
+(spec "Account management"; ADR-0796 to ADR-0798). The metadata names them as
+`account_management_uri` and lists all six actions: the overview, the device
+list, one device, signing a device out, deactivation and approving a
+cross-signing reset. A user signs in there with the password (the same
+throttle as `POST /login`) and gets a session of 15 minutes that is never
+extended and is kept only in memory, so a restart signs every browser out of
+the pages. The pages also change the password. A password change there signs
+out every session of the account, in every application and on every device,
+and keeps the devices; every application must sign in again. A password change,
+a reset and a deactivation each end the user's account-page sessions.
+
+A client signed in through OAuth asks for User-Interactive Authentication only
+to replace its cross-signing keys. It is then sent to the account page
+(`?action=org.matrix.cross_signing_reset`, the `m.oauth` stage), where the
+user allows one reset within 10 minutes. The other User-Interactive
+Authentication endpoints (`POST /account/password`, `/account/deactivate`,
+`/account/3pid/add`, `DELETE /devices/{deviceId}`, `POST /delete_devices`,
+`/login/get_token`) still answer an OAuth session `403 M_FORBIDDEN` naming the
+account page (ADR-0794); the user does those things on the pages, except
+adding an email address and minting a login token, which have no page yet.
+
+An OAuth access token always expires: it lives
+`security.access_token_lifetime_ms`, or one hour when that is `0` (ADR-0791),
+and the client renews it with its refresh token.
+
+No address is configured. The issuer is `server.public_baseurl` with one
+trailing slash, and every endpoint is under it: `/_merovingian/oauth2/register`,
+`/_merovingian/oauth2/authorize`, `/_merovingian/oauth2/token`,
+`/_merovingian/oauth2/revoke`, `/_merovingian/oauth2/device`,
+`/_merovingian/oauth2/link` and `/_merovingian/account` (ADR-0773). A reverse proxy in front of the server must
+pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
+`/_matrix/`.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.oidc.enabled` | `false` | Set `true` once the endpoints below point at a real OIDC provider. |
-| `server.oidc.issuer` | (empty) | **Required when enabled.** Must be a valid HTTPS URL with no query or fragment. |
-| `server.oidc.authorization_endpoint` | (empty) | The provider's authorization endpoint. |
-| `server.oidc.token_endpoint` | (empty) | The provider's token endpoint. |
-| `server.oidc.registration_endpoint` | (empty) | The provider's dynamic client registration endpoint, if supported. |
-| `server.oidc.revocation_endpoint` | (empty) | The provider's token revocation endpoint, if supported. |
-| `server.oidc.device_authorization_endpoint` | (empty) | The provider's device authorization endpoint, if supported. |
-| `server.oidc.account_management_uri` | (empty) | A user-facing account management page, if the provider offers one. |
-| `server.oidc.account_management_actions_supported` | (empty) | Comma-separated list of account-management actions the URI above supports. |
+| `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
+| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0813, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
+| `server.oauth.device_grant_enabled` | `false` | Set `true` to serve the device authorization grant (RFC 8628): `POST /_merovingian/oauth2/device`, the code page `/_merovingian/oauth2/link` and the device code grant at the token endpoint, and the metadata lists the grant type and `device_authorization_endpoint`. Off, those routes are `404 M_UNRECOGNIZED` and the grant `unsupported_grant_type`. Refused unless `server.oauth.enabled=true`. See [The device authorization grant](#the-device-authorization-grant). |
+| `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Empty, any `https` address, a loopback `http` address or a private-use scheme is accepted. See [The hand-off for legacy clients](#the-hand-off-for-legacy-clients). |
+
+The metadata offers `prompt=create` (`prompt_values_supported`) only while
+`security.registration.enabled=true`: account creation through the pages
+follows the legacy registration settings (ADR-0814).
+
+Every `server.oauth.*` key needs a restart.
+
+##### The device authorization grant
+
+With `server.oauth.device_grant_enabled=true`, a device without a usable browser
+(a television, a command-line client) can be signed in from another device
+(RFC 8628; ADR-0804 to ADR-0806). The device asks
+`POST /_merovingian/oauth2/device` for a code and shows the user a code such as
+`BCDF-GHJK` and the address `/_merovingian/oauth2/link` (or a QR code of the
+address with the code in it). The user opens it in any browser, enters the
+code, signs in with the password, and allows or denies; the device polls the
+token endpoint every 5 seconds and is signed in once the user allows. The page
+never creates an account, and warns first that a different device is being
+signed in: someone who sends a user a code is asking to be let into that
+account, so turn the grant on only if your users need it.
+
+- A code lives 10 minutes and works once.
+- At most 4096 device sign-ins are in progress at once, and 8 from one client
+  address; past either the device is answered `503 temporarily_unavailable`.
+- Five wrong codes entered from one client address in 10 minutes block that
+  address until the 10 minutes end (`429` with `Retry-After`, the right code
+  included). Behind a shared address (a carrier NAT, an office) this blocks
+  everyone there; the log line is `oauth.device.throttled`.
+- One browser at a time signs in with a code. Another browser entering it is
+  answered `409` until the first has been idle for two minutes, after which the
+  second takes over and the first can no longer answer.
+- A restart ends every device sign-in in progress.
+
+The pages and the token endpoint share the `auth_sensitive` rate limit of their
+address (20 a minute), so a device polling from the same network as the
+browser leaves about 8 requests a minute for the pages.
+
+##### The hand-off for legacy clients
+
+With `server.oauth.enabled=true` and `server.oauth.legacy_api_enabled=true` (the
+default), clients that know only the legacy API are sent to this server's own
+sign-in pages (ADR-0802). `GET /_matrix/client/v3/login` adds `m.login.sso`
+with `"oauth_aware_preferred": true`, and `m.login.token` when
+`security.login_token.enabled` did not already add it; `m.login.password` stays.
+`GET /_matrix/client/v3/login/sso/redirect` (and `/{idpId}`, whatever the ID)
+needs a `redirectUrl`:
+
+- `https://` with a host; `http://` only to `localhost`, `127.0.0.1` or
+  `[::1]`; or a private-use scheme holding a `.` (`io.element.app:/callback`).
+  Anything else, and an address `server.oauth.hand_off_redirect_allowlist`
+  does not list when it is set, gets a 400 page and no redirect.
+- `action=register` opens the registration page (when registration is open);
+  anything else the sign-in page.
+- After the password, a confirmation page names the account and where the
+  browser goes next. Continue sends the browser there with a `loginToken` that
+  works once, within 30 seconds; Cancel sends it nowhere.
+
+#### Turning the legacy API off
+
+With `server.oauth.legacy_api_enabled=false` users sign in and register only
+through the OAuth 2.0 API (ADR-0801):
+
+| Request | Answer |
+|---|---|
+| `GET /_matrix/client/v3/login` | `404 M_UNRECOGNIZED` |
+| `POST /_matrix/client/v3/login`, a user's login of any type | `404 M_UNRECOGNIZED` |
+| `POST /_matrix/client/v3/login`, `m.login.application_service` | `400 M_APPSERVICE_LOGIN_UNSUPPORTED` |
+| `POST /_matrix/client/v3/register`, a user | `403 M_FORBIDDEN` |
+| `POST /_matrix/client/v3/register`, an application service without `"inhibit_login": true` | `400 M_APPSERVICE_LOGIN_UNSUPPORTED`, nothing created |
+| `POST /_matrix/client/v3/register`, an application service with `"inhibit_login": true` | served as before |
+| `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` | `404 M_UNRECOGNIZED`; no hand-off |
+| `POST /_matrix/client/v1/login/get_token` | `404 M_UNRECOGNIZED`; `m.get_login_token` reports `enabled: false` |
+
+Unchanged: every session already issued, with `/refresh`, `/logout`,
+`/logout/all`, User-Interactive Authentication and every authenticated
+endpoint; `GET /register/available`; the registration token validity check;
+the email and phone token requests; and password reset by email. An
+application service must send `"inhibit_login": true` when it registers a
+user, and acts as its users with its `as_token`.
+
+**`server.oidc.*` is refused.** Before 1.1.0 these keys made `auth_metadata`
+advertise an external authorisation server that Merovingian could not log
+anyone in through. A configuration that still sets any `server.oidc.*` key does
+not start; the message names `server.oauth.enabled`. Delete those lines, and set
+`server.oauth.enabled=true` if you want the built-in API (ADR-0816).
 
 #### Identity Service API — `server.identity_server.*`
 
@@ -868,8 +995,8 @@ is not possible. 3PIDs are not used for login or password reset.
 Push Gateway API delivery (Matrix v1.19 push-gateway-api / CS API
 push-notifications module) is **disabled by default** — pushers can still be
 registered via `POST /pushers/set`, but no notification is ever sent to a
-gateway until `server.push.enabled=true`. This mirrors `server.oidc.enabled`'s
-pattern so merging this capability cannot start sending traffic to
+gateway until `server.push.enabled=true`. Like the other opt-in features, this
+means merging this capability cannot start sending traffic to
 client-supplied gateway URLs on upgrade.
 
 | Key | Default | When to change |
@@ -1831,7 +1958,7 @@ take effect.
 | `security.password_policy.*` | Restart required |
 | `security.password_hashing.max_concurrent` | Restart required |
 | `security.logging.*` | Reloadable |
-| `server.oidc.*` | Reloadable |
+| `server.oauth.*` | Restart required |
 | `server.sso.*` | Reloadable |
 
 `--plan-config-reload <current> <next>` compares two validated configs and
@@ -1977,15 +2104,17 @@ and cannot be selected in the config file.
 `merovingian-db-migrate` plans schema migrations without starting the runtime:
 
 ```sh
-merovingian-db-migrate --plan 0 1 --migrations migrations/
+merovingian-db-migrate --plan 1 2 --migrations migrations/
 ```
 
-The schema is at version 1 and `migrations/` holds only `001_initial_schema.sql`,
-so `--plan 0 1` is the plan that matches it. With `--migrations`, the steps come
-from the files, and the plan is rejected (exit 78) unless their versions run
-contiguously from `<current-version> + 1` to `<target-version>`; without
-`--migrations`, the plan is built from the steps this build carries. A plan to a
-version this build does not have, such as `--plan 1 2`, is rejected.
+The schema is at version 2 and `migrations/` holds `001_initial_schema.sql` and
+`002_oauth_tables.sql` (1.1.0), so `--plan 1 2` is the plan that takes a 1.0.x
+database to this release: migration 002 alone. With `--migrations`, the steps come
+from the files whose version lies between `<current-version>` (exclusive) and
+`<target-version>`, and the plan is rejected (exit 78) unless they run
+contiguously; without `--migrations`, the plan is built from the steps this build
+carries. A plan to a version this build does not have, such as `--plan 2 3`, is
+rejected.
 
 The tool only prints a plan. It takes no database URI or config file, never
 opens a database, and never changes one: it sets the migration role

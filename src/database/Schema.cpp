@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace merovingian::database
 {
@@ -16,42 +19,44 @@ namespace
 
     // Every pre-1.0 migration was collapsed into v1 in 0.12.47 (ADR-0224). From
     // 1.0.0 the v1 step is frozen: a schema change is a new numbered migration,
-    // never an edit to core_tables that changes what v1 creates.
-    constexpr auto schema_version = std::uint32_t{1U};
+    // never an edit to core_tables that changes what v1 creates. Each later
+    // version's tables and indexes are an array of their own, below core_indexes
+    // (ADR-0778).
+    constexpr auto schema_version = std::uint32_t{2U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
                               "version TEXT PRIMARY KEY, name TEXT NOT NULL, direction TEXT NOT NULL"                                                                   },
         SchemaTableDefinition{
-                              "users",                   "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, "
+                              "users",                       "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, "
                      "suspended TEXT NOT NULL, admin TEXT NOT NULL, deactivated TEXT NOT NULL DEFAULT 'false'"                    },
-        SchemaTableDefinition{"devices",                 "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, "
+        SchemaTableDefinition{"devices",                     "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, "
                                          "PRIMARY KEY (user_id, device_id)"                                                     },
         SchemaTableDefinition{
-                              "access_tokens",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, "
+                              "access_tokens",               "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, "
             "expires_at TEXT NOT NULL DEFAULT '', predecessor_refresh_hash TEXT NOT NULL DEFAULT ''"                      },
         SchemaTableDefinition{
-                              "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
+                              "refresh_tokens",              "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
             "expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT '', "
             "issued_at_ms TEXT NOT NULL DEFAULT '0'"                                                                     },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', "
-                              "expired_ts TEXT NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id)"                                                                                                       },
+                              "expired_ts TEXT NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id)"                                                                  },
         SchemaTableDefinition{
-                              "rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, directory_public TEXT NOT NULL DEFAULT 'false'"      },
+                              "rooms",                       "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, directory_public TEXT NOT NULL DEFAULT 'false'"  },
         SchemaTableDefinition{
-                              "room_aliases",            "room_alias TEXT PRIMARY KEY, room_id TEXT NOT NULL, creator_user_id TEXT NOT NULL DEFAULT ''"                 },
-        SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                              },
+                              "room_aliases",                "room_alias TEXT PRIMARY KEY, room_id TEXT NOT NULL, creator_user_id TEXT NOT NULL DEFAULT ''"             },
+        SchemaTableDefinition{"room_versions",               "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                          },
         SchemaTableDefinition{
-                              "events",                  "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT "
+                              "events",                      "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT "
             "NOT NULL, depth TEXT NOT NULL, stream_ordering TEXT NOT NULL DEFAULT '0', status TEXT NOT NULL DEFAULT "
             "'accepted'"                                                                                                         },
-        SchemaTableDefinition{"event_json",              "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"                                                                },
+        SchemaTableDefinition{"event_json",                  "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"                                                            },
         SchemaTableDefinition{
-                              "event_edges",             "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"                   },
+                              "event_edges",                 "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"               },
         SchemaTableDefinition{
-                              "event_auth",              "event_id TEXT NOT NULL, auth_event_id TEXT NOT NULL, PRIMARY KEY (event_id, auth_event_id)"                   },
+                              "event_auth",                  "event_id TEXT NOT NULL, auth_event_id TEXT NOT NULL, PRIMARY KEY (event_id, auth_event_id)"               },
         SchemaTableDefinition{"event_signatures",
                               "event_id TEXT NOT NULL, server_name TEXT NOT NULL, key_id TEXT NOT NULL, signature TEXT "
                               "NOT NULL, PRIMARY KEY (event_id, server_name, key_id)"                                                                                   },
@@ -59,7 +64,7 @@ namespace
                               "room_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, event_id TEXT "
                               "NOT NULL, PRIMARY KEY (room_id, event_type, state_key)"                                                                                  },
         SchemaTableDefinition{
-                              "state_transitions",       "room_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, event_id TEXT NOT "
+                              "state_transitions",           "room_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, event_id TEXT NOT "
             "NULL, previous_event_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (room_id, event_type, state_key, event_id)"},
         SchemaTableDefinition{"account_threepids",
                               "user_id TEXT NOT NULL, medium TEXT NOT NULL, address TEXT NOT NULL, "
@@ -68,9 +73,9 @@ namespace
                               "bound TEXT NOT NULL DEFAULT '0', client_secret TEXT NOT NULL DEFAULT '', "
                               "sid TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, medium, address)"                                                                    },
         SchemaTableDefinition{
-                              "state_groups",            "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, parent_state_group_id TEXT NOT NULL DEFAULT '', "
+                              "state_groups",                "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, parent_state_group_id TEXT NOT NULL DEFAULT '', "
             "delta_depth TEXT NOT NULL DEFAULT '0'"                                                                        },
-        SchemaTableDefinition{"state_group_edges",       "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, "
+        SchemaTableDefinition{"state_group_edges",           "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, "
                                                    "PRIMARY KEY (state_group_id, prev_state_group_id)"                },
         SchemaTableDefinition{"membership",
                               "room_id TEXT NOT NULL, user_id TEXT NOT NULL, membership TEXT NOT NULL DEFAULT 'join', "
@@ -88,33 +93,31 @@ namespace
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, stream_id TEXT "
                               "NOT NULL DEFAULT '0', json TEXT NOT NULL, PRIMARY KEY (user_id, room_id, event_type)"                                                    },
         SchemaTableDefinition{
-                              "push_rules",              "user_id TEXT NOT NULL, rule_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, rule_id)"             },
+                              "push_rules",                  "user_id TEXT NOT NULL, rule_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, rule_id)"         },
         SchemaTableDefinition{
-                              "filters",                 "user_id TEXT NOT NULL, filter_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, filter_id)"         },
-        SchemaTableDefinition{"device_keys",             "user_id TEXT NOT NULL, device_id TEXT NOT NULL, json TEXT NOT NULL, "
+                              "filters",                     "user_id TEXT NOT NULL, filter_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, filter_id)"     },
+        SchemaTableDefinition{"device_keys",                 "user_id TEXT NOT NULL, device_id TEXT NOT NULL, json TEXT NOT NULL, "
                                              "PRIMARY KEY (user_id, device_id)"                                             },
-        SchemaTableDefinition{"one_time_keys",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
+        SchemaTableDefinition{"one_time_keys",               "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
                                                "json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"             },
-        SchemaTableDefinition{"fallback_keys",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
+        SchemaTableDefinition{"fallback_keys",               "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
                                                "json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"             },
         SchemaTableDefinition{
-                              "cross_signing_keys",      "user_id TEXT NOT NULL, key_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, key_type)"           },
+                              "cross_signing_keys",          "user_id TEXT NOT NULL, key_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, key_type)"       },
         SchemaTableDefinition{
-                              "key_signatures",          "signer_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, target_device_id TEXT NOT NULL, "
+                              "key_signatures",              "signer_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, target_device_id TEXT NOT NULL, "
             "json TEXT NOT NULL, PRIMARY KEY (signer_user_id, target_user_id, target_device_id)"                         },
         SchemaTableDefinition{
-                              "key_backups",             "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"             },
+                              "key_backups",                 "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"         },
         SchemaTableDefinition{
-                              "key_backup_versions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"             },
+                              "key_backup_versions",         "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"         },
+        SchemaTableDefinition{"key_backup_version_counters", "user_id TEXT PRIMARY KEY, last_version TEXT NOT NULL"                                                     },
         SchemaTableDefinition{
-                              "key_backup_version_counters",
-                              "user_id TEXT PRIMARY KEY, last_version TEXT NOT NULL"                                                                                    },
-        SchemaTableDefinition{
-                              "key_backup_sessions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+                              "key_backup_sessions",         "user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, "
             "json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id), "
             "FOREIGN KEY (user_id, version) REFERENCES key_backup_versions (user_id, version) ON DELETE CASCADE"    },
         SchemaTableDefinition{
-                              "media",                   "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
+                              "media",                       "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
                      "NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT "
                      "NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL, legacy_endpoint_visible TEXT NOT NULL "
                      "DEFAULT 'true', upload_name TEXT NOT NULL DEFAULT ''"                                                       },
@@ -122,7 +125,7 @@ namespace
                               "storage_id TEXT PRIMARY KEY, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, "
                               "size_bytes TEXT NOT NULL, bytes BLOB NOT NULL, ref_count TEXT NOT NULL"                                                                  },
         SchemaTableDefinition{
-                              "remote_media",            "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes "
+                              "remote_media",                "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes "
             "TEXT NOT NULL, quarantined TEXT NOT NULL, local_media_id TEXT NOT NULL DEFAULT '', fetched_at_ms "
             "TEXT NOT NULL DEFAULT '0', PRIMARY KEY (server_name, media_id)"                                               },
         SchemaTableDefinition{"federation_destinations",
@@ -133,11 +136,12 @@ namespace
                               "method TEXT NOT NULL, target TEXT NOT NULL, origin TEXT NOT NULL, "
                               "origin_server_ts TEXT NOT NULL, body TEXT NOT NULL, retry_count TEXT NOT NULL, "
                               "next_retry_ts TEXT NOT NULL"                                                                                                             },
-        SchemaTableDefinition{"rate_limits",             "scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts "
+        SchemaTableDefinition{"rate_limits",                 "scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts "
                                              "TEXT NOT NULL, PRIMARY KEY (scope, key)"                                      },
-        SchemaTableDefinition{"audit_log",               "category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, "
-                                           "target TEXT NOT NULL, reason TEXT NOT NULL, created_at_ms TEXT NOT NULL DEFAULT '0'"},
-        SchemaTableDefinition{"policy_rules",            "rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, entity TEXT NOT NULL, "
+        SchemaTableDefinition{"audit_log",
+                              "category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, "
+                              "target TEXT NOT NULL, reason TEXT NOT NULL, created_at_ms TEXT NOT NULL DEFAULT '0'"                                                     },
+        SchemaTableDefinition{"policy_rules",                "rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, entity TEXT NOT NULL, "
                                               "action TEXT NOT NULL, reason TEXT NOT NULL"                                 },
         SchemaTableDefinition{"admin_actions",
                               "admin_user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL"                                                                 },
@@ -155,18 +159,19 @@ namespace
                               "DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago TEXT NOT NULL "
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                             },
         SchemaTableDefinition{
-                              "sync_stream_watermark",   "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                     },
+                              "sync_stream_watermark",       "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                 },
         SchemaTableDefinition{
-                              "event_stream_watermark",  "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                     },
+                              "event_stream_watermark",      "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                 },
         SchemaTableDefinition{"stream_token_epoch",
-                              "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), epoch TEXT NOT NULL"},
-        SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
-                                          "avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}'"                                                },
+                              "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), epoch TEXT NOT NULL"                                                                },
+        SchemaTableDefinition{"profiles",
+                              "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
+                              "avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}'"                                                             },
         SchemaTableDefinition{"client_txn_ids",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
                               "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', "
                               "created_at_ms TEXT NOT NULL DEFAULT '0', "
-                              "PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id)"                                                                                      },
+                              "PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id)"                                                                           },
         SchemaTableDefinition{"pushers",
                               "user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, "
                               "kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', "
@@ -180,7 +185,7 @@ namespace
                               "stream_ordering TEXT NOT NULL DEFAULT '0', ts TEXT NOT NULL DEFAULT '0', "
                               "actions TEXT NOT NULL DEFAULT '[]', profile_tag TEXT NOT NULL DEFAULT '', "
                               "highlight TEXT NOT NULL DEFAULT 'false', PRIMARY KEY (user_id, event_id)"                                                                },
-        SchemaTableDefinition{"openid_tokens",           "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, "
+        SchemaTableDefinition{"openid_tokens",               "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, "
                                                "expires_at TEXT NOT NULL DEFAULT '0'"                                     },
         SchemaTableDefinition{"login_tokens",
                               "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL "
@@ -196,7 +201,7 @@ namespace
                               "event_id TEXT NOT NULL, PRIMARY KEY (state_group_id, event_type, state_key)"                                                             },
         // ADR-0064: maps an event to the state group holding the
         // room's state immediately after it.
-        SchemaTableDefinition{"event_state_groups",      "event_id TEXT PRIMARY KEY, state_group_id TEXT NOT NULL"                                                      },
+        SchemaTableDefinition{"event_state_groups",          "event_id TEXT PRIMARY KEY, state_group_id TEXT NOT NULL"                                                  },
         // ADR-0064: a room's current forward extremities (DAG leaves).
         SchemaTableDefinition{"forward_extremities",
                               "room_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_id)"                                                          },
@@ -215,7 +220,7 @@ namespace
         // unthreaded receipt has thread_id ''. Numbers are TEXT like every other
         // numeric column here.
         SchemaTableDefinition{
-                              "receipts",                "room_id TEXT NOT NULL, receipt_type TEXT NOT NULL, user_id TEXT NOT NULL, "
+                              "receipts",                    "room_id TEXT NOT NULL, receipt_type TEXT NOT NULL, user_id TEXT NOT NULL, "
                         "thread_id TEXT NOT NULL DEFAULT '', event_id TEXT NOT NULL, ts TEXT NOT NULL DEFAULT '0', "
                         "stream_id TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, receipt_type, user_id, thread_id)"         },
         // ADR-0192: a room an appservice published to the directory of one of its networks.
@@ -237,26 +242,59 @@ namespace
     // `room_id` alone (ADR-0490), and the credential tables' per-device and per-predecessor revocations (F-08):
     // their WHERE clauses name `user_id`, `device_id` and `predecessor_hash`; `token_hash` is the primary key.
     constexpr auto core_indexes = std::array{
-        SchemaIndexDefinition{"event_edges_prev_event_id",            "event_edges",           "prev_event_id"},
+        SchemaIndexDefinition{"event_edges_prev_event_id",            "event_edges",           "prev_event_id"     },
         SchemaIndexDefinition{"idx_to_device_messages_recipient_age", "to_device_messages",
-                              "target_user_id, target_device_id, created_at_ms"                               },
-        SchemaIndexDefinition{"idx_deferred_pdus_room_id",            "deferred_pdus",         "room_id"      },
-        SchemaIndexDefinition{"idx_media_pending_uploads_owner",      "media_pending_uploads", "owner_user_id"},
-        SchemaIndexDefinition{"idx_events_room_id",                   "events",                "room_id"      },
-        SchemaIndexDefinition{"idx_state_groups_room_id",             "state_groups",          "room_id"      },
+                              "target_user_id, target_device_id, created_at_ms"                                    },
+        SchemaIndexDefinition{"idx_deferred_pdus_room_id",            "deferred_pdus",         "room_id"           },
+        SchemaIndexDefinition{"idx_media_pending_uploads_owner",      "media_pending_uploads", "owner_user_id"     },
+        SchemaIndexDefinition{"idx_events_room_id",                   "events",                "room_id"           },
+        SchemaIndexDefinition{"idx_state_groups_room_id",             "state_groups",          "room_id"           },
         SchemaIndexDefinition{"idx_access_tokens_user_device",        "access_tokens",         "user_id, device_id"},
         SchemaIndexDefinition{"idx_refresh_tokens_user_device",       "refresh_tokens",        "user_id, device_id"},
-        SchemaIndexDefinition{"idx_refresh_tokens_predecessor",       "refresh_tokens",        "predecessor_hash"},
+        SchemaIndexDefinition{"idx_refresh_tokens_predecessor",       "refresh_tokens",        "predecessor_hash"  },
     };
+
+    // Migration 002 (ADR-0776): the OAuth 2.0 API's tables. Numbers are TEXT like
+    // every other numeric column here. No foreign key: the token tables do not
+    // reference `devices` either, and the store keeps both rules in code (a
+    // session names a held client; a client with a session is never deleted).
+    constexpr auto oauth_tables = std::array{
+        SchemaTableDefinition{"oauth_clients",
+                              "client_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, created_at_ms TEXT NOT NULL, "
+                              "last_used_at_ms TEXT NOT NULL"                                                     },
+        SchemaTableDefinition{"oauth_sessions",
+                              "user_id TEXT NOT NULL, device_id TEXT NOT NULL, client_id TEXT NOT NULL, "
+                              "scope TEXT NOT NULL, created_at_ms TEXT NOT NULL, PRIMARY KEY (user_id, device_id)"},
+    };
+
+    // The store answers "does this client have a session" from memory; the
+    // index keeps a lookup of a client's sessions in the database itself (an
+    // operator's query, a later reader) from scanning the table.
+    constexpr auto oauth_indexes = std::array{
+        SchemaIndexDefinition{"idx_oauth_sessions_client_id", "oauth_sessions", "client_id"},
+    };
+
+    template <typename Definition, std::size_t Size>
+    auto append_all(std::vector<Definition>& into, std::array<Definition, Size> const& from) -> void
+    {
+        into.insert(into.end(), from.begin(), from.end());
+    }
+
+    [[nodiscard]] auto index_is_registered(SchemaIndexDefinition const& index) -> bool
+    {
+        auto const same = [&index](SchemaIndexDefinition const& known) {
+            return known.name == index.name && known.table == index.table && known.columns_sql == index.columns_sql;
+        };
+        return std::ranges::any_of(core_indexes, same) || std::ranges::any_of(oauth_indexes, same);
+    }
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)
         -> std::optional<std::string>
     {
-        // Only registered indexes on core tables may participate in generated
-        // DDL; names are checked against the same identifier rule as tables.
-        auto const registered = std::ranges::any_of(core_indexes, [&index](SchemaIndexDefinition const& known) {
-            return known.name == index.name && known.table == index.table && known.columns_sql == index.columns_sql;
-        });
+        // Only registered indexes on tables of the current schema may
+        // participate in generated DDL; names are checked against the same
+        // identifier rule as tables.
+        auto const registered = index_is_registered(index);
         if (!registered || !schema_table_is_core(index.table) || !quote_sqlite_identifier(index.name).has_value() ||
             !quote_sqlite_identifier(index.table).has_value())
         {
@@ -273,30 +311,75 @@ auto current_schema_version() noexcept -> std::uint32_t
     return schema_version;
 }
 
-// While v1 is the only version, the shape v1 creates is the current one. The
-// first post-1.0 migration must split them again: initial_* keeps returning
-// exactly what v1 created (migrations/001_initial_schema.sql is that record),
-// and only current_* gains what the later migration adds.
+// The schema split (ADR-0778): each version's own tables and indexes are one
+// array. initial_* is exactly what v1 created (migrations/001_initial_schema.sql
+// is that record, and the bootstraps build only it); current_* is every version
+// up to current_schema_version() in order, which a fresh database reaches by
+// the same later steps as a migrated v1 database.
+auto schema_definitions_added_by(std::uint32_t version) -> std::vector<SchemaTableDefinition>
+{
+    auto tables = std::vector<SchemaTableDefinition>{};
+    if (version == 1U)
+    {
+        append_all(tables, core_tables);
+    }
+    else if (version == 2U)
+    {
+        append_all(tables, oauth_tables);
+    }
+    return tables;
+}
+
+auto schema_indexes_added_by(std::uint32_t version) -> std::vector<SchemaIndexDefinition>
+{
+    auto indexes = std::vector<SchemaIndexDefinition>{};
+    if (version == 1U)
+    {
+        append_all(indexes, core_indexes);
+    }
+    else if (version == 2U)
+    {
+        append_all(indexes, oauth_indexes);
+    }
+    return indexes;
+}
+
 auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
-    return {core_tables.begin(), core_tables.end()};
+    return schema_definitions_added_by(1U);
 }
 
 auto current_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
-    return {core_tables.begin(), core_tables.end()};
+    auto tables = std::vector<SchemaTableDefinition>{};
+    for (auto version = std::uint32_t{1U}; version <= schema_version; ++version)
+    {
+        auto added = schema_definitions_added_by(version);
+        tables.insert(tables.end(), added.begin(), added.end());
+    }
+    return tables;
 }
 
 auto initial_schema_indexes() -> std::vector<SchemaIndexDefinition>
 {
-    return {core_indexes.begin(), core_indexes.end()};
+    return schema_indexes_added_by(1U);
+}
+
+auto current_schema_indexes() -> std::vector<SchemaIndexDefinition>
+{
+    auto indexes = std::vector<SchemaIndexDefinition>{};
+    for (auto version = std::uint32_t{1U}; version <= schema_version; ++version)
+    {
+        auto added = schema_indexes_added_by(version);
+        indexes.insert(indexes.end(), added.begin(), added.end());
+    }
+    return indexes;
 }
 
 auto initial_schema_tables() -> std::vector<std::string_view>
 {
     auto tables = std::vector<std::string_view>{};
-    tables.reserve(core_tables.size());
-    for (auto const& table : core_tables)
+    for (auto const& table : initial_schema_definitions())
     {
         tables.push_back(table.name);
     }
@@ -306,8 +389,7 @@ auto initial_schema_tables() -> std::vector<std::string_view>
 auto current_schema_tables() -> std::vector<std::string_view>
 {
     auto tables = std::vector<std::string_view>{};
-    tables.reserve(core_tables.size());
-    for (auto const& table : core_tables)
+    for (auto const& table : current_schema_definitions())
     {
         tables.push_back(table.name);
     }
@@ -316,10 +398,18 @@ auto current_schema_tables() -> std::vector<std::string_view>
 
 auto schema_table_definition(std::string_view table_name) noexcept -> std::optional<SchemaTableDefinition>
 {
-    auto const iterator = std::ranges::find_if(core_tables, [table_name](SchemaTableDefinition const& table) {
+    auto const named = [table_name](SchemaTableDefinition const& table) {
         return table.name == table_name;
-    });
-    return iterator == core_tables.end() ? std::nullopt : std::optional<SchemaTableDefinition>{*iterator};
+    };
+    if (auto const core = std::ranges::find_if(core_tables, named); core != core_tables.end())
+    {
+        return *core;
+    }
+    if (auto const oauth = std::ranges::find_if(oauth_tables, named); oauth != oauth_tables.end())
+    {
+        return *oauth;
+    }
+    return std::nullopt;
 }
 
 auto schema_table_is_core(std::string_view table_name) noexcept -> bool

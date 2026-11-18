@@ -13,11 +13,18 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/OAuthClientStoreResult.hpp"
+#include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/PersistentOAuthClient.hpp"
+#include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/AuthorizationGrant.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/PendingAuthorisation.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
@@ -31,6 +38,8 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
+#include <vector>
 
 namespace
 {
@@ -336,6 +345,273 @@ SCENARIO("One audit deletion batch never deletes more rows than its limit", "[in
             THEN("exactly 150 remain, and a row stamped 0 is never touched")
             {
                 REQUIRE(durable_row_count(database.path(), "audit_log", "event_type = 'test.batch'") == 150);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto oauth_client_at(std::string id, std::chrono::system_clock::time_point at)
+    -> merovingian::database::PersistentOAuthClient
+{
+    auto const at_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(at.time_since_epoch()).count());
+    return {std::move(id), R"({"client_name":"Example"})", at_ms, at_ms};
+}
+
+[[nodiscard]] auto oauth_session_of(std::string user_id, std::string device_id, std::string client_id)
+    -> merovingian::database::PersistentOAuthSession
+{
+    return {std::move(user_id), std::move(device_id), std::move(client_id), "urn:matrix:client:api:*", 1000U};
+}
+
+} // namespace
+
+SCENARIO("The retention sweep deletes OAuth clients unused for 30 days, never one with a session",
+         "[integration][sqlite][retention][oauth]")
+{
+    GIVEN("a client unused for 31 days, one unused as long that holds a session, and one used 29 days ago")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto database = TemporarySqliteDatabase{};
+        auto started = merovingian::homeserver::start_runtime(sqlite_config(database.path(), 365U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& persistent = runtime.database.persistent_store;
+        auto const registration = merovingian::homeserver::register_local_user(
+            runtime, "alice", "CorrectHorse7!Battery", merovingian::tests::registration_token);
+        REQUIRE(registration.ok);
+        auto const user_id = std::string{registration.value};
+        REQUIRE(merovingian::homeserver::login_local_user(runtime, user_id, "CorrectHorse7!Battery", "OAUTHDEV").ok);
+
+        auto const now = std::chrono::system_clock::now();
+        auto const now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+        auto const day = std::chrono::hours{24};
+        REQUIRE(merovingian::database::store_oauth_client(persistent, oauth_client_at("old-idle", now - (31 * day))) ==
+                merovingian::database::OAuthClientStoreResult::inserted);
+        REQUIRE(merovingian::database::store_oauth_client(persistent, oauth_client_at("old-held", now - (31 * day))) ==
+                merovingian::database::OAuthClientStoreResult::inserted);
+        REQUIRE(
+            merovingian::database::store_oauth_client(persistent, oauth_client_at("recent-idle", now - (29 * day))) ==
+            merovingian::database::OAuthClientStoreResult::inserted);
+        REQUIRE(
+            merovingian::database::store_oauth_session(persistent, oauth_session_of(user_id, "OAUTHDEV", "old-held")));
+
+        WHEN("the retention sweep runs")
+        {
+            auto const next = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+
+            THEN("only the sessionless client past 30 days is deleted, from the database and from memory")
+            {
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-idle'") == 0);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-held'") == 1);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'recent-idle'") == 1);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-idle") == nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-held") != nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "recent-idle") != nullptr);
+                REQUIRE(next == merovingian::homeserver::retention_sweep_interval);
+            }
+
+            AND_THEN("no pending authorisation or code names a client")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "recent-idle", now_ms));
+            }
+        }
+
+        WHEN("a pending authorisation names the idle client and an unredeemed code another, and the sweep runs")
+        {
+            auto authorisation = merovingian::homeserver::PendingAuthorisation{};
+            authorisation.client_id = "old-idle";
+            REQUIRE(std::holds_alternative<std::string>(runtime.oauth_pending_authorisations.create(
+                std::move(authorisation), "browser-token", "198.51.100.7", now_ms)));
+            REQUIRE(
+                merovingian::database::store_oauth_client(persistent, oauth_client_at("old-coded", now - (31 * day))) ==
+                merovingian::database::OAuthClientStoreResult::inserted);
+            auto grant = merovingian::homeserver::AuthorizationGrant{};
+            grant.client_id = "old-coded";
+            REQUIRE(std::holds_alternative<std::string>(runtime.oauth_codes.issue(std::move(grant), now_ms)));
+            REQUIRE(merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-idle", now_ms));
+            REQUIRE(merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-coded", now_ms));
+            std::ignore = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+
+            THEN("both clients are kept")
+            {
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-idle") != nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-idle'") == 1);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-coded") != nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-coded'") == 1);
+            }
+
+            AND_THEN("once the authorisation's ten minutes are over, the seam answers false for that client")
+            {
+                auto const expired_ms = now_ms + merovingian::homeserver::PendingAuthorisationStore::lifetime_ms;
+                REQUIRE_FALSE(
+                    merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-idle", expired_ms));
+            }
+        }
+    }
+}
+
+SCENARIO("The OAuth client sweep deletes at most 500 clients per transaction",
+         "[integration][sqlite][retention][oauth]")
+{
+    GIVEN("1001 clients unused for 40 days")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto database = TemporarySqliteDatabase{};
+        auto started = merovingian::homeserver::start_runtime(sqlite_config(database.path(), 365U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& persistent = runtime.database.persistent_store;
+        auto const now = std::chrono::system_clock::now();
+        for (auto index = 0; index < 1001; ++index)
+        {
+            REQUIRE(merovingian::database::store_oauth_client(
+                        persistent, oauth_client_at("client-" + std::to_string(index),
+                                                    now - std::chrono::hours{24 * 40} + std::chrono::seconds{index})) ==
+                    merovingian::database::OAuthClientStoreResult::inserted);
+        }
+
+        WHEN("the retention sweep runs")
+        {
+            auto const before = merovingian::database::committed_transaction_count(persistent);
+            std::ignore = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+            auto const transactions = merovingian::database::committed_transaction_count(persistent) - before;
+
+            THEN("every client goes, in three transactions of at most 500")
+            {
+                REQUIRE(durable_row_count(database.path(), "oauth_clients") == 0);
+                REQUIRE(merovingian::database::oauth_client_count(persistent) == 0U);
+                REQUIRE(transactions == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("Every way a device is deleted deletes its OAuth session row", "[integration][sqlite][oauth][device]")
+{
+    GIVEN("alice with four OAuth devices, each holding a session")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto database = TemporarySqliteDatabase{};
+        auto started = merovingian::homeserver::start_runtime(sqlite_config(database.path(), 365U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& persistent = runtime.database.persistent_store;
+        auto const registration = merovingian::homeserver::register_local_user(
+            runtime, "alice", "CorrectHorse7!Battery", merovingian::tests::registration_token);
+        REQUIRE(registration.ok);
+        auto const user_id = std::string{registration.value};
+        REQUIRE(merovingian::database::store_oauth_client(
+                    persistent, oauth_client_at("client-a", std::chrono::system_clock::now())) ==
+                merovingian::database::OAuthClientStoreResult::inserted);
+        auto tokens = std::vector<std::string>{};
+        for (auto const* device : {"DEVA", "DEVB", "DEVC", "DEVD"})
+        {
+            auto const login =
+                merovingian::homeserver::login_local_user(runtime, user_id, "CorrectHorse7!Battery", device);
+            REQUIRE(login.ok);
+            tokens.emplace_back(login.value);
+            REQUIRE(
+                merovingian::database::store_oauth_session(persistent, oauth_session_of(user_id, device, "client-a")));
+        }
+        auto const session_rows = [&database](std::string const& device) {
+            return durable_row_count(database.path(), "oauth_sessions", "device_id = '" + device + "'");
+        };
+        REQUIRE(session_rows("DEVA") == 1);
+
+        WHEN("DEVA logs out, DEVD is deleted through the device API, then DEVB logs out everywhere")
+        {
+            REQUIRE(merovingian::homeserver::logout_local_user(runtime, tokens[0]).ok);
+            auto const after_logout_a = session_rows("DEVA");
+            auto const b_after_logout_a = session_rows("DEVB");
+            REQUIRE(merovingian::homeserver::delete_local_device(runtime, user_id, "DEVD").ok);
+            auto const after_delete_d = session_rows("DEVD");
+            REQUIRE(merovingian::homeserver::logout_all_local_user(runtime, tokens[1]).ok);
+
+            THEN("each removed device's session row is gone from the database and from memory, and the client "
+                 "is then sessionless")
+            {
+                REQUIRE(after_logout_a == 0);
+                REQUIRE(b_after_logout_a == 1);
+                REQUIRE(after_delete_d == 0);
+                REQUIRE(durable_row_count(database.path(), "oauth_sessions") == 0);
+                REQUIRE(merovingian::database::oauth_sessions_of_user(persistent, user_id).empty());
+                REQUIRE_FALSE(merovingian::database::oauth_client_has_session(persistent, "client-a"));
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'client-a'") == 1);
+            }
+        }
+    }
+}
+
+SCENARIO("The retention sweep deletes an OAuth session row once its device holds no live token",
+         "[integration][sqlite][retention][oauth][oauth-session-end]")
+{
+    GIVEN("two clients unused for 31 days, one session whose refresh token expires in an hour, one in 90 days")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto database = TemporarySqliteDatabase{};
+        auto started = merovingian::homeserver::start_runtime(sqlite_config(database.path(), 365U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& persistent = runtime.database.persistent_store;
+        auto const registration = merovingian::homeserver::register_local_user(
+            runtime, "alice", "CorrectHorse7!Battery", merovingian::tests::registration_token);
+        REQUIRE(registration.ok);
+        auto const user_id = std::string{registration.value};
+        auto const now = std::chrono::system_clock::now();
+        auto const day = std::chrono::hours{24};
+        auto const add_session = [&](std::string const& device, std::string const& client,
+                                     std::chrono::system_clock::time_point refresh_expires_at) {
+            REQUIRE(merovingian::database::store_oauth_client(persistent, oauth_client_at(client, now - (31 * day))) ==
+                    merovingian::database::OAuthClientStoreResult::inserted);
+            REQUIRE(merovingian::database::store_oauth_session(persistent, oauth_session_of(user_id, device, client)));
+            REQUIRE(merovingian::database::store_access_token(
+                persistent, {user_id, device, "token-hash:v4:access-" + device, false, now + std::chrono::minutes{5}}));
+            REQUIRE(merovingian::database::store_refresh_token(
+                persistent, {user_id, device, "token-hash:v4:refresh-" + device, false, refresh_expires_at}));
+        };
+        add_session("DEVENDING", "client-ending", now + std::chrono::hours{1});
+        add_session("DEVLIVE", "client-live", now + (90 * day));
+        auto const session_rows = [&database](std::string const& device) {
+            return durable_row_count(database.path(), "oauth_sessions", "device_id = '" + device + "'");
+        };
+
+        WHEN("the sweep runs while both refresh tokens are live")
+        {
+            std::ignore = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+
+            THEN("both sessions and both clients are kept")
+            {
+                REQUIRE(session_rows("DEVENDING") == 1);
+                REQUIRE(session_rows("DEVLIVE") == 1);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-ending") != nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-live") != nullptr);
+            }
+        }
+
+        WHEN("the sweep runs two hours later, when one refresh token has expired")
+        {
+            std::ignore =
+                merovingian::homeserver::run_retention_sweep(runtime, now + std::chrono::hours{2}, never_stopped);
+
+            THEN("that session's row goes, from the database and from memory, and its client goes with it")
+            {
+                REQUIRE(session_rows("DEVENDING") == 0);
+                REQUIRE(merovingian::database::find_oauth_session(persistent, user_id, "DEVENDING") == nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'client-ending'") == 0);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-ending") == nullptr);
+            }
+
+            THEN("the session whose refresh token is live, and its client, are kept")
+            {
+                REQUIRE(session_rows("DEVLIVE") == 1);
+                REQUIRE(merovingian::database::find_oauth_session(persistent, user_id, "DEVLIVE") != nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-live") != nullptr);
             }
         }
     }

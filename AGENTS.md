@@ -191,7 +191,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 ```
 ├── include/merovingian/   # Public headers (same module dirs as src/)
 │   ├── appservice/        #   Application Service registration, namespaces, outbound client
-│   ├── auth/              #   Password hashing, session tokens, identity, key API, OIDC discovery
+│   ├── auth/              #   Password hashing, session tokens, identity, key API
 │   ├── bootstrap/         #   Process exit codes (header-only)
 │   ├── canonicaljson/     #   Canonical JSON (value, parser, serializer, signable)
 │   ├── config/            #   Config model, parser, runtime config, reload plan/policy
@@ -208,6 +208,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 │   ├── ipc/               #   Authenticated, encrypted AF_UNIX channel between main process and federation worker
 │   ├── media/             #   Media repository, MIME/quarantine security, sandboxed thumbnailer
 │   ├── net/               #   Listener, TCP acceptor, thread pool, shutdown signal
+│   ├── oauth/             #   OAuth 2.0 API: PKCE, scope, URI reader, redirect URI and client metadata rules, page renderer, base URL, server metadata, hand-off allowlist
 │   ├── observability/     #   Logger, observability
 │   ├── platform/          #   Runtime hardening, seccomp, ELF probe, file metadata, self-check
 │   ├── push/              #   Push rules evaluation, push gateway client
@@ -223,7 +224,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 │   ├── smoke/             #   Smoke tests
 │   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
-│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; no cross-release database fixture until 1.1)
+│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; the 1.0.x cross-release database fixture is not generated yet, the build VM has no PostgreSQL server)
 │   ├── support/           #   Test helpers (JsonTestSupport, MasterKey, RegistrationToken, TempDirectory, TlsMockServer)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
 │   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter
@@ -276,6 +277,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/ipc/AGENTS.md` | Worker IPC: authenticated handshake, AEAD framing, reader/dispatch thread split |
 | `src/media/AGENTS.md` | Media: internal pipe format, MIME policy, quarantine, thumbnail worker |
 | `src/net/AGENTS.md` | Network: TCP acceptor, thread pool, graceful shutdown, CLOEXEC |
+| `src/oauth/AGENTS.md` | OAuth 2.0: pure validators, strict URI reader, byte-exact redirect matching, escaped-by-type page renderer |
 | `src/observability/AGENTS.md` | Logging: level policy, audit events, secret redaction |
 | `src/platform/AGENTS.md` | Platform hardening: seccomp, pledge/Capsicum, ELF probe, self-check, file metadata safety |
 | `src/push/AGENTS.md` | Push: pure rule evaluation, gateway SSRF and URL rules, delivery caps |

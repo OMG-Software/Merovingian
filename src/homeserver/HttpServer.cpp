@@ -5,6 +5,8 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
+#include "merovingian/core/CurrentException.hpp"
+#include "merovingian/core/Error.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/PersistentStore.hpp"
@@ -40,6 +42,7 @@
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/http/RequestHead.hpp"
 #include "merovingian/http/RequestLimits.hpp"
+#include "merovingian/http/ResponseHead.hpp"
 #include "merovingian/net/ConnectionParker.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/Observability.hpp"
@@ -48,6 +51,13 @@
 #include "merovingian/sync/ParkedPoll.hpp"
 #include "merovingian/sync/ParkedPollLimits.hpp"
 #include "merovingian/sync/WakeReason.hpp"
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -67,18 +77,8 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
-
-#if __has_include(<cxxabi.h>) && defined(__GNUC__)
-#include <cxxabi.h>
-#endif
-
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace merovingian::homeserver
 {
@@ -134,19 +134,10 @@ namespace
 
     // C2: the three swallowed-exception sites in this file (sync wait, sync
     // pool dispatch, dispatch_local_http_request) previously logged only
-    // {"reason":"exception"}. Capture the mangled type and the std::exception
-    // message so a postmortem can identify the throwing site. The mangled
-    // name is intentionally not demangled here so the helper stays portable
-    // across libstdc++ / libc++ / MSVC.
-    [[nodiscard]] auto current_exception_type_name() noexcept -> char const*
-    {
-#if __has_include(<cxxabi.h>) && defined(__GNUC__)
-        auto const* type = abi::__cxa_current_exception_type();
-        return type == nullptr ? "unknown" : type->name();
-#else
-        return "unknown";
-#endif
-    }
+    // {"reason":"exception"}. Capture the mangled type
+    // (core::current_exception_type_name) and the std::exception message so a
+    // postmortem can identify the throwing site.
+    using core::current_exception_type_name;
 
     [[nodiscard]] auto current_exception_message() noexcept -> std::string
     {
@@ -668,123 +659,61 @@ namespace
         return {std::move(body), {}, true};
     }
 
-    [[nodiscard]] auto reason_phrase(std::uint16_t status) noexcept -> char const*
+    // A formatted head (or whole response), or the fixed 500 that replaces it when http::format_response_head refused
+    // the handler's status or headers (ADR-0767). `refused` tells the writer to close the connection afterwards.
+    struct FormattedResponse final
     {
-        switch (status)
+        std::string text{};
+        bool refused{false};
+    };
+
+    // The fixed answer to a refused head: no handler header and Connection: close. Its own inputs are constant, so
+    // the formatter cannot refuse them; the literal below is a last resort that is never expected to be used.
+    [[nodiscard]] auto refused_response(std::string_view reason) -> FormattedResponse
+    {
+        log_diagnostic("response.head_refused",
+                       {
+                           {"reason", std::string{reason}, false}
+        },
+                       observability::LogEventSeverity::error);
+        auto formatted = http::format_response(500U, R"({"errcode":"M_UNKNOWN","error":"internal server error"})", {},
+                                               http::ConnectionPreference::close, 0U);
+        if (auto* text = std::get_if<std::string>(&formatted))
         {
-        case 200U:
-            return "OK";
-        case 400U:
-            return "Bad Request";
-        case 401U:
-            return "Unauthorized";
-        case 403U:
-            return "Forbidden";
-        case 404U:
-            return "Not Found";
-        case 405U:
-            return "Method Not Allowed";
-        case 408U:
-            return "Request Timeout";
-        case 413U:
-            return "Payload Too Large";
-        case 429U:
-            return "Too Many Requests";
-        case 500U:
-            return "Internal Server Error";
-        case 501U:
-            return "Not Implemented";
-        case 502U:
-            return "Bad Gateway";
-        case 503U:
-            return "Service Unavailable";
-        default:
-            return "OK";
+            return {std::move(*text), true};
         }
+        return {"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", true};
     }
 
-    // Formats a full HTTP/1.1 response. `connection` selects the framing
-    // declaration: keep_alive announces a persistent connection and adds the
-    // Keep-Alive timeout hint so clients know how long the server will hold
-    // the connection idle (RFC 9110 §7.6.1 connection tokens; the hint header
-    // itself is non-standard but universally understood). Error responses and
-    // every path that keeps today's one-request-per-connection behaviour use
-    // the default `close`.
-    //
-    // The head is formatted for a body of `body_length` bytes (ADR-0574: a streamed body is not in memory, so its
-    // length is given); format_response appends the body.
-    [[nodiscard]] auto format_response_head(std::uint16_t status, std::uint64_t body_length,
-                                            std::vector<std::pair<std::string, std::string>> const& headers,
-                                            http::ConnectionPreference connection,
-                                            std::uint32_t keep_alive_timeout_seconds) -> std::string
-    {
-        auto response = std::string{};
-        response.reserve(128U + 256U * headers.size());
-        response.append("HTTP/1.1 ");
-        response.append(std::to_string(status));
-        response.push_back(' ');
-        response.append(reason_phrase(status));
-        // Per-response headers (CORS preflight, Vary: Origin) come first so
-        // the browser sees them before Content-Length/Content-Type. Defaulted
-        // to empty for the few synthetic responses that carry no metadata.
-        auto has_nosniff = false;
-        auto content_type = std::string{"application/json"};
-        for (auto const& header : headers)
-        {
-            if (!http::header_name_is_valid(header.first) || !http::header_value_is_valid(header.second))
-            {
-                continue;
-            }
-            if (header.first == "X-Content-Type-Options" && header.second == "nosniff")
-            {
-                has_nosniff = true;
-            }
-            if (header.first == "Content-Type")
-            {
-                content_type = header.second;
-                continue;
-            }
-            response.append("\r\n");
-            response.append(header.first);
-            response.append(": ");
-            response.append(header.second);
-        }
-        if (!has_nosniff)
-        {
-            response.append("\r\nX-Content-Type-Options: nosniff");
-        }
-        response.append("\r\nContent-Length: ");
-        response.append(std::to_string(body_length));
-        if (content_type.empty())
-        {
-            content_type = "application/json";
-        }
-        response.append("\r\nContent-Type: ");
-        response.append(content_type);
-        if (connection == http::ConnectionPreference::keep_alive)
-        {
-            response.append("\r\nConnection: keep-alive");
-            // Hint, not a promise: the server still closes early when the
-            // parked-connection cap is reached or shutdown begins.
-            response.append("\r\nKeep-Alive: timeout=");
-            response.append(std::to_string(keep_alive_timeout_seconds));
-        }
-        else
-        {
-            response.append("\r\nConnection: close");
-        }
-        response.append("\r\n\r\n");
-        return response;
-    }
-
-    [[nodiscard]] auto format_response(std::uint16_t status, std::string_view body,
+    // Formats a full HTTP/1.1 response (http/ResponseHead.hpp). `connection` selects the framing declaration:
+    // keep_alive announces a persistent connection and adds the Keep-Alive timeout hint; error responses and every
+    // path that keeps one request per connection use the default `close`.
+    [[nodiscard]] auto format_for_wire(std::uint16_t status, std::string_view body,
                                        std::vector<std::pair<std::string, std::string>> const& headers = {},
                                        http::ConnectionPreference connection = http::ConnectionPreference::close,
-                                       std::uint32_t keep_alive_timeout_seconds = 0U) -> std::string
+                                       std::uint32_t keep_alive_timeout_seconds = 0U) -> FormattedResponse
     {
-        auto response = format_response_head(status, body.size(), headers, connection, keep_alive_timeout_seconds);
-        response.append(body);
-        return response;
+        auto formatted = http::format_response(status, body, headers, connection, keep_alive_timeout_seconds);
+        if (auto* text = std::get_if<std::string>(&formatted))
+        {
+            return {std::move(*text), false};
+        }
+        return refused_response(std::get<core::Error>(formatted).message());
+    }
+
+    // The head alone, for a body of `body_length` bytes that is not in memory (ADR-0574).
+    [[nodiscard]] auto format_head_for_wire(std::uint16_t status, std::uint64_t body_length,
+                                            std::vector<std::pair<std::string, std::string>> const& headers,
+                                            http::ConnectionPreference connection,
+                                            std::uint32_t keep_alive_timeout_seconds) -> FormattedResponse
+    {
+        auto formatted =
+            http::format_response_head(status, body_length, headers, connection, keep_alive_timeout_seconds);
+        if (auto* text = std::get_if<std::string>(&formatted))
+        {
+            return {std::move(*text), false};
+        }
+        return refused_response(std::get<core::Error>(formatted).message());
     }
 
     auto send_all(ConnectionStream& stream, std::string_view data) noexcept -> bool
@@ -819,13 +748,17 @@ namespace
     {
         if (!response.body_stream.has_value())
         {
-            return send_all(stream, format_response(response.status, response.body, response.headers, connection,
-                                                    keep_alive_timeout_seconds));
+            auto const formatted = format_for_wire(response.status, response.body, response.headers, connection,
+                                                   keep_alive_timeout_seconds);
+            // A refused head was answered with a 500 that says Connection: close, so the connection is not kept.
+            return send_all(stream, formatted.text) && !formatted.refused;
         }
         auto const& source = *response.body_stream;
-        if (!send_all(stream, format_response_head(response.status, source.size_bytes, response.headers, connection,
-                                                   keep_alive_timeout_seconds)))
+        auto const head = format_head_for_wire(response.status, source.size_bytes, response.headers, connection,
+                                               keep_alive_timeout_seconds);
+        if (!send_all(stream, head.text) || head.refused)
         {
+            // Refused: the 500 went out instead of the head, and the streamed body is not sent.
             return false;
         }
         auto const result = write_streamed_body(
@@ -1107,8 +1040,8 @@ namespace
     auto write_error_response(ConnectionStream& stream, std::uint16_t status, std::string_view body,
                               std::vector<std::pair<std::string, std::string>> const& cors_headers) noexcept -> void
     {
-        auto const response = format_response(status, body, cors_headers);
-        std::ignore = send_all(stream, response);
+        auto const response = format_for_wire(status, body, cors_headers);
+        std::ignore = send_all(stream, response.text);
     }
 
     // `GET /_merovingian/health` (ADR-0479). Matched on the path alone, so a probe that adds a query string is
@@ -1769,7 +1702,8 @@ namespace detail
                                        {"expected_body_bytes", std::to_string(expected_body_bytes),                        false},
                                        {"reason",              "upload body refused before authentication",                false}
                     });
-                    std::ignore = send_all(*stream, format_response(refusal->status, refusal->body, refusal->headers));
+                    std::ignore =
+                        send_all(*stream, format_for_wire(refusal->status, refusal->body, refusal->headers).text);
                     return RoundOutcome::close_connection;
                 }
                 effective_cap = max_upload_bytes(ctx.runtime);
@@ -1790,8 +1724,8 @@ namespace detail
                 // browsers surface the 413 as a CORS error instead of the real one.
                 auto const cors_hdrs = transport_cors_headers(ctx, find_header_value(parse.request, "origin"));
                 auto const rejection =
-                    format_response(413U, R"({"errcode":"M_TOO_LARGE","error":"request body too large"})", cors_hdrs);
-                std::ignore = send_all(*stream, rejection);
+                    format_for_wire(413U, R"({"errcode":"M_TOO_LARGE","error":"request body too large"})", cors_hdrs);
+                std::ignore = send_all(*stream, rejection.text);
                 return RoundOutcome::close_connection;
             }
             // Drain the body exactly: read precisely Content-Length bytes and

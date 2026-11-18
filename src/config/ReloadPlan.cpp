@@ -577,8 +577,25 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.turn.ttl_seconds");
     }
 
-    // Identity Service API. Unlike the OIDC block (which has no reload diff —
-    // issue #421), every identity_server field is diffed so a hot-reload that
+    // The OAuth 2.0 API: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
+    if (current.server().oauth.enabled != next.server().oauth.enabled)
+    {
+        add_change(plan, "server.oauth.enabled");
+    }
+    if (current.server().oauth.legacy_api_enabled != next.server().oauth.legacy_api_enabled)
+    {
+        add_change(plan, "server.oauth.legacy_api_enabled");
+    }
+    if (current.server().oauth.device_grant_enabled != next.server().oauth.device_grant_enabled)
+    {
+        add_change(plan, "server.oauth.device_grant_enabled");
+    }
+    if (current.server().oauth.hand_off_redirect_allowlist != next.server().oauth.hand_off_redirect_allowlist)
+    {
+        add_change(plan, "server.oauth.hand_off_redirect_allowlist");
+    }
+
+    // Identity Service API. Every identity_server field is diffed so a hot-reload that
     // changes the trusted-IS allowlist or timeouts is detected. All changes
     // are restart_required (see ReloadPolicy.cpp): the outbound IS client and
     // cached resolver are built at startup.

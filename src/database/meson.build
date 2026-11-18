@@ -6,6 +6,8 @@ database_sources = files(
   'LibraryVersions.cpp',
   'MigrationFiles.cpp',
   'Migration.cpp',
+  'OAuthStore.cpp',
+  'OAuthTables.cpp',
   'PersistentStore.cpp',
   'PersistentServerSigningKey.cpp',
   'PostgresqlConnection.cpp',

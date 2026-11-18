@@ -24,6 +24,52 @@ Use this checklist for every release candidate.
   deactivation without `"confirm": true` (400). Its summary carries no hash or token. It reads at most
   4096 bytes of body.
 
+## OAuth 2.0 API
+
+The rules are in `src/homeserver/AGENTS.md` ("OAuth 2.0 API") and `src/oauth/AGENTS.md` ("Rules"); the threats they
+answer are in [the threat model](threat-model.md#oauth-20-api-110-adr-0766-to-adr-0817). On a change to this surface:
+
+- **A new page.** It is built only by `oauth::Page` from `HtmlText` or compile-time text (no concatenated markup, no
+  `<script>`, event handler, `style=` attribute or remote resource; `src/oauth/AGENTS.md` rule 5, ADR-0815, ADR-0772);
+  no member of a page-text type has a default initialiser other than `{}` (rule 12, ADR-0800). The response carries
+  `oauth::page_headers()` and sets `LocalHttpResponse::page` (rule 6, ADR-0785), and its route is in
+  `request_serves_page` so an escaped exception gets the error page (ADR-0810).
+- **A new form action.** The post is refused by `form_post_origin_is_accepted` before its body is read (ADR-0784);
+  `Origin`, `Sec-Fetch-Site` and `Cookie` are read with `request_header_values`, a repeated header counting as absent
+  (ADR-0788); an account-page action checks the live session, `account_sign_in_gate` and the form token before it acts,
+  and calls the client API's own function, never a copy (ADR-0796, ADR-0798). Anything read before
+  `verify_password_login` or `create_local_account` is found again after it, since both release `runtime.mutex`. Only a
+  post answered by a redirect to a matched client URI passes that `ParsedUri` to `page_headers(target)`.
+- **A redirect.** Nothing is redirected before the client and its redirect URI are validated; every address a client
+  supplies is read by `ParsedUri::read` and matched with `match_redirect_uri` (rules 3 and 4, ADR-0770). A hand-off
+  address is read again with `hand_off_redirect_target` at every step and is always confirmed (ADR-0802).
+- **A new OAuth endpoint.** Every answer is built by `oauth_json_response` or `oauth_error_response` with `no-store`
+  (ADR-0781); every absolute address comes from `OAuthBaseUrl` with an `OAuthPaths.hpp` constant (rule 9, ADR-0773);
+  the route has a rate-limit tier (`auth_sensitive` unless the spec says otherwise, ADR-0775), its `static_routes` and
+  `client_static_route_allow` rows, and a row in `test_route_query_conformance.cpp`; `client_secret` and
+  `Authorization: Basic` are refused (`oauth_client_credentials_refusal`); a client is read back with
+  `find_registered_oauth_client`.
+- **A new store.** It is in memory, keeps every secret only as `oauth_secret_hash`, compares in constant time, has a
+  total cap and a per-address (or per-user) cap, never evicts a live entry, takes the clock from `oauth_wall_clock_ms`
+  (or `oauth_device_clock_ms` for the device grant), and is guarded by `runtime.mutex` (ADR-0782, ADR-0805). A store
+  that can name a client is counted by `oauth_client_has_pending_authorisation`, or the client cap and the sweep may
+  delete a client in use (ADR-0780, ADR-0782).
+- **A new path that issues a session.** It writes through `grant_oauth_session` / `database::store_oauth_grant` in one
+  transaction, with nothing that can fail after the commit (ADR-0792); it judges the account again with
+  `account_sign_in_gate` and compares the credential stamp of its password check with `user_credential_stamp_matches`
+  (ADR-0807); a route that issues a legacy session asks `legacy_auth_refusal` first (ADR-0801).
+- **A new path that ends a session.** It goes through `end_device_session_and_announce` and announces the deleted
+  devices (ADR-0795); a revocation of a device's last credential deletes its `oauth_sessions` row in the same transaction
+  (ADR-0808). A new UIA endpoint calls `oauth_session_uia_refusal` first (ADR-0794).
+- **A new path that changes a password or closes an account.** It calls `end_account_page_access` (ADR-0798), and the
+  new password hash changes the credential stamp, so a sign-in in progress fails its stamp check (ADR-0807).
+- **Logging.** No code, verifier, token, password, cookie, form token, device or user code, credential stamp, body or
+  query is logged; `sanitized_http_target` drops the query of every OAuth and account path (ADR-0786); a refusal logs
+  `client_id` only once `find_registered_oauth_client` found it.
+- **Tests.** The change has a scenario that drives `handle_client_server_request` (in `tests/integration/`), and a page
+  change keeps `test_oauth_page.cpp`'s policy-hash check passing. Note in the review what still needs a real browser
+  (cookies, `SameSite`, `form-action` on a redirect).
+
 ## Federation
 
 - Request signatures are verified with Matrix canonical JSON.

@@ -14,6 +14,8 @@ implementing custom cryptographic primitives.
 - Generic hashing (`GenericHash.cpp`) and hex/base64 encoding (`Encoding.cpp`)
   wrapping libsodium's `crypto_generichash`/`sodium_bin2hex`/`sodium_bin2base64`.
 - Constant-time comparison boundary (fixed and variable-length inputs).
+- `sha256` (`Sha256.cpp`), libsodium's `crypto_hash_sha256`, for protocols that name SHA-256: PKCE `S256` and the
+  page policy's style hash (`oauth`, ADR-0768). The event hashes in `src/events/` call libsodium directly.
 - `hmac_sha1` (`HmacSha1.cpp`), a wrapper over OpenSSL's `HMAC` with `EVP_sha1()`: the one place SHA-1 is used, because
   the coturn REST API defines a TURN password as the base64 of HMAC-SHA1 over the username (ADR-0480). libsodium has no
   SHA-1; OpenSSL is already a required dependency, so no new dependency enters the build, but `merovingian-crypto` now
@@ -116,6 +118,16 @@ implementing custom cryptographic primitives.
   other key is derived from is actually materialised in process memory, and
   removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
   under load.
+- **The OAuth 2.0 client ID key** (`derive_oauth_client_id_key`, label `merovingian:oauth-client-id:1`) is derived
+  from the master key like the access-token keys, but never cached: each client registration derives it with
+  `derive_oauth_client_id_key_from_file` (one open of the master key file, the bytes from that open) and drops it once
+  the ID is made, so it holds locked memory only while a registration runs. Locked memory is a per-process budget
+  (`RLIMIT_MEMLOCK`, 64 KiB by default on FreeBSD); a standing page for this key, held even with the OAuth 2.0 API off,
+  left the registration token file unreadable into locked memory there (ADR-0779, amended). `TokenHmacKeys` holds the
+  two access-token keys only. A key that cannot be derived fails the registration closed (500 `server_error`, logged as
+  `oauth.client.id_key_unavailable`). `oauth_client_id` (`OAuthClientId.cpp`) is the keyed
+  BLAKE2b-256 of the canonical client metadata, as unpadded URL-safe base64 (ADR-0779). The key is used for nothing
+  else.
 - **Master-key lock failure is fatal.** The secure-file reader rejects an
   unlocked `SecretBuffer` before returning material to
   `crypto::load_master_key_material()`; the loader also has a defensive lock

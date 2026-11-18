@@ -25,9 +25,9 @@ value. Test fixtures that do not exercise persistence select it through
   migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
   schema-state transitions, enabling backfill and corrective migrations
   should a later migration need one.
-- The schema is a single step, version `1` (`initial_schema`):
-  `schema::current_schema_version()` is `1`, and `migrations/` holds only
-  `001_initial_schema.sql`. Every pre-1.0 migration (versions 2 to 26 as of
+- The schema has two steps. `schema::current_schema_version()` is `2`, and
+  `migrations/` holds `001_initial_schema.sql` and `002_oauth_tables.sql`.
+- Version `1` (`initial_schema`) is the frozen v1 schema. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
   so v1 creates all 64 tables in their final shape, every column that an
@@ -42,11 +42,47 @@ value. Test fixtures that do not exercise persistence select it through
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
-  `src/database/Migration.cpp` has exactly one upgrade step (version `1`,
-  `initial_schema`) and one downgrade step (to version `0`,
-  `drop_initial_schema`, which drops every table).
-  `migrations/001_initial_schema.sql` is the frozen record of v1; a unit test
-  requires it to match the build's v1 step statement for statement.
+  `src/database/Migration.cpp` has two upgrade steps (version `1`,
+  `initial_schema`; version `2`, `oauth_tables`) and two downgrade steps, newest
+  first (`drop_oauth_tables` to version `1`, then `drop_initial_schema` to
+  version `0`, which drops every v1 table).
+  `migrations/001_initial_schema.sql` is the frozen record of v1 and
+  `002_oauth_tables.sql` of version 2; a unit test requires each file to match
+  the build's step statement for statement.
+- Version `2` (`oauth_tables`, 1.1.0) adds the OAuth 2.0 tables
+  ([ADR-0776](adr/0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)),
+  and changes no existing table:
+  - `oauth_clients` (`client_id TEXT PRIMARY KEY`, `metadata_json`,
+    `created_at_ms`, `last_used_at_ms`, all `TEXT NOT NULL`, the integers
+    written as decimal text like every other `*_ms` column). A row is kept as
+    first written (`store_oauth_client` answers `existing`); only
+    `last_used_at_ms` changes, at most once a day (`touch_oauth_client`,
+    [ADR-0777](adr/0777-an-oauth-client-s-last-use-is-written-at-most-once-a-day.md)).
+    The metadata is refused over 16 KiB and the ID over 128 bytes.
+  - `oauth_sessions` (`user_id`, `device_id`, `client_id`, `scope`,
+    `created_at_ms`, primary key `(user_id, device_id)`), with
+    `idx_oauth_sessions_client_id`. The scope is refused over 2048 bytes. A
+    session row is written in the caller's transaction
+    (`prepare_oauth_session_insert`, then `remember_oauth_session` after the
+    commit) and deleted by `delete_device` in the transaction that deletes the
+    device. It is also deleted in the transaction that revokes every token of
+    its device (`revoke_user_credentials`, `revoke_device_tokens`,
+    `revoke_device_credentials`), and by the retention sweep once its device
+    holds no access or refresh token that is neither revoked nor expired
+    ([ADR-0808](adr/0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md)).
+    No foreign keys: no v1 table declares one, and the deleting
+    transaction removes dependent rows explicitly.
+  - In memory: `PersistentStore::oauth` (`OAuthTables`), hydrated on both
+    backends, with sessions by (user, device), a per-user index, a session
+    count per client and the sessionless clients ordered by last use, which the
+    retention sweep reads (30 days, never a client with a session).
+- The schema registry is split by version
+  ([ADR-0778](adr/0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)):
+  `initial_schema_definitions()` is what v1 created, and the SQLite and
+  PostgreSQL bootstraps build exactly that and write ledger row 1; every later
+  step then runs through `apply_pending_migrations`, so a fresh database and an
+  upgraded 1.0.x database reach the same schema by the same path.
+  `current_schema_definitions()` is every version up to the current one.
 - Schema change policy. Before `v1.0.0` there was nothing to upgrade from: a
   database whose `schema_migrations` ledger holds an upgrade row this build does
   not have (for example the rows 2 to 26 written by every build up to 0.12.46)
@@ -199,8 +235,10 @@ value. Test fixtures that do not exercise persistence select it through
 - `delete_federation_transactions` removes a list of queued transactions in one database transaction; the dispatch worker
   uses it to drop what a failing destination holds past its share or its age (ADR-0621).
 - Physical migration-file loading for SQL files with explicit metadata and
-  statement names; the checked-in `migrations/` directory contains only
-  `001_initial_schema.sql`, the frozen record of the v1 schema.
+  statement names; the checked-in `migrations/` directory contains
+  `001_initial_schema.sql`, the frozen record of the v1 schema, and
+  `002_oauth_tables.sql`. `merovingian-db-migrate --plan A B --migrations DIR`
+  takes only the files whose version is between A (exclusive) and B.
 - `sync_stream_watermark` table stores the highest allocated `sync_stream_id`
   and is updated by `database::allocate_sync_stream_id()` before the ID is
   used for ephemeral events such as typing notifications and read receipts. This
@@ -1173,7 +1211,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (50 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (52 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `stream_token_epoch`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1184,7 +1222,8 @@ migration's table cannot go unclassified:
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
-  `receipts`, `appservice_directory`, `media_pending_uploads`, plus six tables `Schema.cpp`
+  `receipts`, `appservice_directory`, `media_pending_uploads`, `oauth_clients` and `oauth_sessions` (migration
+  002; every OAuth 2.0 endpoint runs in main), plus six tables `Schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

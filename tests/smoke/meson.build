@@ -4,6 +4,7 @@ db_migrate_executable = meson.project_build_root() / 'src' / 'merovingian-db-mig
 setup_dev_env_script = meson.project_source_root() / 'scripts' / 'setup-dev-env.sh'
 build_linux_script = meson.project_source_root() / 'scripts' / 'build-linux.sh'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
+migrations_directory = meson.project_source_root() / 'migrations'
 tmp_smoke_prefix = 'tmpdir=$(mktemp -d) && trap "rm -rf \"$tmpdir\"" EXIT HUP INT TERM && '
 # The example config sets security.secrets.master_key_file, and a configured
 # master key that is missing fails --check-config and --dry-run. Provision one
@@ -575,5 +576,27 @@ test(
   args: [
     '-c',
     db_migrate_executable + ' --plan 1 1 > /dev/null 2>&1',
+  ],
+)
+
+# Migration 002 (1.1.0): a plan from v1 takes the checked-in 002 file alone, never 001 again, and a plan from an
+# empty database takes both (ADR-0778).
+test(
+  'db-migrate-plans-v1-to-v2-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 1 2 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=1 target_version=2 steps=1"',
+  ],
+)
+
+test(
+  'db-migrate-plans-empty-to-v2-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 0 2 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=0 target_version=2 steps=2"',
   ],
 )

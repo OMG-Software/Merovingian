@@ -255,11 +255,50 @@ disables keep-alive and the round is answered with `Connection: close`.
 
 ## Response-header safety
 
-Runtime-generated response headers are validated with the shared HTTP header
-grammar before they are stored or written to the wire. This prevents CR/LF and
-other invalid octets from being reflected through CORS or future dynamic header
-surfaces. The wire formatter also injects `X-Content-Type-Options: nosniff`
-when the response did not already set it.
+Every listener, plain and TLS alike, writes a handler's `LocalHttpResponse` through one formatter,
+`http::format_response_head` / `http::format_response` (`http/ResponseHead.hpp`, ADR-0767). The handler's headers
+go first, in its order; then the transport's own: `X-Content-Type-Options: nosniff` unless the handler sent it,
+`Content-Length`, `Content-Type` (the handler's, else `application/json`) and `Connection` (with `Keep-Alive` on a
+kept connection). Header names are matched case-insensitively (`http::header_names_equal`), so a handler's
+`content-type: text/html; charset=utf-8` replaces the default rather than adding a second `Content-Type`.
+
+The formatter refuses, and nothing is dropped or repaired, when the status is outside 200-599, a header name is not
+an RFC 9110 token, a value holds a control character other than HTAB (so no CR or LF can start a header of its own),
+a handler sets `Content-Length`, `Transfer-Encoding`, `Connection` or `Keep-Alive`, `Content-Type` comes twice, or
+`X-Content-Type-Options` comes twice or is not `nosniff`. `HttpServer.cpp` then logs `response.head_refused` (with the
+fixed reason, never the header) at error level, sends a fixed `500 M_UNKNOWN` with no handler header and
+`Connection: close`, skips a streamed body, and closes the connection. A worker's federation answer, whose headers a
+compromised worker chooses, is held to the same rules.
+
+Runtime-generated response headers are also validated with the shared HTTP header grammar before they are stored
+(`append_header_if_missing` in `ClientServerRuntime.cpp`, which skips a header already present in any case).
+
+The reason phrase comes from `http::reason_phrase`: 200, 202, 302 `Found`, 303 `See Other`, 400, 401, 403, 404,
+405, 408, 409, 413, 415, 429, 451, 500, 501, 502, 503, 504 and 507. Any other status is written with an empty phrase
+(`HTTP/1.1 418 `), which RFC 9112 allows; it used to be `OK`.
+
+A response body is bytes: nothing between the handler and the socket reads or rewrites it, so an HTML page, a
+redirect or a JSON document travels the same way.
+
+## Form bodies and cookies
+
+`core::FormFields::parse` reads an `application/x-www-form-urlencoded` body strictly (ADR-0817): a malformed `%`
+escape, a field with no `=` or an empty name, an empty field (`&&`), a raw byte outside printable ASCII, a decoded
+NUL or invalid UTF-8, and a repeated name each refuse the whole body. `+` is a space; an empty body is an empty set.
+Caps, each refused rather than cut: 64 KiB of body, 64 fields, 64 bytes of decoded name, 8 KiB of decoded value.
+`parse_query_params` stays lenient and is not for these bodies.
+`core::FormFields::parse_query` reads the query of the browser pages (`/_merovingian/oauth2/authorize`,
+`/_merovingian/oauth2/link`, `/_merovingian/account` and the legacy SSO redirect's hand-off) the same way, except that a
+bare name with no `=` and an empty field count as not sent (RFC 6749 section 3.1); the bare name is still checked.
+
+`core::RequestCookies::parse` reads a `Cookie` header (RFC 6265 section 4.2.1) without percent-decoding (ADR-0766).
+A sibling host under the same parent domain can add cookies to what the browser sends, so a malformed or repeated
+cookie makes only its own name unusable: `find(name)` answers only for exactly one well-formed pair. A control
+character, more than 32 KiB or more than 256 pairs refuses the header. `core::host_cookie` and
+`core::host_cookie_deletion` (`core/HostCookie.hpp`) are the only `Set-Cookie` writers: a `__Host-` name, `Secure`,
+`HttpOnly`, `Path=/`, `SameSite=Lax` or `Strict`, and a `Max-Age` of 1 second to 400 days (0 for the deletion).
+Form values and cookie values can be secrets: neither reader logs, an error never quotes input, and both wipe what they
+hold when destroyed.
 
 ## Outbound HTTP client
 
@@ -546,6 +585,15 @@ redacted from logged targets (`sanitized_http_target`).
 
 Request parser failures use stable error names and HTTP statuses. Oversized start lines, headers, header counts, and bodies map to `413`. Malformed request lines, invalid methods, invalid targets, and invalid content lengths map to `400`. Unsupported transfer encoding maps to `501` until streaming support exists.
 
+An exception a client-server handler lets escape is answered at the dispatch boundary, `handle_client_server_request`,
+with `500 M_UNKNOWN` and the fixed text `internal server error`, the request's CORS headers, and a kept connection,
+whichever pool ran the request (ADR-0803). The runtime lock is released by the unwinding and taken afresh only to
+build the answer. A `std::overflow_error` from the sync stream counter keeps its answer, `sync stream counter
+exhausted` (ADR-0315). A request routed to one of the server's own HTML pages (the authorisation, device link and
+account pages, and the legacy SSO redirects while they hand off to them) is answered instead with a fixed 500 error
+page under the pages' own headers and no CORS header (ADR-0810). See `observability-audit.md` for the log line, which
+never carries the exception's message.
+
 The public client-server and internal local-router entry points also
 preflight the **path portion**, before the first `?`, for literal NUL and
 `%00` (DB-6). They return `400 M_INVALID_PARAM` before a path-component
@@ -764,7 +812,7 @@ cap applies regardless of which room, device, or media ID appears in the URL.
 
 | Tier | Routes | Default per-IP policy |
 | --- | --- | --- |
-| `auth_sensitive` | `/login`, `/register`, `/refresh`, and every `*/requestToken` route (matched by suffix) — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
+| `auth_sensitive` | `/login`, `/register`, `/refresh`, every `*/requestToken` route (matched by suffix), `/_merovingian/oauth2/*` and `/_merovingian/account*` — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
 | `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 120/60s; thumbnail refinement 240/60s |
 | `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 3000/60s |
 | `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 3000/60s |
@@ -911,6 +959,69 @@ never double-counted.
 listener: `200` with the body `ok` while the dispatcher is running, `503` with `unavailable` after shutdown begins. It
 needs no token, is not rate-limited, reads one atomic flag and takes no lock (not `runtime.mutex`), so a long request
 cannot delay it. It says nothing of the database or the federation worker; `/_merovingian/admin/health` does.
+
+### OAuth 2.0 routes (ADR-0779 to ADR-0781)
+
+`POST /_merovingian/oauth2/register` goes through the client-server dispatcher like any route: a `static_routes` entry
+gives it its own rate-limit bucket, in the `auth_sensitive` tier (as do the later `/_merovingian/oauth2/*` and
+`/_merovingian/account*` paths), and a `client_static_route_allow` row answers any other method `405` with
+`Allow: POST`. It is answered before the authentication gate. `OPTIONS` is answered for it as for every path, and
+CORS headers are added at the same single boundary, so it carries exactly those of `/login`. The Matrix `M_NOT_JSON`
+gate covers only `/_matrix/client/`; the handler judges the JSON content type itself. A body over `max_body_bytes`
+on this path is answered `400 invalid_client_metadata` by the handler instead of `413 M_TOO_LARGE`; one over the
+transport's own body cap is still refused by the connection handler. With `server.oauth.enabled` off the route is
+`404 M_UNRECOGNIZED`. Every OAuth answer is built by `oauth_json_response` or `oauth_error_response`
+(`application/json`, `Cache-Control: no-store`); the 429, 405, 404 and not-started 503 stay Matrix-shaped.
+
+The OAuth HTML pages (phase 5b) are marked `LocalHttpResponse::page`: `apply_client_response_headers`, the boundary
+that adds the CORS headers, gives a page only `X-Content-Type-Options: nosniff`, and the client API's `wrap()` returns
+a page unchanged (ADR-0785). A page sends `Referrer-Policy: same-origin`, and a form post to one is accepted only when
+`Origin` equals the base URL's origin (`https://`, lower-case host, a port only when not 443) and `Sec-Fetch-Site`,
+when sent, is `same-origin` (`oauth::form_post_origin_is_accepted`, ADR-0784). No log line keeps the query of a target
+under `/_merovingian/oauth2` or `/_merovingian/account` (`sanitized_http_target`, ADR-0786).
+
+`GET` and `POST /_merovingian/oauth2/authorize` are routed the same way (`static_routes`, `auth_sensitive`, a
+`client_static_route_allow` row of `GET, POST`, so another method is `405`), before the authentication gate, and are
+`404 M_UNRECOGNIZED` with the API off. Every answer is a page or a redirect marked `LocalHttpResponse::page`, so none
+carries a CORS header. A redirect to the client is `302` from the `GET` and `303` from a form post, with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`; a page that starts a sign-in sets the `__Host-mv-oauth`
+cookie (ADR-0788). `Origin`, `Sec-Fetch-Site` and `Cookie` are read with `request_header_values`
+(`homeserver/RequestHeaders.hpp`) and a header sent twice counts as absent. A form body over `max_body_bytes` gets the
+general `413 M_TOO_LARGE` JSON answer, not a page.
+
+With the OAuth 2.0 API and the legacy API both on, `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` answer
+the same pages (ADR-0802): a 200 sign-in or registration page with the `__Host-mv-oauth` cookie, or a 400 page with no
+`Location` for a refused `redirectUrl`, all marked `LocalHttpResponse::page`. The final redirect is the `303` to the
+`redirectUrl` from the confirmation page's form post, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+
+`POST /_merovingian/oauth2/token` and `POST /_merovingian/oauth2/revoke` (ADR-0791 to ADR-0795) are routed the same
+way (`static_routes`, `auth_sensitive`, a `client_static_route_allow` row of `POST`, so another method is `405`),
+before the authentication gate, and are `404 M_UNRECOGNIZED` with the API off. The body must be
+`application/x-www-form-urlencoded` (a `charset=utf-8` parameter is allowed) and is read with `core::FormFields`; anything
+else is `400 invalid_request`. Every answer is built by `oauth_json_response`, `oauth_error_response` or
+`oauth_empty_response` (`Cache-Control: no-store`) and carries the CORS headers of the single boundary. Only public
+clients exist: a `client_secret` field is `400 invalid_client`, and an `Authorization: Basic` header `401
+invalid_client` with `WWW-Authenticate: Basic`. A body over `max_body_bytes` gets the general `413 M_TOO_LARGE`.
+
+`POST /_merovingian/oauth2/device` and `GET` and `POST /_merovingian/oauth2/link` (ADR-0804 to ADR-0806) are routed
+the same way (`static_routes`, `auth_sensitive`, `client_static_route_allow` rows of `POST` and of `GET, POST`), before
+the authentication gate, and are `404 M_UNRECOGNIZED` unless `server.oauth.enabled` and
+`server.oauth.device_grant_enabled` are both true. The device endpoint is an API endpoint: a form body as the token
+endpoint takes it, JSON answers from `oauth_json_response` with `Cache-Control: no-store` and the CORS headers, and
+`503 temporarily_unavailable` when the store is full. The link page is a page (`LocalHttpResponse::page`, no CORS
+header): its `GET` sets the `__Host-mv-oauth` cookie and prefills a `user_code` from the query, and its form post is
+checked with `form_post_origin_is_accepted` before the body is read. A wrong or expired code is `400`, an address
+that reached five wrong codes in ten minutes is `429` with `Retry-After` (before the code is looked up), and a code
+another browser holds is `409` with `Retry-After`. The device polls the token endpoint every 5 seconds, 12 requests
+a minute in the 20 of `auth_sensitive`; the pages from the same address share that bucket.
+
+`GET` and `POST /_merovingian/account` (ADR-0796) are routed the same way (`static_routes`, `auth_sensitive`, a
+`client_static_route_allow` row of `GET, POST`, so another method is `405`), before the authentication gate, and are
+`404 M_UNRECOGNIZED` with the API off. Every answer is a page or a 303 marked `LocalHttpResponse::page`, so none carries
+a CORS header. A form post is refused `403` unless `form_post_origin_is_accepted` accepts it, before the body is read;
+the body must be `application/x-www-form-urlencoded`. The session cookie `__Host-mv-account` is `Secure`, `HttpOnly`,
+`SameSite=Strict`, `Path=/` and `Max-Age=900`, and is read like `__Host-mv-oauth`: a `Cookie` header sent twice counts
+as absent. A cookie that names no live session is deleted (`Max-Age=0`).
 
 ### Admin routes
 
@@ -1425,6 +1536,7 @@ change needs before/after evidence.
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.
+`fuzz-form-fields` and `fuzz-request-cookies` exercise the form-body and `Cookie` header readers.
 
 ## Configurable transport budgets (0.12.18)
 
