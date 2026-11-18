@@ -98,6 +98,9 @@ check_command() {
     if [ "$dry_run" -eq 1 ]; then
         return
     fi
+    # A compiler may be a launcher and a compiler (CC="ccache clang"); only the first word must be on PATH.
+    # shellcheck disable=SC2086
+    set -- $1
     command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
 }
 

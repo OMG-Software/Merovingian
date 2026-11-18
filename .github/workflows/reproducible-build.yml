@@ -4,12 +4,8 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    paths:
-      - 'scripts/build-static-linux.sh'
-      - 'scripts/reproducible-build.sh'
-      - 'meson.build'
-      - 'subprojects/**'
+  # Not a pull_request trigger (it is no required check): the merge queue runs it before a change lands on main.
+  merge_group:
   workflow_dispatch:
 
 jobs:

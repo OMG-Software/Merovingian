@@ -2,14 +2,23 @@ name: packages
 on:
   push:
     # No 'feature/**': a pull request's branch would build every package twice for one commit (ADR-0511).
-    branches: [main, 'codex/**', 'alpha-release']
+    branches: [main, 'alpha-release']
   pull_request:
     branches: [main]
+  merge_group:
   # release.yml calls this workflow for a v* tag, so a tagged release ships
   # exactly the packages `latest` does, staged and signed by the same jobs
   # (ADR-0650, ADR-0742). Staging and signing run for a push to main or a v*
   # tag; publishing `latest` runs only for main, so it skips for a tag.
   workflow_call:
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+# A literal prefix, not github.workflow: release.yml calls this workflow, and there github.workflow is the caller's name.
+concurrency:
+  group: packages-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ADR-0580, ADR-0743: every job below that needs nothing else waits for this one. The analyses join the runner queue
   # when a pull request is pushed, the build and test jobs a few seconds later behind their own gates, and the package
@@ -17,6 +26,7 @@ jobs:
   # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
   queue-after-build-and-test:
     name: Queue after the build and test jobs
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions: {}
     timeout-minutes: 5
@@ -29,7 +39,7 @@ jobs:
   # supported release gets its own package (ADR-0650).
   deb:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: Ubuntu ${{ matrix.release }} package
     runs-on: ubuntu-latest
     strategy:
@@ -114,7 +124,7 @@ jobs:
   deb-all-releases:
     name: Debian package
     needs: deb
-    if: always()
+    if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -125,7 +135,7 @@ jobs:
 
   static-linux-fallback:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: Static Linux fallback binary
     runs-on: ubuntu-latest
     container: alpine:latest
@@ -188,7 +198,7 @@ jobs:
 
   rpm:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: Fedora RPM package (${{ matrix.image }})
     runs-on: ubuntu-latest
     # An RPM installs only on the Fedora release it was built on (ADR-0376).
@@ -279,7 +289,7 @@ jobs:
   rpm-all-images:
     name: Fedora RPM package
     needs: rpm
-    if: always()
+    if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -290,7 +300,7 @@ jobs:
 
   freebsd-pkg:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: FreeBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -330,7 +340,7 @@ jobs:
 
   openbsd-pkg:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: OpenBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -369,7 +379,7 @@ jobs:
 
   netbsd-pkg:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: NetBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -425,7 +435,7 @@ jobs:
 
   debian-pkg:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: Debian trixie package
     runs-on: ubuntu-latest
     container: debian:trixie
@@ -498,7 +508,7 @@ jobs:
 
   docker-image:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: Docker image startup gate
     runs-on: ubuntu-latest
     permissions:
@@ -530,7 +540,7 @@ jobs:
     needs: debian-pkg
     # ADR-0580: the result of debian-pkg itself, never the implicit success(), which also
     # looks at the gate debian-pkg waits for and would skip this check when only the gate failed.
-    if: ${{ !cancelled() && needs.debian-pkg.result == 'success' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.debian-pkg.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -629,7 +639,7 @@ jobs:
 
   rhel-rpm:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: RHEL-compatible (AlmaLinux 10) RPM
     runs-on: ubuntu-latest
     container: almalinux:10
@@ -707,12 +717,12 @@ jobs:
           retention-days: 30
 
   # Leap and Tumbleweed ship different library versions, so each gets its own
-  # RPM under its own dist tag (ADR-0650). The Tumbleweed leg keeps the name the
-  # main ruleset requires.
+  # RPM under its own dist tag (ADR-0650). The check the main ruleset
+  # requires comes from `opensuse-rpm-all-flavours` below.
   opensuse-rpm:
     needs: queue-after-build-and-test
-    if: ${{ !cancelled() }}
-    name: OpenSUSE ${{ matrix.flavour }} RPM
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    name: OpenSUSE ${{ matrix.flavour }} RPM package
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -836,6 +846,21 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # The main ruleset requires a check called "OpenSUSE Tumbleweed RPM". A matrix job that a
+  # job-level `if` skips reports one check under its unexpanded name, so a pull request would
+  # wait for this one for ever; this job has a fixed name and is skipped by its own `if`.
+  opensuse-rpm-all-flavours:
+    name: OpenSUSE Tumbleweed RPM
+    needs: opensuse-rpm
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every OpenSUSE flavour to pass
+        env:
+          RESULT: ${{ needs.opensuse-rpm.result }}
+        run: test "${RESULT}" = success
+
   stage-package-assets:
     name: Stage unsigned package assets
     # A push to main stages `latest`; a v* tag (release.yml calls this workflow)
@@ -942,6 +967,7 @@ jobs:
     # job failed or was cancelled, whatever the gate did.
     if: |
       !cancelled() &&
+      github.event_name != 'pull_request' &&
       needs.stage-package-assets.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')

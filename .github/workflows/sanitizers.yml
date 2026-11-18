@@ -6,16 +6,21 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
+  merge_group:
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: sanitizers-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   asan-ubsan:
     runs-on: ubuntu-latest
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
       # Integration tests take significantly longer under AddressSanitizer +
       # UndefinedBehaviorSanitizer; multiply Meson's per-test timeout so the
       # seccomp/SQLite fork-heavy scenario is not killed by the 600 s default.
@@ -33,6 +38,7 @@ jobs:
           sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
+            ccache \
             clang \
             catch2 \
             flex \
@@ -46,6 +52,18 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          key: ccache-sanitizers-asan-ubsan-${{ github.run_id }}
+          restore-keys: ccache-sanitizers-asan-ubsan-
 
       - name: Build and test with sanitizers
         run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined --skip-job asan-ubsan
@@ -61,8 +79,8 @@ jobs:
   tsan:
     runs-on: ubuntu-latest
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
       # ThreadSanitizer is the only sanitizer that detects data races. Point it
       # at the project suppressions file so benign reports from uninstrumented
       # third-party dependencies do not mask races in our own code.
@@ -84,6 +102,7 @@ jobs:
           sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
+            ccache \
             clang \
             catch2 \
             flex \
@@ -97,6 +116,18 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          key: ccache-sanitizers-tsan-${{ github.run_id }}
+          restore-keys: ccache-sanitizers-tsan-
 
       - name: Build and test with ThreadSanitizer
         run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread --skip-job tsan 2>&1 | tee tsan-ci-log.txt

@@ -4,14 +4,19 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
     branches:
       - main
       - master
+  merge_group:
   schedule:
     - cron: "32 1 * * 1"
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
@@ -47,8 +52,8 @@ jobs:
             runner: ubuntu-26.04
             release: '26.04'
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - uses: actions/checkout@v7
@@ -84,6 +89,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}
           restore-keys: ccache-linux-ci-${{ matrix.release }}-
 
@@ -143,14 +151,14 @@ jobs:
   # release replaces this one.
   ubuntu-interim-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: ubuntu-26.10-build-and-test
     runs-on: ubuntu-latest
     container:
       image: ubuntu:26.10
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -192,6 +200,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-ubuntu-interim-ci-${{ github.run_id }}
           restore-keys: ccache-ubuntu-interim-ci-
 
@@ -245,11 +256,11 @@ jobs:
   #      privilege-drop check on its own.
   ubuntu-hardened-listener-coverage:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - uses: actions/checkout@v7
@@ -285,6 +296,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-linux-hardened-${{ github.run_id }}
           restore-keys: ccache-linux-hardened-
 
@@ -321,7 +335,7 @@ jobs:
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-suite:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: fedora-suite (${{ matrix.image }})
     runs-on: ubuntu-latest
     permissions:
@@ -334,8 +348,8 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -369,6 +383,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}
           restore-keys: ccache-fedora-ci-${{ matrix.image }}-
 
@@ -402,7 +419,7 @@ jobs:
   # reports one check per image, none of them with that name.
   fedora-build-and-test:
     needs: fedora-suite
-    if: always()
+    if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -416,13 +433,13 @@ jobs:
   # which provides glibc ≥ 2.39 and a C++26-capable clang 18+ toolchain.
   debian-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -454,6 +471,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-debian-ci-${{ github.run_id }}
           restore-keys: ccache-debian-ci-
 
@@ -489,13 +509,13 @@ jobs:
   # EPEL 10 provides libsodium and turbojpeg.
   rhel-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     container:
       image: almalinux:10
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install EPEL and build dependencies
@@ -541,6 +561,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-rhel-ci-${{ github.run_id }}
           restore-keys: ccache-rhel-ci-
 
@@ -574,12 +597,13 @@ jobs:
   # OpenSUSE Leap 15.x ships glibc 2.31, which predates the C++26 requirement.
   # Tumbleweed (rolling release) carries a current glibc and clang 18+, making
   # it the supported OpenSUSE target per platform-support.md.
-  # One leg per openSUSE flavour (ADR-0650). The Tumbleweed leg keeps the check
-  # name the main ruleset requires.
-  opensuse-build-and-test:
+  # One leg per openSUSE flavour (ADR-0650). A matrix job that a job-level `if` skips reports
+  # one check under its unexpanded name, so the check the main ruleset requires comes from
+  # `opensuse-build-and-test` below, as for Fedora.
+  opensuse-suite:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
-    name: ${{ matrix.check }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    name: opensuse-suite (${{ matrix.check }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -600,8 +624,8 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
       BUILDDIR: ${{ matrix.builddir }}
 
     steps:
@@ -657,6 +681,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-opensuse-ci-${{ matrix.skip_job }}-${{ github.run_id }}
           restore-keys: ccache-opensuse-ci-${{ matrix.skip_job }}-
 
@@ -686,7 +713,21 @@ jobs:
       - name: Check release readiness metadata
         run: sh scripts/check-release-readiness.sh
 
+  # The main ruleset requires a check called opensuse-build-and-test, and a matrix job
+  # reports one check per flavour (or, when skipped, one under its unexpanded name).
+  opensuse-build-and-test:
+    needs: opensuse-suite
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every OpenSUSE flavour to pass
+        env:
+          RESULT: ${{ needs.opensuse-suite.result }}
+        run: test "${RESULT}" = success
+
   # ── FreeBSD ────────────────────────────────────────────────────────────────
+
   freebsd-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
@@ -746,7 +787,7 @@ jobs:
   # unit/integration/smoke tests) on OpenBSD itself.
   openbsd-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -806,7 +847,7 @@ jobs:
   # Tier 1 platform. Same full build+test path as the other BSDs.
   netbsd-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     steps:

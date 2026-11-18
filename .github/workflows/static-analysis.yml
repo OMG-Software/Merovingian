@@ -6,9 +6,14 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
+  merge_group:
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: static-analysis-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   clang-tidy:
