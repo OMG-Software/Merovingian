@@ -84,6 +84,33 @@ timeout kills it. Connect with `merovingian::tests::connect_within`
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
 
+## Integration test shards
+
+`merovingian-integration-tests` runs as several Meson tests so that the suite's wall time is a fraction of the binary's
+(it took 806 s serially on Ubuntu, against under 135 s for every other test). `tests/meson.build` registers:
+
+- `integration-tests-shard-N-of-4` (N = 1..4, one per vCPU of a 4-vCPU CI runner): the scenarios not tagged `[postgresql]`
+  or `[serial]`, run with `--order rand --rng-seed <fixed> --shard-count 4 --shard-index N-1`. Catch2 orders scenarios
+  randomly with a seed chosen per process and gives a shard a contiguous slice of that order, so every shard must be
+  given the same order and a numeric seed, or shards overlap and drop scenarios. The fixed seed spreads the heavy files
+  over the shards. Local runs of the binary itself stay randomly ordered.
+- `integration-tests-postgresql`: every `[postgresql]` scenario in one process. They share one database
+  (`MEROVINGIAN_TEST_POSTGRESQL_URI`), so two processes must not run them at once.
+- `integration-tests-serial` (`is_parallel: false`): scenarios tagged `[serial]`, which must run with no other test
+  running. The only one probes a free port and lets a spawned `merovingian-server` bind it later; another process's
+  sockets could take that port in between. Tag a scenario `[serial]` when it needs a port, or another machine-wide
+  resource, to stay free between choosing it and using it. A scenario that reserves a port, closes it and expects
+  connection refused is accepted: it would need a listener on that exact port to fail.
+- `integration-shard-coverage`: `scripts/check-integration-shards.sh` lists what the tests above select and fails unless
+  every scenario of the binary is selected exactly once. Changing the shard count, seed or filters means changing them
+  in the one place `tests/meson.build` defines them; `tests/tooling/test_integration_shards.py` checks the registration.
+
+A scenario that reaches PostgreSQL must carry `[postgresql]` (below), or it would run in a shard beside the others.
+Scenario files, ports and temporary paths are already per process (ADR-0753; listeners bind port 0), which is why the
+shards can run side by side. Each shard writes its own skip report (`<binary>-<pid>.xml`), which
+`check_expected_skips.py` reads with the rest. With the PostgreSQL URI set, run `[postgresql]` through the Meson test,
+not through several processes of your own.
+
 ## Live PostgreSQL scenarios
 
 A scenario that reaches PostgreSQL carries the `[postgresql]` tag, because that tag is the whole of what the

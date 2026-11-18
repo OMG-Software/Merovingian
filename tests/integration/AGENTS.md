@@ -3,6 +3,13 @@
 Integration tests verify end-to-end behavior across module boundaries using real dependencies.
 No mocks. Use a real in-process SQLite store or a PostgreSQL test database.
 
+## Parallel shards
+
+`merovingian-integration-tests` runs as four Catch2 shards plus a `[postgresql]` test and a `[serial]` test (see
+`docs/testing-standards.md`, "Integration test shards"), so scenarios of one run share the machine with scenarios in other
+processes. Bind listeners to port 0, build temp paths with `unique_temporary_path`, and tag a scenario `[postgresql]` when it
+touches the shared database, and `[serial]` when it needs a port to stay free between choosing it and using it.
+
 ## File naming
 
 `test_<domain>_flow.cpp` — the `_flow` suffix distinguishes these from unit tests.

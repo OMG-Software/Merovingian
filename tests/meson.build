@@ -1027,9 +1027,76 @@ shell = find_program('sh')
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
 # worker) and can be slow under sanitizers and on emulated BSD runners.
 # The limit is 30 minutes on every platform (ADR-0509). scripts/build-bsd.sh
-# doubles every limit by default, so the BSDs set half of it here.
+# doubles every limit by default, so the BSDs set half of it here. Every
+# integration Meson test below keeps that limit: it is a hang detector, and no
+# shard may take longer than the whole binary did.
   integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800
-  test('integration-tests', integration_tests, timeout: integration_tests_timeout, depends: thumbnail_test_depends)
+
+# The binary is split into Catch2 shards that run as parallel Meson tests, one
+# per vCPU of a 4-vCPU CI runner, so the suite's wall time is a quarter of the
+# binary's instead of all of it. Catch2 runs scenarios in random order by
+# default with a seed chosen per process, and a shard takes a contiguous slice
+# of that order: every shard must therefore get the same --order and numeric
+# --rng-seed, or shards overlap and leave scenarios out. The fixed seed also
+# interleaves the heavy files across shards. Two groups stay out of the shards:
+#   [postgresql]  the scenarios sharing one MEROVINGIAN_TEST_POSTGRESQL_URI
+#                 database run in a single process, never in two at once;
+#   [serial]      a scenario that probes a free port and then lets a spawned
+#                 server bind it, which another process's sockets can take, so
+#                 it runs with no other test running (is_parallel: false).
+# scripts/check-integration-shards.sh proves the union is the whole binary.
+  integration_shard_count = 4
+  integration_shard_seed = '271828'
+  integration_shard_filter = '~[postgresql]~[serial]'
+  integration_shard_order_args = ['--order', 'rand', '--rng-seed', integration_shard_seed]
+
+  foreach shard_index : range(integration_shard_count)
+    test(
+      'integration-tests-shard-@0@-of-@1@'.format(shard_index + 1, integration_shard_count),
+      integration_tests,
+      args: [integration_shard_filter] + integration_shard_order_args + [
+        '--shard-count', integration_shard_count.to_string(),
+        '--shard-index', shard_index.to_string(),
+      ],
+      timeout: integration_tests_timeout,
+      depends: thumbnail_test_depends,
+      priority: 100,
+    )
+  endforeach
+
+  test(
+    'integration-tests-postgresql',
+    integration_tests,
+    args: ['[postgresql]'],
+    timeout: integration_tests_timeout,
+    depends: thumbnail_test_depends,
+    priority: 100,
+  )
+
+  test(
+    'integration-tests-serial',
+    integration_tests,
+    args: ['[serial]'],
+    timeout: integration_tests_timeout,
+    depends: thumbnail_test_depends,
+    is_parallel: false,
+  )
+
+  test(
+    'integration-shard-coverage',
+    shell,
+    args: [
+      meson.project_source_root() / 'scripts' / 'check-integration-shards.sh',
+      integration_tests.full_path(),
+      integration_shard_count.to_string(),
+      integration_shard_seed,
+      integration_shard_filter,
+      '[postgresql]',
+      '[serial]',
+    ],
+    depends: integration_tests,
+    timeout: 300,
+  )
 
   if get_option('build_live_tests')
     live_integration_tests = executable(
