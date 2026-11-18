@@ -486,7 +486,8 @@ gate refuses to run rather than passing without checking. Its tooling test skips
 such a host and checks only that refusal.
 
 FreeBSD, OpenBSD, and NetBSD are Tier 1 platforms: each builds and runs the full
-test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
+test suite through `scripts/build-bsd.sh` on a CI VM: FreeBSD on every pull request push, and all three
+in the merge queue before merge ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). See
 [platform-support.md](platform-support.md) for the full support-tier matrix and
 per-platform hardening posture.
 

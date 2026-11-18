@@ -400,8 +400,9 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 ## Coverage
 
 The `coverage` workflow measures line and branch coverage over the whole suite (unit,
-conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov, which
-requires a fixed 50% target on a pull request's own lines (patch) and a fixed 60% target on overall line coverage
+conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov from its own `codecov` job; the Sonar scan is a step of the `coverage` job
+([ADR-0846](adr/0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)).
+Codecov requires a fixed 50% target on a pull request's own lines (patch) and a fixed 60% target on overall line coverage
 (project). Each target has a tolerance below it, not a limit on the drop from the base: the patch status passes
 down to 45% (5% threshold) and the project status down to 58% (2% threshold), whatever the base was
 (`.codecov.yml`; both statuses are non-informational). gcovr runs with
@@ -416,7 +417,15 @@ beside them.
 
 ## CI job order
 
-GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request; queued
+GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request. A pull
+request push starts few jobs: `ci.yml` runs only `ubuntu-build-and-test` and `freebsd-build-and-test` there, every
+other `ci.yml` job and every `packages.yml` job is skipped (a skipped job reports success), and the merge queue
+(`merge_group`), pushes to `main`, the schedule and `workflow_dispatch` run the full matrix
+([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). A new push to a
+pull request cancels that pull request's superseded runs
+([ADR-0842](adr/0842-a-new-push-to-a-pull-request-cancels-its-superseded-runs.md)). A push to a `claude/**` or `codex/**`
+branch no longer starts CI: open a pull request, or run the workflow by hand from the Actions tab (workflow, then Run
+workflow) ([ADR-0841](adr/0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)). Queued
 jobs are not served in the order they joined, so the only lever is when a job joins the queue. Jobs join in three tiers
 ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md),
 [ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`coverage`, which also runs the Sonar scan, CodeQL, `tsan`, `asan-ubsan`, then fuzzing, clang-tidy,

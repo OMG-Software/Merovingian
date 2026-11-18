@@ -99,10 +99,13 @@ automatically. `scripts/setup-dev-env.sh` installs the development files for
 local builds. The static (musl) tarball links the static variants of these
 libraries and therefore has no runtime package dependencies.
 
-## Tier 1 — Supported (CI-gated per pull request)
+## Tier 1 — Supported (CI-gated before every merge)
 
 Tier 1 platforms build **and run the full test suite** (unit, integration,
-conformance, smoke) on every pull request. Platform-specific runtime behaviour —
+conformance, smoke) in the merge queue before every merge. A pull request push runs
+only the core gate, `ubuntu-build-and-test` and `freebsd-build-and-test`; the other jobs below are skipped
+there (a job skipped by its `if:` reports success) and run in the merge queue, on pushes to `main`, on
+schedule and by hand ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). Platform-specific runtime behaviour —
 the startup hardening self-check, runtime-hardening integration tests, and the
 server config/version smoke tests — is exercised on the platform itself, not
 just cross-compiled. A regression on a Tier 1 platform blocks merge.
@@ -136,8 +139,9 @@ codecs (`libpng`, `libjpeg-turbo`) and base toolchain come from the OS.
 
 ## Tier 2 — Packaged (CI-built artifacts)
 
-Tier 2 produces installable artifacts in CI. Build and packaging are gated;
-runtime behaviour is covered transitively by the matching Tier 1 platform.
+Tier 2 produces installable artifacts in CI. Build and packaging are gated in the merge queue, not on a
+pull request push, where every `packages.yml` job is skipped ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)); a push to `main` rebuilds them.
+Runtime behaviour is covered transitively by the matching Tier 1 platform.
 
 | Artifact | Workflow | Runtime coverage via |
 |---|---|---|
