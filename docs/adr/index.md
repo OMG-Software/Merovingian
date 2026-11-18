@@ -724,3 +724,4 @@
 * [0847 - clang-tidy gates only the lines a change adds or edits](0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)
 * [0848 - PDU ingestion refuses a caller that holds the runtime mutex](0848-pdu-ingestion-refuses-a-caller-that-holds-the-runtime-mutex.md)
 * [0849 - SRV lookups on glibc own their resolver state and serialise its setup](0849-srv-lookups-on-glibc-own-their-resolver-state-and-serialise-its-setup.md)
+* [0850 - `latest` is replaced only by a build of the same or a newer commit](0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)

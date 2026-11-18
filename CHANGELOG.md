@@ -61,6 +61,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
 * The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
   TSan's own interceptor and background thread make what they check unobservable.
+* A slower package run of an older `main` commit no longer replaces a newer `latest`: publishes run one at a time,
+  and the `latest` tag names its build commit, which a publish must equal or descend from (ADR-0850).
 
 ## Release notes
 
