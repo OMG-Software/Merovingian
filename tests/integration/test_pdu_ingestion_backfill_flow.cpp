@@ -986,6 +986,8 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                // Joined before any THEN reads `captured_request`: the socket exchange orders nothing TSan can see.
+                server_thread.join();
 
                 THEN("the PDU is accepted")
                 {
@@ -4696,6 +4698,8 @@ SCENARIO("A backfilled event is stored without the unsigned object the answering
         WHEN("an event naming the missing one as a prev_event is ingested")
         {
             auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+            // Joined before any THEN reads `captured_request`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the event is stored under the ID its signed fields give, with no unsigned")
             {
