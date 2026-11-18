@@ -331,7 +331,8 @@ SCENARIO("PDU ingestion refuses a caller that holds runtime.mutex", "[integratio
         REQUIRE(login.response.status == 200U);
         auto const token = *string_member(parse_object(login.response.body), "access_token");
         auto const create = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","room_version":"12"})"});
+            runtime,
+            {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","room_version":"12"})"});
         REQUIRE(create.response.status == 200U);
         auto const room_id = *string_member(parse_object(create.response.body), "room_id");
 
