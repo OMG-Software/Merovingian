@@ -420,8 +420,10 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 - A scenario that the TSan runtime itself makes unobservable skips under TSan
   and is listed in the `tsan` group of `tests/expected_skips.json`. That covers
   mlock lock state, since sanitizer_common's `mlock` interceptor locks nothing,
-  and a forked child's task count, since TSan starts its background thread
-  again in the child.
+  a forked child's task count, since TSan starts its background thread
+  again in the child, and a forked child under the decoder seccomp filter,
+  which covers that thread and refuses its sleep (ADR-0852). Never widen a
+  filter to let a sanitizer's thread through.
 - A test calls `homeserver::ingest_pdu_event` with `runtime.mutex` released at
   every level: it refuses a caller that holds it (ADR-0848). Read the store under
   a `RuntimeLock`, then call ingestion inside a `RuntimeLockRelease` scope.

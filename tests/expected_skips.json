@@ -77,6 +77,16 @@
         "reason": "ThreadSanitizer runs a background thread and starts it again in a forked child, so the child's task count includes a thread no production process has (the test skips itself under TSan)."
       },
       {
+        "test": "The decoder and worker seccomp filters refuse every command that arranges signal delivery",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer starts its background thread again in a forked child, and the decoder filter, installed with TSYNC, covers it: its nanosleep is not on the decoder allowlist, so it can kill a child that made only allowed calls (the test skips its decoder children under TSan)."
+      },
+      {
+        "test": "The worker and decoder seccomp filters refuse to push input into a terminal",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer starts its background thread again in a forked child, and the decoder filter, installed with TSYNC, covers it: its nanosleep is not on the decoder allowlist, so it can kill a child that made only allowed calls (the test skips its decoder children under TSan)."
+      },
+      {
         "test": "Logging before hardening starts no thread, so Landlock and seccomp cover every logger thread",
         "message": "ThreadSanitizer",
         "reason": "ThreadSanitizer runs a background thread and starts it again in a forked child, so the child's task count includes a thread no production process has (the test skips itself under TSan)."

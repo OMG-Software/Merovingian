@@ -929,11 +929,24 @@ enum class FilterProfile
     decoder,
 };
 
+// ThreadSanitizer starts its background thread again in a forked child, and every filter is installed with TSYNC, so
+// the decoder filter covers that thread too. Its sleep (nanosleep) is not on the decoder allowlist: when the thread is
+// scheduled after the filter is in place, seccomp kills a child that made only allowed calls. The decoder's children
+// are left to the other jobs, which run them on the real filter; the main and worker allowlists both permit the sleep.
+auto skip_decoder_child_under_tsan(FilterProfile profile) -> void
+{
+    if (tsan_build && profile == FilterProfile::decoder)
+    {
+        SKIP("ThreadSanitizer's background thread runs under the decoder filter in a forked child");
+    }
+}
+
 // True when the child that installed `profile` and made `call` survived the call (whatever it returned), false when
 // seccomp killed it with SIGSYS. Any other end fails the test.
 template <typename Call>
 [[nodiscard]] auto child_survives(FilterProfile profile, Call call) -> bool
 {
+    skip_decoder_child_under_tsan(profile);
     auto pipe_ends = std::array<int, 2>{-1, -1};
     REQUIRE(::pipe(pipe_ends.data()) == 0);
     auto const pid = ::fork();
@@ -1156,6 +1169,7 @@ constexpr auto no_terminal_exit = 40;
 // installs `profile` and makes ioctl(slave, request, &byte), the call TIOCSTI takes. Reports whether seccomp killed it.
 [[nodiscard]] auto terminal_ioctl_outcome(FilterProfile profile, unsigned long request) -> TerminalCallOutcome
 {
+    skip_decoder_child_under_tsan(profile);
     auto const pid = ::fork();
     REQUIRE(pid >= 0);
     if (pid == 0)

@@ -65,6 +65,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
 * The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
   TSan's own interceptor and background thread make what they check unobservable.
+* The decoder seccomp filter's forked children skip under TSan, whose background thread the filter kills for sleeping,
+  so a child that made only allowed calls no longer fails the `tsan` job at random (ADR-0852).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
   publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
 * The scenarios that race a request against a password hash pause the hash until the other request is made, so a slow

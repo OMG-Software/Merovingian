@@ -726,3 +726,4 @@
 * [0849 - SRV lookups on glibc own their resolver state and serialise its setup](0849-srv-lookups-on-glibc-own-their-resolver-state-and-serialise-its-setup.md)
 * [0850 - `latest` is replaced only by a build of the same or a newer commit](0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)
 * [0851 - A scenario that races a password hash pauses the hash instead of timing it](0851-a-scenario-that-races-a-password-hash-pauses-the-hash-instead-of-timing-it.md)
+* [0852 - The decoder seccomp children skip under ThreadSanitizer instead of widening its allowlist](0852-the-decoder-seccomp-children-skip-under-threadsanitizer-instead-of-widening-its-allowlist.md)
