@@ -279,9 +279,13 @@ the `package.sha256` the results record, and its `/usr/bin/merovingian-server` t
 
 ## Rolling latest packages
 
-Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
-That workflow rebuilds packages for all supported platforms, replaces the
-rolling `latest` GitHub prerelease, and uploads fresh package checksums:
+Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml). That workflow rebuilds packages for all
+supported platforms, replaces the rolling `latest` GitHub prerelease, and uploads fresh package checksums. Its jobs are
+skipped on a pull request push and build in the merge queue and by hand, so a package that cannot build is caught before
+the merge, once the merge queue is turned on in the "Protect main" ruleset. Until the owner turns it on, a pull request
+merges after the core gate alone and the packages first build on the push to `main`. A failed check that the ruleset
+does not require, such as `NetBSD package`, does not block the merge; it blocks staging, signing and publishing `latest`
+([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)):
 
 | Artifact | Job |
 |---|---|
@@ -366,8 +370,42 @@ gpg --verify <package-file>.asc <package-file>
 ```
 
 The publish step resolves and deletes the existing `latest` release with an
-explicit `--repo "${{ github.repository }}"` scope before recreating it so the
-artifact-only job does not depend on checkout state.
+explicit `--repo "${REPOSITORY}"` scope before recreating it so the
+artifact-only job does not depend on checkout state. It recreates the release
+with `--target` set to the commit the packages were built from, so the `latest`
+tag names that commit. Publishes run one at a time in the
+`packages-publish-latest` concurrency group, and before deleting anything the
+step first checks that its own commit is still on `main`, and fails if a
+force-push or reset has discarded it. It then compares the tag's commit with its
+own: it publishes when its commit is the same or newer, leaves `latest` alone
+when the published build is newer, still on `main` and has its release, and fails
+without deleting anything when the two have diverged, `main` no longer holds the
+published commit, the newer tag has no release, or anything about the release or
+its tag cannot be read. It looks the tag up on its own, because `gh release
+create` would reuse a tag left behind by a deleted release; such a tag is
+compared like any other. The tag is the record of what is published, so the
+step never deletes it: it deletes the old release, moves the tag to its own
+commit (or makes it, on a first publish), then creates the release on that
+tag. If any of those steps fails, the tag still names the newest commit
+published or being published, and an older run stops at it.
+
+A publish that a later one cancelled while it waited can leave `latest` behind
+`main`'s newest build; re-run that run's `publish-latest`, or let the next push
+publish. After a force-push or a reset of `main` that removed the published
+commit, every publish fails until you recover it:
+
+1. Wait for any `publish-latest` job in progress to finish.
+2. Delete `latest`. If the release exists (`gh release view latest` succeeds),
+   run `gh release delete latest --cleanup-tag`. If only the tag is left, delete
+   the tag alone:
+   `gh api -X DELETE repos/OMG-Software/Merovingian/git/refs/tags/latest`.
+3. Re-run the newest run's `publish-latest`.
+
+A publish already past its checks when `main` moved can still replace `latest`,
+so deleting before it ends makes the newest run fail again. A run of the old
+history that has not reached its checks fails at the first one and publishes
+nothing; cancel those runs only to save runner time
+([ADR-0850](adr/0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
 
 The static Linux fallback artifact is built on Alpine/musl with `-static-pie`
 and packaged as `merovingian-<version>-linux-static-x86_64.tar.gz`. It is a

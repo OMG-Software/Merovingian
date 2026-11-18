@@ -53,6 +53,10 @@ options as the Codecov report, named by `sonar.coverageReportPaths`. The job bui
 own rather than reusing `coverage.yml`: scanning in that job would put the Codecov action, which skips
 its own signature check, beside `SONAR_TOKEN`, and handing its build directory to another workflow
 needs a `workflow_run` trigger and an artifact as large as the build.
+*Superseded in part by [ADR-0846](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md):
+the scan now runs in `coverage.yml`'s one instrumented build, and the Codecov upload moved to a job of its own, so it still
+never shares a job with `SONAR_TOKEN`. That job downloads the whole coverage artifact (Cobertura, SonarQube XML and HTML) but
+uploads only `coverage/coverage.xml` to Codecov, and no secret crosses the job boundary.*
 
 Meson already writes the compilation database, and SonarSource accepts one from any tool; the Build
 Wrapper would add a downloaded binary around the build for nothing this does not already give.

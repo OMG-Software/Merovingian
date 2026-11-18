@@ -533,9 +533,17 @@ namespace
 // call we count and control.
 struct CountingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
 {
-    std::uint64_t lookup_calls{0U};
-    std::uint64_t well_known_calls{0U};
     merovingian::federation::ResolvedAddressSet addresses_to_return{};
+
+    [[nodiscard]] auto lookup_count() const -> std::uint64_t
+    {
+        return lookup_calls.load();
+    }
+
+    [[nodiscard]] auto well_known_count() const -> std::uint64_t
+    {
+        return well_known_calls.load();
+    }
 
     [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
         -> merovingian::federation::WellKnownServerResult override
@@ -555,6 +563,11 @@ struct CountingDiscoveryNetwork final : public merovingian::federation::ServerDi
         ++lookup_calls;
         return addresses_to_return;
     }
+
+private:
+    // Atomic: CachedServerDiscovery calls the network outside its own lock, so concurrent misses count at once.
+    std::atomic<std::uint64_t> lookup_calls{0U};
+    std::atomic<std::uint64_t> well_known_calls{0U};
 };
 
 } // namespace
@@ -582,7 +595,7 @@ SCENARIO("CachedServerDiscovery serves fresh hits without calling the network", 
                 REQUIRE(first.discovery_allowed);
                 REQUIRE(second.discovery_allowed);
                 REQUIRE(second.pinned_addresses == std::vector<std::string>{"192.0.2.1"});
-                REQUIRE(network.lookup_calls == 1U);
+                REQUIRE(network.lookup_count() == 1U);
             }
         }
     }
@@ -612,7 +625,7 @@ SCENARIO("CachedServerDiscovery re-fetches after the TTL expires", "[federation]
             {
                 REQUIRE(second.discovery_allowed);
                 REQUIRE(second.pinned_addresses == std::vector<std::string>{"198.51.100.7"});
-                REQUIRE(network.lookup_calls == 2U);
+                REQUIRE(network.lookup_count() == 2U);
             }
         }
     }
@@ -640,7 +653,7 @@ SCENARIO("CachedServerDiscovery caches negative results for the TTL", "[federati
             {
                 REQUIRE_FALSE(first.discovery_allowed);
                 REQUIRE_FALSE(second.discovery_allowed);
-                REQUIRE(network.lookup_calls == 1U);
+                REQUIRE(network.lookup_count() == 1U);
             }
         }
     }
@@ -660,7 +673,7 @@ SCENARIO("CachedServerDiscovery never returns stale pinned_addresses past TTL", 
         auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
 
         std::ignore = cached.discover("192.0.2.1", 30U);
-        REQUIRE(network.lookup_calls == 1U);
+        REQUIRE(network.lookup_count() == 1U);
 
         WHEN("DNS changes and the next discovery happens past the TTL")
         {
@@ -675,7 +688,7 @@ SCENARIO("CachedServerDiscovery never returns stale pinned_addresses past TTL", 
                 // and return fresh pins once TTL has elapsed.
                 REQUIRE(refreshed.discovery_allowed);
                 REQUIRE(refreshed.pinned_addresses == std::vector<std::string>{"198.51.100.1"});
-                REQUIRE(network.lookup_calls == 2U);
+                REQUIRE(network.lookup_count() == 2U);
             }
         }
     }
@@ -729,7 +742,7 @@ SCENARIO("CachedServerDiscovery is safe under concurrent access", "[federation][
                 // race ahead of the first store; either way it is bounded and
                 // every result is valid (asserted above). Sanity bound: at
                 // most one miss per thread.
-                REQUIRE(network.lookup_calls <= threads);
+                REQUIRE(network.lookup_count() <= threads);
             }
         }
     }
@@ -770,7 +783,7 @@ SCENARIO("fetch_remote_server_keys via CachedServerDiscovery fails closed on dis
                 REQUIRE_FALSE(second.ok);
                 // The negative discovery result is served from the cache, proving the
                 // fetch overload shares the same TTL cache as the resolver's lookup.
-                REQUIRE(network.lookup_calls == 1U);
+                REQUIRE(network.lookup_count() == 1U);
             }
         }
     }
@@ -831,7 +844,7 @@ SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery serves a
                 REQUIRE(second->signing_key.key_id == "ed25519:auto");
                 // Proves the resolver's discovery lookup goes through the shared TTL
                 // cache: two resolver calls only ever cost one upstream discovery.
-                REQUIRE(network.lookup_calls == 1U);
+                REQUIRE(network.lookup_count() == 1U);
             }
         }
     }
@@ -865,7 +878,7 @@ SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery returns 
                 // Do NOT remove/change - returning a key here would bypass discovery.
                 REQUIRE_FALSE(first.has_value());
                 REQUIRE_FALSE(second.has_value());
-                REQUIRE(network.lookup_calls == 1U);
+                REQUIRE(network.lookup_count() == 1U);
             }
         }
     }
@@ -927,8 +940,8 @@ SCENARIO("make_persistent_remote_key_resolver answers our own server name from o
                 REQUIRE(resolved->signing_key.server_name == "example.org");
                 REQUIRE(resolved->signing_key.key_id == "ed25519:own");
                 REQUIRE(resolved->signing_key.public_key_bytes == own_public_bytes);
-                REQUIRE(network.lookup_calls == 0U);
-                REQUIRE(network.well_known_calls == 0U);
+                REQUIRE(network.lookup_count() == 0U);
+                REQUIRE(network.well_known_count() == 0U);
             }
         }
 
@@ -941,8 +954,8 @@ SCENARIO("make_persistent_remote_key_resolver answers our own server name from o
             {
                 REQUIRE_FALSE(planted.has_value());
                 REQUIRE_FALSE(unknown.has_value());
-                REQUIRE(network.lookup_calls == 0U);
-                REQUIRE(network.well_known_calls == 0U);
+                REQUIRE(network.lookup_count() == 0U);
+                REQUIRE(network.well_known_count() == 0U);
             }
         }
     }

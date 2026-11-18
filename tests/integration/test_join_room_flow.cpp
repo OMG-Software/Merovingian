@@ -67,6 +67,8 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/Tls.hpp"
@@ -683,7 +685,7 @@ SCENARIO("join_room completes a live federated join with every member of the ret
             {
                 CAPTURE(template_has_hashes, profile_mode, result.reason);
                 REQUIRE(result.ok);
-                auto const lock = std::lock_guard{runtime.mutex};
+                auto lock = merovingian::homeserver::RuntimeLock{runtime.mutex};
                 auto const& store = runtime.database.persistent_store;
 
                 auto const join_state_row =
@@ -791,7 +793,12 @@ SCENARIO("join_room completes a live federated join with every member of the ret
                     envelope.auth_event_ids = std::move(auth_event_ids);
                     envelope.json = signed_json.output;
 
-                    auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    // Ingestion takes the room stripe before runtime.mutex (ADR-0848), so it runs with the
+                    // lock this THEN took released; nothing read under it is used while it is released.
+                    auto const ingest_result = [&] {
+                        auto const released = merovingian::homeserver::RuntimeLockRelease{lock};
+                        return merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    }();
                     CAPTURE(ingest_result.reason);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
                 }
@@ -1865,7 +1872,7 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                 REQUIRE(result.ok);
                 REQUIRE(result.status == 200U);
 
-                auto const lock = std::lock_guard{runtime.mutex};
+                auto lock = merovingian::homeserver::RuntimeLock{runtime.mutex};
                 auto const& store = runtime.database.persistent_store;
 
                 // Find the stored join event: the one m.room.member row for
@@ -1975,7 +1982,12 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                     envelope.auth_event_ids = std::move(auth_event_ids);
                     envelope.json = serialized.output;
 
-                    auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    // Ingestion takes the room stripe before runtime.mutex (ADR-0848), so it runs with the
+                    // lock this THEN took released.
+                    auto const ingest_result = [&] {
+                        auto const released = merovingian::homeserver::RuntimeLockRelease{lock};
+                        return merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    }();
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
                 }
             }
@@ -2242,7 +2254,13 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                             R"(","content":{"body":"during join","msgtype":"m.text"},"depth":4,"origin_server_ts":2000,"prev_events":[")" +
                             join_id + R"("],"auth_events":[")" + create_id + R"(",")" + power_id + R"(",")" + join_id +
                             R"("]})";
-                        auto const lock = std::lock_guard{runtime.mutex};
+                        auto lock = merovingian::homeserver::RuntimeLock{runtime.mutex};
+                        // Ingestion takes the room stripe before runtime.mutex (ADR-0848), so each receipt runs
+                        // with this hold released; the main thread is waiting on this answer meanwhile.
+                        auto const sink = [&](merovingian::federation::InboundPduEnvelope const& pdu) {
+                            auto const released = merovingian::homeserver::RuntimeLockRelease{lock};
+                            return runtime.federation.pdu_sink(pdu);
+                        };
                         auto const with_hash = merovingian::canonicaljson::parse_lossless(message);
                         auto const hash = merovingian::events::make_content_hash(with_hash.value);
                         auto message_object = std::get<merovingian::canonicaljson::Object>(with_hash.value.storage());
@@ -2264,19 +2282,19 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                         auto const events = runtime.database.persistent_store.events.size();
                         auto const ordering = runtime.database.next_stream_ordering;
                         auto const sync = runtime.database.persistent_store.next_sync_stream_id;
-                        deferred = runtime.federation.pdu_sink(pending);
+                        deferred = sink(pending);
                         if (deferred.status == merovingian::federation::PduIngestionStatus::deferred &&
                             runtime.pending_federated_joins.contains(room_id))
                         {
                             auto const initial_bytes = runtime.pending_federated_joins.at(room_id).json_bytes;
-                            std::ignore = runtime.federation.pdu_sink(pending);
+                            std::ignore = sink(pending);
                             duplicate_unchanged =
                                 runtime.pending_federated_joins.at(room_id).pdus.size() == 1U &&
                                 runtime.pending_federated_joins.at(room_id).json_bytes == initial_bytes;
                             auto other = pending;
                             other.room_id = "!other:resident.example.org";
                             other.event_id = "$unrelated";
-                            auto const other_result = runtime.federation.pdu_sink(other);
+                            auto const other_result = sink(other);
                             other_room_refused =
                                 other_result.status == merovingian::federation::PduIngestionStatus::rejected_invalid;
                             auto const overlap = merovingian::homeserver::join_room(runtime, login.value, room_id,
@@ -2314,7 +2332,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                                         raw, resident_server, resident_key_id, resident_key_seed, "10");
                                     auto envelope = *merovingian::federation::parse_inbound_pdu_envelope(json, "10");
                                     envelope.origin = resident_server;
-                                    auto const result = runtime.federation.pdu_sink(envelope);
+                                    auto const result = sink(envelope);
                                     if (result.status == merovingian::federation::PduIngestionStatus::main_overloaded)
                                     {
                                         refused_excess = true;
@@ -3316,7 +3334,7 @@ SCENARIO("A PDU parked during a federated join is judged under the room version 
                 merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
             server_thread.join();
 
-            auto const lock = std::lock_guard{runtime.mutex};
+            auto lock = merovingian::homeserver::RuntimeLock{runtime.mutex};
             auto const& store = runtime.database.persistent_store;
             auto const status_of = [&](std::string const& event_id) -> std::string {
                 auto const stored = store.events.find_in_room(room_id, event_id);
@@ -3364,7 +3382,11 @@ SCENARIO("A PDU parked during a federated join is judged under the room version 
                                  quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
                                  R"(],"content":{"body":"late","msgtype":"m.text"}})",
                              policy);
-                auto const answer = runtime.federation.pdu_sink(late);
+                auto const answer = [&] {
+                    // Ingestion takes the room stripe before runtime.mutex (ADR-0848).
+                    auto const released = merovingian::homeserver::RuntimeLockRelease{lock};
+                    return runtime.federation.pdu_sink(late);
+                }();
 
                 THEN("it is refused: the version it was verified under is not the room's")
                 {

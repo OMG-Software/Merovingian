@@ -4,11 +4,18 @@ name: Documentation site
 # an unlisted document fails CI before it reaches main, and keeps the rendered
 # site as an artifact for review. Only main publishes to GitHub Pages
 # (ADR-0101).
+#
+# A merge-queue entry is a push to gh-readonly-queue/... as well as a merge_group
+# event, with the same ref; both runs would share the concurrency group below and
+# one would cancel the other's required `build` check (ADR-0840). GitHub refuses
+# `branches` and `branches-ignore` together, so the queue is a `!` pattern.
 on:
   push:
     branches:
       - "**"
+      - "!gh-readonly-queue/**"
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:

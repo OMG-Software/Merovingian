@@ -67,11 +67,20 @@ production code's call to `tests/support/RealPasswordHashCost.cpp`, so no produc
 - The override refuses any cost but the one production asks for, so a downgrade in `src/auth/Password.cpp` makes every
   registration and login fail rather than go unnoticed.
 - `merovingian-password-cost-tests` is linked without the override and proves what the shipped code does.
-- A scenario that needs the hash to take real time holds `merovingian::tests::RealPasswordHashCost` from its first line. That
-  means any scenario racing another request against the window in which the runtime lock is released around Argon2id: at
-  minimum cost that window is too short for the other thread to land in, and the scenario fails intermittently, or
-  passes without exercising the race. Verifying costs whatever the stored hash was made with, so a guard taken after the
-  user registered is too late.
+- A scenario that races another request against a password hash (the window in which the runtime lock is released around
+  `crypto_pwhash_str`) pauses the hash with `merovingian::tests::PasswordHashPause`, never by timing it
+  ([ADR-0851](adr/0851-a-scenario-that-races-a-password-hash-pauses-the-hash-instead-of-timing-it.md)):
+  - arm the pause after the setup's own hashes;
+  - declare, in this order, the state the worker writes, the worker's `JoiningThreads`, then the pause. Unwinding then
+    releases the hash, joins the worker, and only then destroys what it wrote;
+  - `REQUIRE` that `wait_until_hashing(timeout)` returned true;
+  - make the competing request, then `release()` and join.
+
+  A window of real cost is not a guarantee: on a loaded sanitizer runner the competing request landed after the change
+  had committed, and the scenario failed while testing nothing.
+- A scenario that races password *verification* (`crypto_pwhash_str_verify`, which the wrapper does not reach) holds
+  `merovingian::tests::RealPasswordHashCost` from its first line. Verifying costs whatever the stored hash was made
+  with, so a guard taken after the user registered is too late.
 - Do not add a new test binary that registers users without the same link argument and support file, unless it exists to
   see the real cost.
 
@@ -83,6 +92,35 @@ timeout kills it. Connect with `merovingian::tests::connect_within`
 (`tests/integration/BoundedConnect.hpp`), never a blocking `::connect()`: on
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
+
+## Integration test shards
+
+`merovingian-integration-tests` runs as several Meson tests so that the suite's wall time is a fraction of the binary's
+(it took 806 s serially on Ubuntu, against under 135 s for every other test). `tests/meson.build` registers:
+
+- `integration-tests-shard-N-of-4` (N = 1..4, one per vCPU of a 4-vCPU CI runner): the scenarios not tagged `[postgresql]`
+  or `[serial]`, run with `--order rand --rng-seed <fixed> --shard-count 4 --shard-index N-1`. Catch2 orders scenarios
+  randomly with a seed chosen per process and gives a shard a contiguous slice of that order, so every shard must be
+  given the same order and a numeric seed, or shards overlap and drop scenarios. The fixed seed spreads the heavy files
+  over the shards. Local runs of the binary itself stay randomly ordered.
+- `integration-tests-postgresql`: every `[postgresql]` scenario in one process. They share one database
+  (`MEROVINGIAN_TEST_POSTGRESQL_URI`), so two processes must not run them at once.
+- `integration-tests-serial` (`is_parallel: false`): scenarios tagged `[serial]`, which must run with no other test
+  running. The only one probes a free port and lets a spawned `merovingian-server` bind it later; another process's
+  sockets could take that port in between. Tag a scenario `[serial]` when it needs a port, or another machine-wide
+  resource, to stay free between choosing it and using it. A scenario that reserves a port, closes it and expects
+  connection refused is accepted: it would need a listener on that exact port to fail.
+- `integration-shard-coverage`: `scripts/check-integration-shards.sh` lists what the tests above select and fails unless
+  every scenario of the binary is selected exactly once. Changing the shard count, seed or filters means changing them
+  in the one place `tests/meson.build` defines them; `tests/tooling/test_integration_shards.py` checks the registration.
+
+A scenario that reaches PostgreSQL must carry `[postgresql]` (below), or it would run in a shard beside the others.
+`[serial]` and `[postgresql]` are mutually exclusive under this registration: a scenario with both is selected by both
+Meson tests, twice, and `integration-shard-coverage` fails.
+Scenario files, ports and temporary paths are already per process (ADR-0753; listeners bind port 0), which is why the
+shards can run side by side. Each shard writes its own skip report (`<binary>-<pid>.xml`), which
+`check_expected_skips.py` reads with the rest. With the PostgreSQL URI set, run `[postgresql]` through the Meson test,
+not through several processes of your own.
 
 ## Live PostgreSQL scenarios
 
@@ -369,12 +407,35 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 - TSan suppressions live in `tests/sanitizer/tsan.supp` and may target only
   third-party dependencies. Never suppress a report whose stack runs through
   `merovingian::` code — fix the race instead.
+- A socket exchange orders nothing TSan can see. A test that reads what a mock
+  server's thread recorded (`captured`, `request_seen`) joins that thread first,
+  in the `WHEN` after the action; `ScopedThreadJoin` joins only at scope exit,
+  after the `THEN` has read it. A counter a test double bumps from calls that
+  may overlap is a `std::atomic`. Never order such accesses with a sleep.
+- A mock server's responder runs on the mock's thread, so it never uses a
+  Catch2 assertion (see "Concurrency and locking tests" above): TSan reports
+  Catch2's last-assertion globals racing the main thread's. It records what
+  went wrong as a value that the scenario asserts on after the join, as
+  `InviteeServer::finish()` in `test_invite_federation_flow.cpp` does.
+- A scenario that the TSan runtime itself makes unobservable skips under TSan
+  and is listed in the `tsan` group of `tests/expected_skips.json`. That covers
+  mlock lock state, since sanitizer_common's `mlock` interceptor locks nothing,
+  a forked child's task count, since TSan starts its background thread
+  again in the child, and a forked child under the decoder seccomp filter,
+  which covers that thread and refuses its sleep (ADR-0852). Never widen a
+  filter to let a sanitizer's thread through. Call `SKIP` as a statement at
+  the top of a section, never from a helper an assertion calls: Catch2 reports
+  a `SKIP` thrown inside a `REQUIRE` expression as an unexpected exception.
+- A test calls `homeserver::ingest_pdu_event` with `runtime.mutex` released at
+  every level: it refuses a caller that holds it (ADR-0848). Read the store under
+  a `RuntimeLock`, then call ingestion inside a `RuntimeLockRelease` scope.
 
 ## Coverage
 
 The `coverage` workflow measures line and branch coverage over the whole suite (unit,
-conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov, which
-requires a fixed 50% target on a pull request's own lines (patch) and a fixed 60% target on overall line coverage
+conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov from its own `codecov` job; the Sonar scan is a step of the `coverage` job
+([ADR-0846](adr/0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)).
+Codecov requires a fixed 50% target on a pull request's own lines (patch) and a fixed 60% target on overall line coverage
 (project). Each target has a tolerance below it, not a limit on the drop from the base: the patch status passes
 down to 45% (5% threshold) and the project status down to 58% (2% threshold), whatever the base was
 (`.codecov.yml`; both statuses are non-informational). gcovr runs with
@@ -389,10 +450,18 @@ beside them.
 
 ## CI job order
 
-GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request; queued
+GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request. A pull
+request push starts few jobs: of `ci.yml`'s build-and-test jobs only `ubuntu-build-and-test` and
+`freebsd-build-and-test` run there, after their `queue-after-analyses` gate, every other `ci.yml` job and every `packages.yml` job is skipped (a skipped job reports success), and the merge queue
+(`merge_group`), pushes to `main`, `ci.yml`'s weekly schedule (`packages.yml` has none) and `workflow_dispatch` run the full matrix
+([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). A new push to a
+pull request cancels that pull request's superseded runs
+([ADR-0842](adr/0842-a-new-push-to-a-pull-request-cancels-its-superseded-runs.md)). A push to a `claude/**` or `codex/**`
+branch with no pull request still runs the documentation-site build (`pages.yml`); every other workflow needs a pull request,
+or a manual run from the Actions tab (workflow, then Run workflow) of a workflow that declares `workflow_dispatch` ([ADR-0841](adr/0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)). Queued
 jobs are not served in the order they joined, so the only lever is when a job joins the queue. Jobs join in three tiers
 ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md),
-[ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`sonarcloud`, CodeQL, `tsan`, `asan-ubsan`, then coverage, fuzzing, clang-tidy,
+[ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`coverage`, which also runs the Sonar scan, CodeQL, `tsan`, `asan-ubsan`, then fuzzing, clang-tidy,
 gitleaks, dependency review and triage) need nothing and join at once; every build and test job in `ci.yml`,
 `postgres-integration.yml` and `reproducible-build.yml` that needs no other job `needs:` that workflow's instant gate
 `queue-after-analyses`; and every package job in `packages.yml` `needs:` `queue-after-build-and-test`, which sleeps 60

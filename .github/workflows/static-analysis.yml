@@ -6,13 +6,20 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
+  merge_group:
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: static-analysis-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   clang-tidy:
     runs-on: ubuntu-latest
+    # Bounds the whole step: each file has its own timeout below.
+    timeout-minutes: 60
     env:
       CC: clang
       CXX: clang++
@@ -45,27 +52,54 @@ jobs:
       - name: Generate compile commands
         run: sh scripts/build-linux.sh --builddir build --compile-only
 
-      - name: Run clang-tidy on changed C++ translation units
+      - name: Run clang-tidy on changed lines
+        # bash runs with pipefail, so a failed git diff fails the step instead of reading as "nothing changed".
+        shell: bash
+        env:
+          # The commit the change is compared with: the pull request's base, or the merge
+          # queue's base. Empty for a push or a manual run.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # A push's previous tip (all zeros when the push created the branch).
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          base_branch="${GITHUB_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_branch}"
+          set -eu
+          # The checkout is one commit deep, so the history has no merge base and a
+          # three-dot diff fails. A two-dot diff compares the two trees and needs only both
+          # commits. Before, a failed three-dot diff behind `|| true` read as "no changed
+          # files", and clang-tidy never ran on a pull request.
+          # A push to main compares with the tip it replaced, not with main itself, which is
+          # the pushed commit and would leave nothing to check. A manual run, or a push that
+          # created the branch, compares with the checked-out commit's parent.
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${GITHUB_EVENT_NAME}" = "push" ] &&
+            [ -n "${PUSH_BEFORE}" ] && [ "${PUSH_BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            base="${PUSH_BEFORE}"
+          fi
+          if [ -z "${base}" ]; then
+            git fetch --no-tags --deepen=1 origin "${GITHUB_SHA}"
+            base="$(git rev-parse HEAD^)"
+          fi
+          # FETCH_HEAD is the base commit from here on.
+          git fetch --no-tags --depth=1 origin "${base}"
 
-          changed_sources="${RUNNER_TEMP:-/tmp}/clang-tidy-sources.txt"
-          git diff --name-only FETCH_HEAD...HEAD -- src tests | \
-            grep -E '\.cpp$' | \
-            sort > "${changed_sources}" || true
-
-          if [ ! -s "${changed_sources}" ]; then
-            echo "No changed C++ translation units for clang-tidy."
-            exit 0
+          # clang-tidy-diff runs clang-tidy on each changed translation unit with a line
+          # filter, so only diagnostics on added or changed lines count: code that predates
+          # the gate is not failed by an unrelated edit to the same file (ADR-0847).
+          # It exits 1 when any run reports an error or is killed by the timeout. The
+          # largest test files take over two minutes each with every core busy, so the
+          # per-file timeout is 15 minutes; a file killed by it fails the gate, never passes.
+          # Use the script of the same LLVM release as the clang-tidy it drives.
+          clang_tidy="$(command -v clang-tidy)"
+          major="$("${clang_tidy}" --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          clang_tidy_diff="/usr/bin/clang-tidy-diff-${major}.py"
+          if [ -z "${major}" ] || [ ! -f "${clang_tidy_diff}" ]; then
+            echo "::error::no clang-tidy-diff script for clang-tidy ${major:-of unknown version}"
+            exit 1
           fi
 
-          tr '\n' '\0' < "${changed_sources}" | \
-            xargs -0 -n 1 -P "$(nproc)" sh -c '
-              echo "::group::clang-tidy $1"
-              timeout 120s clang-tidy -p build "$1"
-              echo "::endgroup::"
-            ' sh
+          git diff -U0 --diff-filter=d FETCH_HEAD HEAD -- src tests | \
+            python3 "${clang_tidy_diff}" -p1 -path build -iregex '.*\.cpp' \
+              -clang-tidy-binary "${clang_tidy}" -j "$(nproc)" -timeout 900
 
       - name: Run unsafe source gates
         run: bash scripts/reject-unsafe.sh

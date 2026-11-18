@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -52,6 +55,63 @@ def workflow_job(workflow: str, job: str) -> str:
     if match is None:
         raise AssertionError(f"workflow job {job} is missing")
     return match.group(1)
+
+
+def publish_latest_script() -> str:
+    """Return the publish-latest step's run script, ready for bash.
+
+    The one expression GitHub would substitute, the run's commit in the release
+    notes, is replaced with `$GITHUB_SHA`; any other is an error, so a new one
+    cannot reach bash as a literal `${{`.
+    """
+    job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
+    match = re.search(
+        r"(?m)^      - name: Publish rolling latest release\n(?:^        (?!run:).*\n)*^        run: \|\n"
+        r"((?:^          .*\n|^\s*\n)+)",
+        job,
+    )
+    if match is None:
+        raise AssertionError("publish-latest has no 'Publish rolling latest release' run step")
+    script = textwrap.dedent(match.group(1)).replace("${{ github.sha }}", "${GITHUB_SHA}")
+    if "${{" in script:
+        raise AssertionError("the publish script uses an expression this test does not substitute")
+    return script
+
+
+def write_fake_gh(path: Path) -> None:
+    """Write a fake `gh` that logs each call and answers from FAKE_* variables."""
+    path.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$GH_LOG"\n'
+        'case "$1 $2" in\n'
+        '  "release delete") exit 0 ;;\n'
+        '  "release create") [ "$FAKE_CREATE" != FAIL ] || exit 1 ;;\n'
+        '  "api -X")\n'
+        '    case "$3 $4" in\n'
+        '      "PATCH repos/owner/repo/git/refs/tags/latest"|"POST repos/owner/repo/git/refs") ;;\n'
+        "      *) exit 98 ;;\n"
+        "    esac ;;\n"
+        '  "api repos/"*/releases/tags/latest)\n'
+        '    case "$FAKE_RELEASE" in\n'
+        "      1) echo 42 ;;\n"
+        '      0) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
+        '      *) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1 ;;\n'
+        "    esac ;;\n"
+        '  "api repos/"*/git/matching-refs/tags/latest)\n'
+        '    [ "$FAKE_TAG" = FAIL ] && exit 1\n'
+        '    printf \'%s\\n\' "$FAKE_TAG" ;;\n'
+        '  "api repos/"*/commits/latest)\n'
+        '    [ "$FAKE_COMMIT" = FAIL ] && exit 1\n'
+        '    printf \'%s\\n\' "$FAKE_COMMIT" ;;\n'
+        '  "api repos/"*/compare/"$GITHUB_SHA"...main) printf \'%s\\n\' "$FAKE_BUILD_ON_MAIN" ;;\n'
+        '  "api repos/"*/compare/*...main) printf \'%s\\n\' "$FAKE_ON_MAIN" ;;\n'
+        '  "api repos/"*/compare/*) printf \'%s\\n\' "$FAKE_STATUS" ;;\n'
+        "  *) echo \"unexpected gh call: $*\" >&2; exit 99 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    path.chmod(0o755)
 
 
 def project_version() -> str:
@@ -136,18 +196,130 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertNotIn('[ -f "$f" ] && mv', stage)
 
     def test_publish_latest_retargets_the_release_in_repository_scope(self) -> None:
-        # GIVEN the rolling package publication workflow.
+        # GIVEN the rolling package publication job.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
-        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
 
         # WHEN the main branch replaces the rolling latest release.
-        # THEN the workflow resolves, deletes, and recreates that release against
-        # the current repository explicitly instead of relying on checkout state.
-        self.assertIn("publish-latest:", workflow)
-        self.assertIn("gh release view latest --repo", workflow)
-        self.assertIn("gh release delete latest \\", workflow)
-        self.assertIn('--repo "${{ github.repository }}"', workflow)
-        self.assertIn("gh release create latest \\", workflow)
+        # THEN every gh call names the repository explicitly instead of relying on
+        # checkout state, and the release is tagged at the commit it was built from.
+        self.assertIn("REPOSITORY: ${{ github.repository }}", job)
+        commands = re.sub(r"\\\n\s*", " ", job)
+        for verb in ("delete", "create"):
+            self.assertRegex(commands, rf'gh release {verb} latest[^\n]*--repo "\$\{{REPOSITORY\}}"')
+        api_paths = re.findall(r'gh api (?:-X [A-Z]+ )?"([^"]*)"', commands)
+        self.assertTrue(api_paths, "the publish step makes no gh api call")
+        for path in api_paths:
+            self.assertTrue(path.startswith("repos/${REPOSITORY}/"), path)
+        self.assertRegex(commands, r'gh release create latest[^\n]*--target "\$\{GITHUB_SHA\}"')
+
+    def test_every_publish_of_latest_waits_for_the_one_before_it(self) -> None:
+        # GIVEN the rolling package publication job.
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
+
+        # WHEN two pushes to main reach it at once.
+        # THEN one fixed group holds them in turn, and a publish already deleting
+        # the old release is never cancelled before it creates the new one (ADR-0850).
+        concurrency = re.search(r"(?m)^    concurrency:\n((?:^      .*\n)+)", job)
+        self.assertIsNotNone(concurrency, "publish-latest has no job-level concurrency group")
+        self.assertIn("group: packages-publish-latest\n", concurrency.group(1))
+        self.assertIn("cancel-in-progress: false\n", concurrency.group(1))
+        self.assertNotIn("${{", concurrency.group(1), "the group must be one name for every run")
+
+    def test_publish_latest_never_replaces_a_release_built_from_a_newer_commit(self) -> None:
+        # GIVEN the publish step's own script and a fake gh that records each call.
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not available")
+        run = publish_latest_script()
+        this_commit = "b" * 40
+        published = "a" * 40
+        # Each case: whether main holds this run's commit, release ("1" exists, "0" a 404, "ERR" another
+        # failure), tag ("1", "0" or "FAIL"), the commit the tag names ("FAIL" a failed call), its comparison with
+        # this run and with main, then the exit status and what the step may do: publish, delete the release, and
+        # move the tag to this run's commit or make it. The tag is never deleted.
+        cases = (
+            ("nothing published yet", "ahead", "0", "0", "", "", "", 0, "publish make-tag"),
+            ("this run is newer", "ahead", "1", "1", published, "ahead", "", 0, "publish delete-release move-tag"),
+            ("this run is main's tip", "identical", "1", "1", published, "ahead", "", 0, "publish delete-release move-tag"),
+            ("a re-run of the same commit", "ahead", "1", "1", published, "identical", "", 0, "publish delete-release move-tag"),
+            ("this run is older, main holds the newer", "ahead", "1", "1", published, "behind", "ahead", 0, ""),
+            ("this run is older, main is at the newer", "ahead", "1", "1", published, "behind", "identical", 0, ""),
+            ("main was reset behind the published commit", "ahead", "1", "1", published, "behind", "behind", 1, ""),
+            ("histories diverged", "ahead", "1", "1", published, "diverged", "", 1, ""),
+            ("published commit unreadable", "ahead", "1", "1", "", "ahead", "", 1, ""),
+            ("published commit lookup fails", "ahead", "1", "1", "FAIL", "ahead", "", 1, ""),
+            ("a leftover tag, this run newer", "ahead", "0", "1", published, "ahead", "", 0, "publish move-tag"),
+            ("a leftover tag, this run older", "ahead", "0", "1", published, "behind", "ahead", 1, ""),
+            ("a release without its tag", "ahead", "1", "0", "", "", "", 1, ""),
+            ("release lookup fails", "ahead", "ERR", "0", "", "", "", 1, ""),
+            ("tag lookup fails", "ahead", "1", "FAIL", published, "ahead", "", 1, ""),
+            ("main was reset behind this run", "behind", "1", "1", published, "ahead", "", 1, ""),
+            ("this run's history was discarded", "diverged", "1", "1", published, "ahead", "", 1, ""),
+            ("this run's history was discarded, nothing published", "diverged", "0", "0", "", "", "", 1, ""),
+            ("main's answer about this run is unreadable", "", "1", "1", published, "ahead", "", 1, ""),
+            # The release is gone and the tag already moved when creating the new one fails: the job fails, and the
+            # tag left at this run's commit is what stops an older run (the leftover-tag case above).
+            ("the new release cannot be created", "ahead", "1", "1", published, "ahead", "", 1, "publish delete-release move-tag"),
+        )
+        create_fails = {"the new release cannot be created"}
+        for name, build_on_main, release, tag, commit, status, on_main, want_exit, want in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                log = tmp_path / "gh.log"
+                write_fake_gh(tmp_path / "gh")
+                env = {
+                    "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "GITHUB_SHA": this_commit,
+                    "GITHUB_REF_NAME": "main",
+                    "REPOSITORY": "owner/repo",
+                    "GH_LOG": str(log),
+                    "FAKE_RELEASE": release,
+                    "FAKE_TAG": tag,
+                    "FAKE_COMMIT": commit,
+                    "FAKE_STATUS": status,
+                    "FAKE_ON_MAIN": on_main,
+                    "FAKE_BUILD_ON_MAIN": build_on_main,
+                    "FAKE_CREATE": "FAIL" if name in create_fails else "",
+                }
+
+                # WHEN the step runs.
+                result = subprocess.run(
+                    [bash, "-c", run], cwd=tmp, env=env, capture_output=True, text=True, check=False
+                )
+
+                # THEN it publishes only over a tag at the same commit or an ancestor whose
+                # build main still holds, and anything it cannot prove stops the job before
+                # anything is deleted.
+                calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+                self.assertEqual(result.returncode, want_exit, result.stdout + result.stderr)
+                created = [call for call in calls if call.startswith("release create latest")]
+                done = set()
+                if created:
+                    done.add("publish")
+                    self.assertIn(f"--target {this_commit}", created[0])
+                    self.assertIn("--verify-tag", created[0])
+                deleted = [call for call in calls if call.startswith("release delete latest")]
+                if deleted:
+                    done.add("delete-release")
+                    self.assertNotIn("--cleanup-tag", deleted[0])
+                moved = f"api -X PATCH repos/owner/repo/git/refs/tags/latest -f sha={this_commit} -F force=true --silent"
+                made = f"api -X POST repos/owner/repo/git/refs -f ref=refs/tags/latest -f sha={this_commit} --silent"
+                if moved in calls:
+                    done.add("move-tag")
+                if made in calls:
+                    done.add("make-tag")
+                self.assertFalse([call for call in calls if call.startswith("api -X DELETE")], calls)
+                self.assertEqual(done, set(want.split()), calls)
+                # The release goes first, then the tag moves, then the release is created on it.
+                order = [call for call in calls if call in (moved, made) or call in deleted or call in created]
+                self.assertEqual(order, deleted + [call for call in calls if call in (moved, made)] + created, calls)
+                # The first call is the check that main holds this run's commit.
+                self.assertEqual(calls[:1], [f"api repos/owner/repo/compare/{this_commit}...main --jq .status"])
+                if build_on_main in ("ahead", "identical") and tag == "1" and commit not in ("", "FAIL"):
+                    self.assertIn(
+                        f"api repos/owner/repo/compare/{published}...{this_commit} --jq .status", calls
+                    )
 
     def test_package_scripts_use_the_project_version(self) -> None:
         # GIVEN the Meson project version is the canonical release version.
@@ -430,7 +602,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         # every leg succeeded.
         self.assertIn("name: Fedora RPM package\n", job)
         self.assertIn("needs: rpm", job)
-        self.assertIn("if: always()", job)
+        self.assertIn("if: ${{ always() && github.event_name != 'pull_request' }}", job)
         self.assertIn("${{ needs.rpm.result }}", job)
         self.assertIn('test "${RESULT}" = success', job)
 
@@ -658,7 +830,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         aggregate = workflow_job(workflow, "deb-all-releases")
         self.assertIn("name: Debian package\n", aggregate)
         self.assertIn("needs: deb", aggregate)
-        self.assertIn("if: always()", aggregate)
+        self.assertIn("if: ${{ always() && github.event_name != 'pull_request' }}", aggregate)
         self.assertIn("${{ needs.deb.result }}", aggregate)
         self.assertIn('test "${RESULT}" = success', aggregate)
 
@@ -676,7 +848,12 @@ class PackagesWorkflowTests(unittest.TestCase):
         # WHEN the OpenSUSE package matrix is read
         # THEN Tumbleweed keeps the required check name and its dist tag, Leap 16.0 gets
         # its own, and each leg keeps its own cache and artifact.
-        self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM", job)
+        self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM package", job)
+        # AND the check the ruleset requires comes from an aggregate: a matrix job that a
+        # job-level `if` skips reports its unexpanded name, which matches nothing.
+        aggregate = workflow_job(workflow, "opensuse-rpm-all-flavours")
+        self.assertIn("name: OpenSUSE Tumbleweed RPM\n", aggregate)
+        self.assertIn("needs: opensuse-rpm", aggregate)
         self.assertIn("- flavour: Tumbleweed\n            image: opensuse/tumbleweed\n", job)
         self.assertIn("- flavour: Leap 16.0\n            image: opensuse/leap:16.0\n", job)
         self.assertIn("dist: .tumbleweed\n", job)

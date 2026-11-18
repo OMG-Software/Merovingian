@@ -37,9 +37,14 @@ warning-as-error still applies to project code rather than inline C headers
 from the dependency checkout. C++ sources include a project-owned adapter rather
 than `yyjson.h` directly.
 
-CI runs clang-tidy on changed C++ translation units with parallel per-file log
-groups and timeouts. Headers are analyzed transitively through the Meson compile
-database instead of being invoked as standalone clang-tidy inputs.
+CI runs clang-tidy through `clang-tidy-diff` on the lines a change adds or edits
+in C++ translation units under `src/` and `tests/`, compared with the pull
+request's or merge queue's base commit (for a push, the tip it replaced; for a
+manual run, the commit's parent), with a per-file timeout; a diagnostic on
+an unchanged line does not fail it
+([ADR-0847](adr/0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)).
+Headers are not run as standalone clang-tidy inputs. To check one file locally,
+run `clang-tidy -p build <file>`.
 The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
 OpenSSL is the selected TLS provider and is intentionally resolved through the
@@ -486,7 +491,8 @@ gate refuses to run rather than passing without checking. Its tooling test skips
 such a host and checks only that refusal.
 
 FreeBSD, OpenBSD, and NetBSD are Tier 1 platforms: each builds and runs the full
-test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
+test suite through `scripts/build-bsd.sh` on a CI VM: FreeBSD on every pull request push, and all three
+in the merge queue before merge ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). See
 [platform-support.md](platform-support.md) for the full support-tier matrix and
 per-platform hardening posture.
 

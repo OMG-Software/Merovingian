@@ -4,20 +4,26 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
     branches:
       - main
       - master
+  merge_group:
   schedule:
     - cron: "32 1 * * 1"
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
   # ADR-0580, ADR-0743: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
-  # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
-  # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
+  # once fit in the account's 20 runners and coverage (with the Sonar scan) and CodeQL get one straight away. The jobs
+  # that wait use `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as
+  # passed.
   queue-after-analyses:
     name: Queue after Sonar and CodeQL
     runs-on: ubuntu-latest
@@ -47,8 +53,8 @@ jobs:
             runner: ubuntu-26.04
             release: '26.04'
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - uses: actions/checkout@v7
@@ -84,6 +90,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}
           restore-keys: ccache-linux-ci-${{ matrix.release }}-
 
@@ -143,14 +152,14 @@ jobs:
   # release replaces this one.
   ubuntu-interim-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: ubuntu-26.10-build-and-test
     runs-on: ubuntu-latest
     container:
       image: ubuntu:26.10
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -192,6 +201,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-ubuntu-interim-ci-${{ github.run_id }}
           restore-keys: ccache-ubuntu-interim-ci-
 
@@ -245,11 +257,11 @@ jobs:
   #      privilege-drop check on its own.
   ubuntu-hardened-listener-coverage:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - uses: actions/checkout@v7
@@ -285,6 +297,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-linux-hardened-${{ github.run_id }}
           restore-keys: ccache-linux-hardened-
 
@@ -321,7 +336,7 @@ jobs:
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-suite:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: fedora-suite (${{ matrix.image }})
     runs-on: ubuntu-latest
     permissions:
@@ -334,8 +349,8 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -369,6 +384,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}
           restore-keys: ccache-fedora-ci-${{ matrix.image }}-
 
@@ -402,7 +420,7 @@ jobs:
   # reports one check per image, none of them with that name.
   fedora-build-and-test:
     needs: fedora-suite
-    if: always()
+    if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -416,13 +434,13 @@ jobs:
   # which provides glibc ≥ 2.39 and a C++26-capable clang 18+ toolchain.
   debian-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install dependencies
@@ -454,6 +472,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-debian-ci-${{ github.run_id }}
           restore-keys: ccache-debian-ci-
 
@@ -489,13 +510,13 @@ jobs:
   # EPEL 10 provides libsodium and turbojpeg.
   rhel-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     container:
       image: almalinux:10
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
 
     steps:
       - name: Install EPEL and build dependencies
@@ -541,6 +562,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-rhel-ci-${{ github.run_id }}
           restore-keys: ccache-rhel-ci-
 
@@ -574,12 +598,13 @@ jobs:
   # OpenSUSE Leap 15.x ships glibc 2.31, which predates the C++26 requirement.
   # Tumbleweed (rolling release) carries a current glibc and clang 18+, making
   # it the supported OpenSUSE target per platform-support.md.
-  # One leg per openSUSE flavour (ADR-0650). The Tumbleweed leg keeps the check
-  # name the main ruleset requires.
-  opensuse-build-and-test:
+  # One leg per openSUSE flavour (ADR-0650). A matrix job that a job-level `if` skips reports
+  # one check under its unexpanded name, so the check the main ruleset requires comes from
+  # `opensuse-build-and-test` below, as for Fedora.
+  opensuse-suite:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
-    name: ${{ matrix.check }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    name: opensuse-suite (${{ matrix.check }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -600,8 +625,8 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CC: clang
-      CXX: clang++
+      CC: ccache clang
+      CXX: ccache clang++
       BUILDDIR: ${{ matrix.builddir }}
 
     steps:
@@ -657,6 +682,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          max-size: 1G
+          # Only main writes the cache; PR and merge-queue runs restore it and never evict it.
+          save: ${{ github.ref == 'refs/heads/main' }}
           key: ccache-opensuse-ci-${{ matrix.skip_job }}-${{ github.run_id }}
           restore-keys: ccache-opensuse-ci-${{ matrix.skip_job }}-
 
@@ -686,7 +714,21 @@ jobs:
       - name: Check release readiness metadata
         run: sh scripts/check-release-readiness.sh
 
+  # The main ruleset requires a check called opensuse-build-and-test, and a matrix job
+  # reports one check per flavour (or, when skipped, one under its unexpanded name).
+  opensuse-build-and-test:
+    needs: opensuse-suite
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every OpenSUSE flavour to pass
+        env:
+          RESULT: ${{ needs.opensuse-suite.result }}
+        run: test "${RESULT}" = success
+
   # ── FreeBSD ────────────────────────────────────────────────────────────────
+
   freebsd-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
@@ -746,7 +788,7 @@ jobs:
   # unit/integration/smoke tests) on OpenBSD itself.
   openbsd-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -806,15 +848,56 @@ jobs:
   # Tier 1 platform. Same full build+test path as the other BSDs.
   netbsd-build-and-test:
     needs: queue-after-analyses
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
 
+      # The VM's network (QEMU user-mode NAT) is slow and drops connections, and pkg_add paid a
+      # multi-minute timeout per failure: the install took ~100 minutes. The host runner downloads
+      # and verifies every package and dependency instead, and the VM action syncs the directory
+      # into the guest, where pkg_add reads it first and the mirrors only for what is missing.
+      - name: Choose the NetBSD release and packages
+        run: |
+          {
+            echo "NETBSD_RELEASE=11.0"
+            echo "NETBSD_ARCH=amd64"
+            echo "NETBSD_PACKAGES=clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve the NetBSD package set
+        run: |
+          python3 scripts/fetch-netbsd-packages.py --release "$NETBSD_RELEASE" --arch "$NETBSD_ARCH" \
+            --output-dir netbsd-packages --lockfile netbsd-packages.lock \
+            --summary-file "$RUNNER_TEMP/netbsd-pkg-summary" --optional gdb --resolve-only $NETBSD_PACKAGES
+
+      - name: Restore the NetBSD package cache
+        id: netbsd-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: netbsd-packages
+          key: netbsd-packages-${{ env.NETBSD_RELEASE }}-${{ env.NETBSD_ARCH }}-${{ hashFiles('netbsd-packages.lock') }}
+          restore-keys: netbsd-packages-${{ env.NETBSD_RELEASE }}-${{ env.NETBSD_ARCH }}-
+
+      - name: Download and verify the NetBSD packages
+        run: |
+          python3 scripts/fetch-netbsd-packages.py --release "$NETBSD_RELEASE" --arch "$NETBSD_ARCH" \
+            --output-dir netbsd-packages --lockfile netbsd-packages.lock \
+            --summary-file "$RUNNER_TEMP/netbsd-pkg-summary" --optional gdb $NETBSD_PACKAGES
+
+      - name: Save the NetBSD package cache
+        if: github.ref == 'refs/heads/main' && steps.netbsd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: netbsd-packages
+          key: netbsd-packages-${{ env.NETBSD_RELEASE }}-${{ env.NETBSD_ARCH }}-${{ hashFiles('netbsd-packages.lock') }}
+
       - name: Build and test on NetBSD
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
+          release: ${{ env.NETBSD_RELEASE }}
+          envs: 'NETBSD_RELEASE NETBSD_ARCH NETBSD_PACKAGES'
           usesh: true
           prepare: |
             # NetBSD's pkg_add cannot resolve package stems without PKG_PATH
@@ -822,13 +905,35 @@ jobs:
             # ships a default repo). The vmaction image exports none, so bare
             # `pkg_add clang` fails with "no pkg found for 'clang'" and the
             # build step then aborts with "missing command: clang". Point pkg_add
-            # Use the CDN first and retry the origin if it is unavailable. Both
-            # endpoints are official NetBSD package mirrors; the VM occasionally
-            # sees a transient connection refusal from either one.
+            # at the packages the host downloaded (netbsd-packages, in the
+            # synced checkout), then at the CDN and the origin if either is
+            # unavailable. Both endpoints are official NetBSD package mirrors; the
+            # VM occasionally sees a transient connection refusal from either one.
+            # The host's packages are for one release and architecture: use them
+            # only when the guest is that release, else everything comes from the
+            # mirrors as before.
             package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            local_packages=""
+            if [ "$(uname -r | sed 's/_.*//')" = "$NETBSD_RELEASE" ] && [ "$(uname -m)" = "$NETBSD_ARCH" ]; then
+              for base in "${GITHUB_WORKSPACE:-$PWD}" "$PWD"; do
+                if [ -d "$base/netbsd-packages" ]; then local_packages="$base/netbsd-packages"; break; fi
+              done
+            fi
+            echo "NetBSD local package directory: ${local_packages:-none (installing from the mirrors)}"
+            # pkg_add searches every PKG_PATH entry and keeps the best match, so a
+            # local directory listed before a mirror still costs a mirror lookup
+            # per package. Try the local directory alone first; the mirrors are
+            # needed only when it cannot satisfy the whole set (a missed package
+            # or a cache restored for another lockfile).
             install_packages() {
+              if [ -n "$local_packages" ]; then
+                if PKG_PATH="$local_packages" /usr/sbin/pkg_add -U "$@"; then
+                  return 0
+                fi
+                echo "NetBSD local packages did not satisfy the set; trying the mirrors"
+              fi
               for mirror in cdn.netbsd.org ftp.netbsd.org; do
-                export PKG_PATH="https://${mirror}/${package_path}"
+                export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"
                 for attempt in 1 2 3; do
                   if /usr/sbin/pkg_add -U "$@"; then
                     return 0
@@ -838,7 +943,9 @@ jobs:
               done
               return 1
             }
-            install_packages clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
+            # An empty list would make pkg_add succeed having installed nothing.
+            : "${NETBSD_PACKAGES:?the VM action did not pass NETBSD_PACKAGES}"
+            install_packages $NETBSD_PACKAGES
             # pkgsrc's curl and postgresql17-client link NetBSD's base OpenSSL
             # (libssl.so.16); building against pkgsrc's openssl (libssl.so.3)
             # would load two OpenSSLs in one process, which the werror link
@@ -858,10 +965,19 @@ jobs:
             # gdb for core backtraces (best-effort). The run step is a separate
             # shell from prepare, so select an official mirror again.
             package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            for mirror in cdn.netbsd.org ftp.netbsd.org; do
-              export PKG_PATH="https://${mirror}/${package_path}"
-              /usr/sbin/pkg_add -U gdb && break
-            done
+            local_packages=""
+            if [ "$(uname -r | sed 's/_.*//')" = "$NETBSD_RELEASE" ] && [ "$(uname -m)" = "$NETBSD_ARCH" ] && [ -d netbsd-packages ]; then
+              local_packages="$PWD/netbsd-packages"
+            fi
+            # Local directory alone first, as in prepare; then each mirror.
+            if [ -z "$local_packages" ] || ! PKG_PATH="$local_packages" /usr/sbin/pkg_add -U gdb; then
+              for mirror in cdn.netbsd.org ftp.netbsd.org; do
+                export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"
+                /usr/sbin/pkg_add -U gdb && break
+              done
+            fi
+            # The VM action copies the workspace back; the packages are not wanted there.
+            rm -rf netbsd-packages
             if ! sh scripts/build-bsd.sh --builddir build --skip-job netbsd; then
                 echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then

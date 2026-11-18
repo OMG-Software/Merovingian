@@ -42,6 +42,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -354,12 +355,55 @@ namespace
         struct __res_state state_{};
         bool ready_;
     };
+#elif defined(__GLIBC__)
+    // Serialises the two steps of a glibc lookup that change the process-wide resolver configuration, never the query.
+    // std::mutex's constructor is constexpr, so this is constant-initialised and has no start-up order.
+    constinit std::mutex resolver_configuration_mutex{};
+
+    // The resolver state of one lookup on glibc (ADR-0849). res_ninit attaches the state to the configuration array
+    // every thread's resolver shares, and res_nclose detaches it; glibc guards that array with an internal lock that
+    // ThreadSanitizer cannot see, so it reported two threads' first lookups as a race. Both steps run under
+    // `resolver_configuration_mutex`, a lock it can see. Neither reaches the network: the query, which waits on a
+    // name server a remote operator chooses, runs outside the lock, so lookups stay parallel (ADR-0355).
+    class ResolverState final
+    {
+    public:
+        ResolverState()
+        {
+            auto const lock = std::lock_guard{resolver_configuration_mutex};
+            ready_ = ::res_ninit(&state_) == 0;
+        }
+
+        ~ResolverState() noexcept
+        {
+            if (ready_)
+            {
+                auto const lock = std::lock_guard{resolver_configuration_mutex};
+                ::res_nclose(&state_);
+            }
+        }
+
+        ResolverState(ResolverState const&) = delete;
+        auto operator=(ResolverState const&) -> ResolverState& = delete;
+        ResolverState(ResolverState&&) = delete;
+        auto operator=(ResolverState&&) -> ResolverState& = delete;
+
+        [[nodiscard]] auto query(char const* name, int dns_class, int dns_type, unsigned char* answer, int size) -> int
+        {
+            return ready_ ? ::res_nquery(&state_, name, dns_class, dns_type, answer, size) : -1;
+        }
+
+    private:
+        struct __res_state state_{};
+        bool ready_{false};
+    };
 #endif
 
-    // Safe from several threads: res_query keeps per-thread state everywhere but NetBSD (ADR-0355).
+    // Safe from several threads: a lookup owns its resolver state on NetBSD and glibc (ADR-0355, ADR-0849), and
+    // res_query keeps per-thread state on the other platforms.
     [[nodiscard]] auto query_srv_records(std::string const& service, std::array<unsigned char, 4096U>& answer) -> int
     {
-#if defined(__NetBSD__)
+#if defined(__NetBSD__) || defined(__GLIBC__)
         auto state = ResolverState{};
         return clamp_srv_answer_length(
             state.query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size())),

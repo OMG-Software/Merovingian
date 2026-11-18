@@ -61,7 +61,7 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN it reports under that name, even when a leg failed, and passes only when
         # every leg succeeded.
         self.assertIn("needs: fedora-suite", job)
-        self.assertIn("if: always()", job)
+        self.assertIn("if: ${{ always() && github.event_name != 'pull_request' }}", job)
         self.assertIn("${{ needs.fedora-suite.result }}", job)
         self.assertIn('test "${RESULT}" = success', job)
 
@@ -174,7 +174,7 @@ class CiWorkflowTests(unittest.TestCase):
         # AND the interim release is pinned and its check names the release (ADR-0742).
         self.assertNotIn("image: ubuntu:rolling", workflow)
         self.assertIn("    name: ubuntu-26.10-build-and-test\n", workflow)
-        opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
+        opensuse = workflow.split("\n  opensuse-suite:")[1].split("\n  freebsd-build-and-test:")[0]
         self.assertIn('sh scripts/build-linux.sh --builddir "${BUILDDIR}" --skip-job ${{ matrix.skip_job }}', opensuse)
         self.assertIn("builddir: build-opensuse\n", opensuse)
         self.assertIn("builddir: build-opensuse-leap\n", opensuse)
@@ -211,7 +211,7 @@ class CiWorkflowTests(unittest.TestCase):
                         # fallback with the same resolvers.
                         self.assertIn("apt-get update --error-on=any", install)
                         self.assertIn(f"printf '{nameservers.group(1)}' > /etc/resolv.conf", install)
-        self.assertGreaterEqual(checked, 13)
+        self.assertGreaterEqual(checked, 12)
 
     def _run_apt_update(self, failures: int, resolv_is_link: bool) -> tuple[subprocess.CompletedProcess[str], Path]:
         # A fake apt-get fails its first `failures` calls and logs the resolver each call saw;
@@ -450,12 +450,16 @@ class CiWorkflowTests(unittest.TestCase):
         # `name` reports "<job> (<values>)" for each leg, which matches none of them.
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
         ubuntu = workflow.split("\n  ubuntu-build-and-test:")[1].split("\n  ubuntu-interim-build-and-test:")[0]
-        opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
+        opensuse = workflow.split("\n  opensuse-suite:")[1].split("\n  freebsd-build-and-test:")[0]
 
         # WHEN the Ubuntu and OpenSUSE matrices are read
         # THEN each leg reports the check its matrix names, one leg keeping the required name.
+        self.assertIn("    name: ${{ matrix.check }}\n", ubuntu)
+        # AND the OpenSUSE legs are named apart from the required check, which an aggregate reports:
+        # a matrix job that a job-level `if` skips reports its unexpanded name, which matches nothing.
+        self.assertIn("    name: opensuse-suite (${{ matrix.check }})\n", opensuse)
+        self.assertIn("  opensuse-build-and-test:\n    needs: opensuse-suite\n", opensuse)
         for job in (ubuntu, opensuse):
-            self.assertIn("    name: ${{ matrix.check }}\n", job)
             self.assertIn("fail-fast: false", job)
         # AND Ubuntu runs on each LTS runner image by its release, never on ubuntu-latest,
         # so a label migration cannot drop a release unnoticed (ADR-0650). 26.04 is the only
@@ -557,10 +561,14 @@ class CiWorkflowTests(unittest.TestCase):
         # loads two OpenSSLs in one process, which werror's --fatal-warnings
         # link rightly refuses.
         for name, workflow in workflows.items():
-            installs = [line for line in workflow.splitlines() if "install_packages clang" in line]
+            # The list is defined once, by the step that exports NETBSD_PACKAGES to the host-side
+            # package fetch and to the VM, which installs it with `install_packages $NETBSD_PACKAGES`.
+            lists = re.findall(r"NETBSD_PACKAGES=([^\"\n]*)", workflow)
+            installs = [line for line in workflow.splitlines() if "install_packages $NETBSD_PACKAGES" in line]
+            self.assertEqual(len(lists), 1, f"{name}: the NetBSD package list must be defined once")
             self.assertTrue(installs, f"{name}: no NetBSD package install found")
-            for line in installs:
-                self.assertNotIn(" openssl ", f" {line.strip()} ", f"{name}: {line.strip()}")
+            self.assertTrue(lists[0].split(), f"{name}: the NetBSD package list is empty")
+            self.assertNotIn("openssl", lists[0].split(), f"{name}: {lists[0].strip()}")
             self.assertEqual(
                 workflow.count("pkg_delete openssl"),
                 len(installs),
@@ -580,7 +588,7 @@ class CiWorkflowTests(unittest.TestCase):
         # broken repository metadata ("repomd.xml parser error"), failing the job before
         # anything is built (PR #545: AppStream, then BaseOS).
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-        job = workflow.split("  rhel-build-and-test:")[1].split("\n  opensuse-build-and-test:")[0]
+        job = workflow.split("  rhel-build-and-test:")[1].split("\n  opensuse-suite:")[0]
         install = job.split("- name: Install EPEL and build dependencies")[1].split("- uses: actions/checkout")[0]
 
         # WHEN its dependency step runs

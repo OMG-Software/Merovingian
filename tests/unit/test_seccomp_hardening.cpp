@@ -929,6 +929,20 @@ enum class FilterProfile
     decoder,
 };
 
+// ThreadSanitizer starts its background thread again in a forked child, and every filter is installed with TSYNC, so
+// the decoder filter covers that thread too. Its sleep (nanosleep) is not on the decoder allowlist: when the thread is
+// scheduled after the filter is in place, seccomp kills a child that made only allowed calls. The decoder's children
+// are left to the other jobs, which run them on the real filter; the main and worker allowlists both permit the sleep.
+// Call it as a statement at the top of a section that forks decoder children (ADR-0852): Catch2 reports a SKIP thrown
+// from inside a REQUIRE expression as an unexpected exception, so it must never run from a helper an assertion calls.
+auto skip_decoder_children_under_tsan() -> void
+{
+    if (tsan_build)
+    {
+        SKIP("ThreadSanitizer's background thread runs under the decoder filter in a forked child");
+    }
+}
+
 // True when the child that installed `profile` and made `call` survived the call (whatever it returned), false when
 // seccomp killed it with SIGSYS. Any other end fails the test.
 template <typename Call>
@@ -1049,6 +1063,8 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 
         WHEN("the decoder filter is installed")
         {
+            skip_decoder_children_under_tsan();
+
             THEN("each signalling command is killed by seccomp")
             {
                 for (auto const& [name, call] : unsafe_calls)
@@ -1243,6 +1259,8 @@ SCENARIO("The worker and decoder seccomp filters refuse to push input into a ter
 
         WHEN("the decoder filter is installed")
         {
+            skip_decoder_children_under_tsan();
+
             THEN("both are killed by its allowlist")
             {
                 REQUIRE(terminal_ioctl_outcome(FilterProfile::decoder, TIOCSTI) == TerminalCallOutcome::killed);
@@ -1257,6 +1275,8 @@ SCENARIO("The decoder seccomp filter can stat only a descriptor", "[platform][se
 {
     GIVEN("a forked child on a pipe that installs the decoder filter before the call")
     {
+        skip_decoder_children_under_tsan();
+
         WHEN("it asks for the status of a path")
         {
             THEN("newfstatat and statx are killed by seccomp, and an AT_EMPTY_PATH form is no exception")

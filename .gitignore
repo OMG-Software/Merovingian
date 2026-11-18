@@ -33,3 +33,7 @@ tsan-ci-log*.txt
 
 # The package the Complement image installs; staged per build (tests/complement/AGENTS.md).
 tests/complement/artifact/
+
+# Host-side NetBSD package cache for the CI VM jobs (scripts/fetch-netbsd-packages.py, ADR-0844)
+netbsd-packages/
+netbsd-packages.lock

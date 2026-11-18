@@ -10,6 +10,8 @@
 
 #include "RealPasswordHashCost.hpp"
 
+#include "PasswordHashPause.hpp"
+
 #include <sodium.h>
 
 #include <atomic>
@@ -46,6 +48,7 @@ auto __wrap_crypto_pwhash_str(char out[crypto_pwhash_STRBYTES], char const* pass
         errno = EINVAL;
         return -1;
     }
+    merovingian::tests::detail::pause_password_hash_if_armed();
     if (real_cost_holders.load(std::memory_order_relaxed) > 0)
     {
         return __real_crypto_pwhash_str(out, passwd, passwdlen, opslimit, memlimit);

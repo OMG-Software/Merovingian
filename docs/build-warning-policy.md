@@ -62,7 +62,7 @@ library that can still be loaded from the current Meson tree.
 
 The aggregate Catch2 test binaries have explicit Meson timeouts in
 `tests/meson.build`: 600 seconds for unit tests, 900 for conformance tests, 1800
-for integration tests (900 on FreeBSD, NetBSD and OpenBSD), and 900 for the
+for each integration test (every shard, the `[postgresql]` test and the `[serial]` test; 900 on FreeBSD, NetBSD and OpenBSD), and 900 for the
 load-test binary. Those test executables now cover enough
 runtime behavior that fallback, coverage, and sanitizer jobs can exceed
 Meson's 30 second default even when all assertions pass.

@@ -263,6 +263,7 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 | `scripts/check-catch2-bdd-tests.sh` | Required BDD macro patterns in unit test files |
 | `scripts/check-unit-test-registration.sh` | Unit test source registration |
 | `scripts/check-unit-test-isolation.sh` | No file under `tests/unit/` names a function that builds a runtime or drives the client-server stack (ADR-0593); meson test `unit-test-isolation`, covered by `unit-test-isolation-tooling` |
+| `scripts/check-integration-shards.sh` | The integration Meson tests (the shards, `integration-tests-postgresql`, `integration-tests-serial`) together select every scenario of the binary exactly once; meson test `integration-shard-coverage`, covered by `tests/tooling/test_integration_shards.py` |
 | `scripts/rewrite_merovingian_includes.py --check` | Project include quoting |
 | `include-order-tooling` (`tests/tooling/test_include_order.py`) | Include grouping and ordering. Nothing else checks formatting, and no tool enforces `.clang-format` |
 | `scripts/check-conformance-gate.sh` | Runs `meson test conformance-tests` in a given build directory (CI, per build). It does not detect a removed conformance test |

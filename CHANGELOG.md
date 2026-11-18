@@ -15,6 +15,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   checked every 30 s and sooner on LiveKit's signed webhook, kept across restarts (ADR-0832, ADR-0833).
 * A branch no longer bumps the version: it changes only when the owner asks, and a change adds its bullets to the
   newest version's entry here (ADR-0835).
+* A pull request runs a core CI gate (Ubuntu, FreeBSD and the analyses); the other platforms and every package run
+  in the merge queue before a merge, as skipped checks on the pull request (ADR-0840).
+* A new push to a pull request cancels the runs for its previous head; other events are never cancelled (ADR-0842).
+* The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
+  and a check that the shards together run every scenario once (ADR-0845).
+* CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
 
 ## Security Fixes
 
@@ -32,13 +38,54 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   in-memory log of state changes, and so does a left room (ADR-0827).
 * SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
   first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
+* ccache now caches compiles in CI: the jobs restored a cache but compiled without it, so it stayed empty; only `main`
+  writes the cache (ADR-0843).
+* `claude/**` and `codex/**` pushes no longer run every workflow a second time beside their pull request (ADR-0841).
+* The NetBSD jobs fetch and verify their packages on the CI host and cache them, instead of paying a three-minute
+  mirror stall per package inside the VM (ADR-0844).
+* Coverage and the SonarQube Cloud scan share one instrumented build; Codecov uploads from a job of its own, away from
+  the Sonar token (ADR-0846).
+* The ThreadSanitizer job fails when its build or tests fail: the step piped into `tee` without `pipefail`, so it
+  reported `tee`'s success.
+* clang-tidy runs on pull requests: a failed diff on the shallow checkout read as no changed files. It now checks the
+  lines a change adds or edits, and a push to main checks the commits it added (ADR-0847).
+* clang-tidy gets 15 minutes per file and 60 for the job: the largest test files outran the first limit of two
+  minutes on a busy runner, and a file the timeout killed failed the check with no finding (ADR-0847).
+* The NetBSD package fetcher matches NetBSD's version order, uses only a summary holding every required package and
+  moves to the next mirror on a bad file; the guest tries the cached packages alone before any mirror (ADR-0844).
+* A failed Codecov upload fails the `codecov` job instead of the required `coverage` check; its report is kept 30 days
+  so the job can be re-run alone (ADR-0846). `coverage.yml` grants its permissions per job, none to the workflow.
+* Every action the `codecov` job runs is pinned to a commit, since the job holds `CODECOV_TOKEN`; its artifact
+  download was a tag.
+* PDU ingestion refuses a caller that holds the runtime lock: it would take the room's lock in the reverse order and
+  could deadlock against an ingest of the same room (ADR-0848).
+* SRV lookups on glibc each own their resolver state, set up and torn down under a lock that ThreadSanitizer can see;
+  the query itself stays unlocked (ADR-0849).
+* Tests no longer read what a mock server's thread recorded before joining it, count concurrent discovery calls
+  atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
+* The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
+  TSan's own interceptor and background thread make what they check unobservable.
+* The decoder seccomp filter's forked children skip under TSan, whose background thread the filter kills for sleeping,
+  so a child that made only allowed calls no longer fails the `tsan` job at random (ADR-0852).
+* A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
+  publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
+* Publishing `latest` moves its tag instead of deleting it, so a failed publish can no longer let an older queued build
+  replace a newer one (ADR-0850).
+* The scenarios that race a request against a password hash pause the hash until the other request is made, so a slow
+  runner can no longer make them fail, or pass without testing the race (ADR-0851).
+* The test-only local router runs inbound federation without `runtime.mutex`, as the server does, so its PDU sink no
+  longer refuses every transaction's PDUs for a held lock (ADR-0848).
+* The directory, profile, device keys, user devices and one-time-key claim federation providers take `runtime.mutex`
+  themselves, as the other store readers do, so main never reads its store unlocked through them (ADR-0711).
 
 ## Release notes
 
 Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
 and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
 `state_after` sync of each room with news carries its whole state once. A SQLite server no longer refuses writes under
-sustained write load, and `database.pool_size` now applies to PostgreSQL only.
+sustained write load, and `database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request
+and the full matrix in the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge
+after the core gate alone.
 
 # Version 1.1.2
 

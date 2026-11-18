@@ -29,16 +29,18 @@ GATES = {
 GATED_WORKFLOWS = tuple(GATES)
 # Workflows whose gated jobs feed further jobs (aggregates, staging, signing).
 WORKFLOWS_WITH_DOWNSTREAM_JOBS = ("ci.yml", "packages.yml")
-# The analyses that must not wait, in the order the owner ranks them: Sonar (about an hour), CodeQL, then the two
-# sanitizer suites. Every other analysis needs nothing either; CodeRabbit runs on its own service, not on these runners.
+# The analyses that must not wait, in the order the owner ranks them: coverage (one instrumented build and run of the
+# suites that feeds Codecov and the Sonar scan, about an hour), CodeQL, then the two sanitizer suites. Every other
+# analysis needs nothing either; CodeRabbit runs on its own service, not on these runners.
 ANALYSES = (
-    ("sonarcloud.yml", "sonarcloud"),
+    ("coverage.yml", "coverage"),
     ("codeql.yml", "analyze"),
     ("sanitizers.yml", "tsan"),
     ("sanitizers.yml", "asan-ubsan"),
 )
 # The package gate's delay, in seconds: long enough for the build and test gates to finish and their jobs to queue.
 MINIMUM_PACKAGE_DELAY = 30
+NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
 
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*$", re.MULTILINE)
 
@@ -122,6 +124,49 @@ def matrix_size(job: str) -> int:
     return size
 
 
+def skips_pull_request(condition: str | None) -> bool:
+    """True when `condition` is a conjunction (`&&` only) that includes exactly the known pull_request exclusion.
+
+    The condition may be wrapped as `${{ ... }}` and may start with `!cancelled()` or `always()`. A `||` anywhere
+    lets another branch of the disjunction run the job for a pull request, so it never excludes it.
+    """
+    if not condition:
+        return False
+    text = condition.strip()
+    wrapped = re.fullmatch(r"\$\{\{(.*)\}\}", text, flags=re.DOTALL)
+    if wrapped is not None:
+        text = wrapped.group(1).strip()
+    if "||" in text or "!(" in text:
+        return False
+    parts = top_level_conjuncts(text)
+    return parts is not None and NOT_A_PULL_REQUEST in parts
+
+
+def top_level_conjuncts(text: str) -> list[str] | None:
+    """The `&&` operands outside every parenthesis; None when the parentheses do not balance."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 0 and text.startswith("&&", index):
+            parts.append(text[start:index].strip())
+            start = index + 2
+            index += 1
+        index += 1
+    if depth != 0:
+        return None
+    parts.append(text[start:].strip())
+    return parts
+
+
 def jobs_that_start_at_once() -> dict[str, int]:
     started: dict[str, int] = {}
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
@@ -129,9 +174,42 @@ def jobs_that_start_at_once() -> dict[str, int]:
         if not runs_for_a_pull_request_to_main(text):
             continue
         for job_id, job in jobs(text).items():
-            if not needs(job):
-                started[f"{workflow.name}:{job_id}"] = matrix_size(job)
+            if needs(job):
+                continue
+            # A job whose own condition skips the pull_request event never takes a runner for it.
+            if skips_pull_request(job_if(job)):
+                continue
+            started[f"{workflow.name}:{job_id}"] = matrix_size(job)
     return started
+
+
+class ThePullRequestExclusionIsRecognisedOnlyWhenExact(unittest.TestCase):
+    def test_given_a_condition_when_it_is_read_then_only_an_and_chain_with_the_exclusion_skips_the_pull_request(self) -> None:
+        cases = {
+            "bare": ("github.event_name != 'pull_request'", True),
+            "wrapped": ("${{ github.event_name != 'pull_request' }}", True),
+            "cancelled and exclusion": ("${{ !cancelled() && github.event_name != 'pull_request' }}", True),
+            "always and exclusion": ("always() && github.event_name != 'pull_request'", True),
+            "exclusion and needs": ("${{ !cancelled() && github.event_name != 'pull_request' && needs.a.result == 'success' }}", True),
+            "disjunction": ("${{ github.event_name != 'pull_request' || github.ref == 'refs/heads/main' }}", False),
+            "disjunction after and": ("${{ !cancelled() && (github.event_name != 'pull_request' || always()) }}", False),
+            "negated group around the exclusion": (
+                "!(always() && github.event_name != 'pull_request' && !cancelled())",
+                False,
+            ),
+            "exclusion inside a group": ("${{ !cancelled() && (github.event_name != 'pull_request') }}", False),
+            "unbalanced group": ("${{ !cancelled() && (github.event_name != 'pull_request' }}", False),
+            "no exclusion": ("${{ !cancelled() }}", False),
+            "no condition": (None, False),
+        }
+        for label, (condition, excluded) in cases.items():
+            with self.subTest(case=label):
+                # GIVEN a job condition.
+                # WHEN it is asked whether it skips the pull_request event.
+                result = skips_pull_request(condition)
+
+                # THEN only a pure `&&` chain naming the exclusion does.
+                self.assertEqual(result, excluded)
 
 
 class TheAnalysesTakeRunnersFirst(unittest.TestCase):
@@ -175,7 +253,9 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                     # AND one that waits for the gate still runs if the gate fails: a job skipped because what it
                     # needs failed reports a skipped check, and a skipped required check counts as passed.
                     if gate in needs(job):
-                        self.assertEqual(job_if(job), "${{ !cancelled() }}")
+                        # A slower tier also skips the pull_request event, which runs only the jobs the merge
+                        # queue repeats (ADR-0743); that clause is the only addition allowed.
+                        self.assertEqual(job_if(job).replace(" && " + NOT_A_PULL_REQUEST, ""), "${{ !cancelled() }}")
 
     def test_given_a_job_behind_the_gate_through_another_when_its_condition_is_read_then_it_ignores_the_gate(
         self,
@@ -213,8 +293,12 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                 gate = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))[gate_id]
 
                 # WHEN its definition is read.
-                # THEN it has no condition and no dependency, so it runs on every event the workflow runs on.
-                self.assertIsNone(job_if(gate))
+                # THEN it has no dependency, and no condition other than the pull_request one above, so it runs on every event the workflow runs on.
+                # AND the package gate may skip a pull_request, where no package job runs, instead of sleeping.
+                if gate_id == BUILD_AND_TEST_GATE:
+                    self.assertIsNone(job_if(gate))
+                else:
+                    self.assertIn(job_if(gate), (None, "${{ " + NOT_A_PULL_REQUEST + " }}"))
                 self.assertEqual(needs(gate), [])
                 # AND it checks nothing out and holds no permission: it only orders the queue.
                 self.assertIn("permissions: {}", gate)

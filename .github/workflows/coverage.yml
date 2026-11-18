@@ -1,24 +1,49 @@
 name: coverage
 
+# One instrumented build and one run of every suite (unit, conformance, integration,
+# smoke) feed everything that measures coverage: gcovr writes the Cobertura report
+# Codecov takes and the SonarQube-format report the SonarQube Cloud scan takes
+# (ADR-0250), and the scan reads the compilation database of this same build. The
+# job is named `coverage`, the name the main ruleset requires. It used to be two
+# jobs, `coverage` and `sonarcloud`, that each compiled and ran everything. What is
+# analysed is set in sonar-project.properties (ADR-0229).
+
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
 
-permissions:
-  contents: read
+# No permission at workflow level: each job names the ones it uses.
+permissions: {}
+
+concurrency:
+  group: coverage-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    # pull-requests: read is for the SonarQube Cloud scan, which reads the pull request it
+    # decorates.
+    permissions:
+      contents: read
+      pull-requests: read
+    # The codecov job runs only when this job published the reports, and then requires them.
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    # The instrumented build and the suites take about half an hour, the scan about as long again.
+    timeout-minutes: 150
     env:
       # GCC, not clang like the other jobs: only GCC's gcov labels the
       # unwinding edge of a call that may throw, which --exclude-throw-branches
       # below relies on. llvm-cov gcov does not, so with clang the flag
-      # excludes nothing (ADR-0217).
-      CC: gcc-14
-      CXX: g++-14
+      # excludes nothing (ADR-0217). Prefixed with ccache because Meson adds it
+      # only when it picks the compiler itself, and build-linux.sh passes CC and
+      # CXX explicitly (ADR-0843).
+      CC: ccache gcc-14
+      CXX: ccache g++-14
       # A live PostgreSQL so the [postgresql] scenarios run here and the
       # PostgreSQL store is measured; without it they skip and every line of
       # PostgresqlStore.cpp reads as uncovered. Same database and roles as
@@ -30,7 +55,8 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # postgres:16, pinned by digest: this job holds SONAR_TOKEN, in the scan step.
+        image: postgres:16@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
         env:
           POSTGRES_USER: merovingian_test
           POSTGRES_PASSWORD: test-password
@@ -44,20 +70,28 @@ jobs:
           --health-retries 12
 
     steps:
+      # v4.4.0. Pinned to a commit: this job holds SONAR_TOKEN.
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # SonarQube Cloud's new-code detection and blame need the whole history.
+          fetch-depth: 0
 
+      # v5.6.0. Pinned to a commit: this job holds SONAR_TOKEN.
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.x'
 
+      # libpng and libturbojpeg build the thumbnail worker; without them Meson drops
+      # media/thumbnail_worker_main.cpp and the scan never sees it.
       - name: Install dependencies
         run: |
           sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
             catch2 \
+            ccache \
             clang \
             flex \
             g++-14 \
@@ -74,7 +108,20 @@ jobs:
             perl \
             pkg-config \
             postgresql-client
+          # Hash-locked wheels only: this job holds SONAR_TOKEN.
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which installs ccache: on a host runner the action
+      # would otherwise install it from a stale package index and fail (ADR-0650). The
+      # cache is saved on main only, so a pull request reads what main built and writes
+      # nothing back that a later run would then trust.
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-coverage-${{ github.run_id }}
+          restore-keys: ccache-coverage-
+          max-size: 1G
+          save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Provision migration and runtime roles
         env:
@@ -154,6 +201,9 @@ jobs:
             \gexec
           SQL
 
+      # An instrumented build that also runs every suite. It writes the compilation
+      # database the scan reads (build-coverage/compile_commands.json, named in
+      # sonar-project.properties), with every generated file it names in place.
       - name: Build and test with coverage
         run: sh scripts/build-linux.sh --builddir build-coverage --coverage --skip-job coverage
 
@@ -166,10 +216,13 @@ jobs:
           fi
 
       - name: Generate coverage reports
+        id: reports
         run: |
           mkdir -p coverage
           # gcovr translates GCC's .gcno/.gcda files into Cobertura XML for
-          # Codecov. gcov-14 must match the compiler (gcc-14) that wrote them.
+          # Codecov and into SonarQube's generic coverage format for the scan
+          # (the path sonar-project.properties names), in one pass so gcov runs
+          # once. gcov-14 must match the compiler (gcc-14) that wrote them.
           #
           # Coverage is accumulated from ALL four C++ test types that run
           # under "meson test":
@@ -207,15 +260,94 @@ jobs:
             --print-summary \
             --output coverage/coverage.xml \
             --html coverage/index.html \
+            --sonarqube coverage/sonarqube.xml \
             build-coverage
 
+      # Meson writes the launcher into every compile command ("ccache gcc-14 ..."). The
+      # scan identifies the compiler from the first word of each command, so it is removed
+      # here and the scan sees gcc-14 itself, as it did before ccache (ADR-0843). Only the
+      # copy the scan reads changes; the build has finished.
+      - name: Remove the ccache launcher from the compilation database
+        run: |
+          python3 - build-coverage/compile_commands.json <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as handle:
+              entries = json.load(handle)
+          # Meson writes the launcher as it found it on PATH, usually /usr/bin/ccache, so the
+          # first word is matched by its file name, not its spelling.
+          def is_launcher(word):
+              return os.path.basename(word) == "ccache"
+          changed = 0
+          for entry in entries:
+              if "command" in entry:
+                  first, _, rest = entry["command"].partition(" ")
+                  if is_launcher(first) and rest:
+                      entry["command"] = rest
+                      changed += 1
+              elif entry.get("arguments") and is_launcher(entry["arguments"][0]):
+                  entry["arguments"] = entry["arguments"][1:]
+                  changed += 1
+          if changed == 0:
+              sample = entries[0].get("command") or " ".join(entries[0].get("arguments", [])) if entries else ""
+              sys.exit(f"{path}: no entry starts with ccache (first starts {sample[:60]!r}); "
+                       "is CC still 'ccache gcc-14'?")
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(entries, handle, indent=2)
+          print(f"{path}: removed ccache from {changed} of {len(entries)} entries")
+          PY
+
+      # The only step that receives SONAR_TOKEN. The Codecov upload, whose CLI is downloaded
+      # with its signature check skipped, runs in the separate `codecov` job below: a step can
+      # read every secret its job uses from the runner's memory, so ordering steps within one
+      # job would not keep the token from it (ADR-0250, ADR-0846).
+      - name: SonarQube Cloud scan
+        # A pull request from a fork gets no secrets, so it cannot be scanned; it is
+        # scanned on main once merged. Everything above still runs for it.
+        # A merge_group or workflow_dispatch run is not scanned either. The pull request's
+        # scan already analysed its merge with main, and a scan of a gh-readonly-queue/...
+        # branch would only add a throwaway branch to SonarQube Cloud: the Sonar result is
+        # not a required check, so it gates nothing in the queue. The push to main that
+        # follows the merge is scanned (ADR-0840, ADR-0846).
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        # v8.3.0. Pinned to a commit because the action receives SONAR_TOKEN.
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # After the scan, which reads the reports from the workspace; kept when the scan failed.
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v7
+        id: upload
+        if: ${{ !cancelled() && steps.reports.outcome == 'success' }}
+        # v7.0.2. Pinned to a commit: this job holds SONAR_TOKEN (ADR-0250).
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ github.sha }}
           path: coverage
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+  # Its own job, on its own runner, so the Codecov CLI never shares a job with SONAR_TOKEN
+  # (ADR-0250, ADR-0846). It needs only the Cobertura report the coverage job uploaded, and
+  # runs when the scan failed, so a failed scan does not also lose the Codecov upload. It
+  # runs only when the coverage job published the artifact; a failed download then fails it.
+  codecov:
+    needs: coverage
+    if: ${{ !cancelled() && needs.coverage.outputs.artifact-id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # v4.4.0, the commit the coverage job pins; Codecov reads the commit and paths from it.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

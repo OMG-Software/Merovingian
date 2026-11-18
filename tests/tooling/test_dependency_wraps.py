@@ -55,6 +55,21 @@ def wrap_field(wrap_path: Path, key: str) -> str:
     raise AssertionError(f"{wrap_path.name} has no {key} field")
 
 
+def active_meson_calls(meson: str, name: str) -> list[list[str]]:
+    """The active lines of each `test(` call whose first argument is `name`; comments cannot redirect the lookup."""
+    active = "".join(re.sub(r"\s*#.*$", "", line) + "\n" for line in meson.splitlines())
+    found = []
+    for opener in re.finditer(rf"\btest\(\s*'{re.escape(name)}'", active):
+        depth = 0
+        for offset, character in enumerate(active[opener.start() + 4 :], start=opener.start() + 4):
+            depth += (character == "(") - (character == ")")
+            if depth == 0:
+                break
+        call = active[opener.start() : offset + 1]
+        found.append([line.strip() for line in call.splitlines() if line.strip()])
+    return found
+
+
 class DependencyWrapTests(unittest.TestCase):
     def test_runtime_dependencies_are_pinned_with_immutable_file_wraps(self) -> None:
         # GIVEN the runtime dependency inventory.
@@ -510,7 +525,36 @@ class DependencyWrapTests(unittest.TestCase):
             "integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800",
             tests_meson,
         )
-        self.assertIn("test('integration-tests', integration_tests, timeout: integration_tests_timeout,", tests_meson)
+        # AND every integration Meson test keeps it: each of the shard loop, the PostgreSQL test and the serial test
+        # registrations passes the limit as its own timeout argument.
+        for name in ("integration-tests-shard-@0@-of-@1@", "integration-tests-postgresql", "integration-tests-serial"):
+            calls = active_meson_calls(tests_meson, name)
+            self.assertEqual(len(calls), 1, f"{name}: expected one active test() call")
+            self.assertEqual([line for line in calls[0] if line.startswith("timeout:")],
+                             ["timeout: integration_tests_timeout,"], name)
+
+    def test_given_a_comment_naming_another_test_when_a_timeout_is_looked_up_then_the_comment_does_not_redirect_it(
+        self,
+    ) -> None:
+        # GIVEN a comment above the PostgreSQL call that mentions the serial test, and a serial call whose name is on
+        # the line after `test(`.
+        meson = (
+            "# 'integration-tests-serial' keeps a longer timeout\n"
+            "test(\n  'integration-tests-postgresql',\n  integration_tests,\n  timeout: 60,\n)\n"
+            "test(\n  'integration-tests-serial',\n  integration_tests,\n"
+            "  timeout: integration_tests_timeout, # hang\n)\n"
+        )
+
+        # WHEN each timeout is read from its own active call.
+        postgresql = active_meson_calls(meson, "integration-tests-postgresql")
+        serial = active_meson_calls(meson, "integration-tests-serial")
+
+        # THEN the comment moved neither lookup, and each call has its own timeout.
+        self.assertEqual(len(postgresql), 1)
+        self.assertIn("timeout: 60,", postgresql[0])
+        self.assertNotIn("timeout: integration_tests_timeout,", postgresql[0])
+        self.assertEqual(len(serial), 1)
+        self.assertIn("timeout: integration_tests_timeout,", serial[0])
 
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.

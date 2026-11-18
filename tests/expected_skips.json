@@ -55,6 +55,46 @@
         "message": "ThreadSanitizer",
         "reason": "The worker seccomp filter does not enumerate the syscalls ThreadSanitizer needs, so the scenario skips under TSan. The test only detects TSan through __SANITIZE_THREAD__, which clang may not define: unverified for the clang TSan job.",
         "unverified": true
+      },
+      {
+        "test": "Live secret allocations remain independently locked",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer, like AddressSanitizer, replaces mlock with a version that locks nothing (sanitizer_common's interceptor), so kernel lock state cannot be observed (the test skips itself under TSan)."
+      },
+      {
+        "test": "Derived keys and their copies occupy locked allocations",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer, like AddressSanitizer, replaces mlock with a version that locks nothing (sanitizer_common's interceptor), so kernel lock state cannot be observed (the test skips itself under TSan)."
+      },
+      {
+        "test": "Signing box cache fails closed when its key copy cannot be locked",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer, like AddressSanitizer, replaces mlock with a version that locks nothing (sanitizer_common's interceptor), so kernel lock state cannot be observed (the test skips itself under TSan)."
+      },
+      {
+        "test": "Worker seccomp hardening confines a thread that existed before it was applied",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer runs a background thread and starts it again in a forked child, so the child's task count includes a thread no production process has (the test skips itself under TSan)."
+      },
+      {
+        "test": "The decoder and worker seccomp filters refuse every command that arranges signal delivery",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer starts its background thread again in a forked child, and the decoder filter, installed with TSYNC, covers it: its nanosleep is not on the decoder allowlist, so it can kill a child that made only allowed calls (the test skips its decoder children under TSan)."
+      },
+      {
+        "test": "The worker and decoder seccomp filters refuse to push input into a terminal",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer starts its background thread again in a forked child, and the decoder filter, installed with TSYNC, covers it: its nanosleep is not on the decoder allowlist, so it can kill a child that made only allowed calls (the test skips its decoder children under TSan)."
+      },
+      {
+        "test": "The decoder seccomp filter can stat only a descriptor",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer starts its background thread again in a forked child, and the decoder filter, installed with TSYNC, covers it: its nanosleep is not on the decoder allowlist, so it can kill a child that made only allowed calls (the test skips its decoder children under TSan)."
+      },
+      {
+        "test": "Logging before hardening starts no thread, so Landlock and seccomp cover every logger thread",
+        "message": "ThreadSanitizer",
+        "reason": "ThreadSanitizer runs a background thread and starts it again in a forked child, so the child's task count includes a thread no production process has (the test skips itself under TSan)."
       }
     ],
     "root-container": [
@@ -194,10 +234,6 @@
       "non-root-linux"
     ],
     "coverage": [
-      "landlock",
-      "non-root-linux"
-    ],
-    "sonarcloud": [
       "landlock",
       "non-root-linux"
     ],

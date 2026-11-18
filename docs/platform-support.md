@@ -18,7 +18,7 @@ same thing:
 
 - **Clang ≥ 18** (`-std=c++26`) or **GCC ≥ 14**, with the matching
   `libc++` / `libstdc++` C++26 runtime. CI (`ci.yml`, `packages.yml`) builds with clang everywhere. The separate
-  `coverage.yml` and `sonarcloud.yml` workflows build with GCC 14 (ADR-0217).
+  `coverage.yml` workflow (coverage and the SonarQube Cloud scan, one build) builds with GCC 14 (ADR-0217).
 - **Meson ≥ 1.1.0** and Ninja.
 - Core dependencies are vendored and built from subprojects
   (`--wrap-mode=forcefallback`); only the base toolchain and the optional image
@@ -54,12 +54,15 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 | OpenSUSE | Tumbleweed (rolling) or Leap 16.0 | current (Tumbleweed); the release's own (Leap) | zypper clang 18+ | `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD | 14.1+ (base clang ≥ 18) for a source build; 15 for the package | n/a (no glibc) | base clang | `vmactions/freebsd-vm` (`release: '15'`, the newest 15.x) |
 | OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm` (its default 7.x) |
-| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm` (its default 10.x) |
+| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm` (`release: 11.0`) |
 
 Every Linux image and the FreeBSD VM are pinned by release, never a moving tag such as
 `ubuntu:rolling` or `fedora:latest`, so the release CI tests is the release a package is
 built for; a new release is added by editing the workflows
-([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD and NetBSD VMs run each action's default release.
+([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD VM runs its action's default release. The NetBSD VM
+names 11.0, the action's own default, because its jobs fetch pkgsrc packages for that release outside the VM and cache
+them ([ADR-0844](adr/0844-the-ci-host-fetches-and-caches-netbsd-packages-and-the-vm-installs-them-locally.md)); a new NetBSD release is added by editing
+`NETBSD_RELEASE` in both workflows.
 "Build for" is the minimum version above.
 Earlier Linux releases (Ubuntu 22.04, Debian 12, RHEL 9) fail on **both** counts
 — pre-C++26 toolchain and too-old glibc — and even after installing a newer
@@ -99,10 +102,14 @@ automatically. `scripts/setup-dev-env.sh` installs the development files for
 local builds. The static (musl) tarball links the static variants of these
 libraries and therefore has no runtime package dependencies.
 
-## Tier 1 — Supported (CI-gated per pull request)
+## Tier 1 — Supported (CI-gated before every merge)
 
 Tier 1 platforms build **and run the full test suite** (unit, integration,
-conformance, smoke) on every pull request. Platform-specific runtime behaviour —
+conformance, smoke) in the merge queue before every merge, once the owner turns the merge queue on in the "Protect main"
+ruleset; until then a pull request can merge after the core gate alone and the full matrix first runs on the push to `main`. A pull request push runs
+only the core gate, `ubuntu-build-and-test` and `freebsd-build-and-test`; the other jobs below are skipped
+there (a job skipped by its `if:` reports success) and run in the merge queue, on pushes to `main`, on
+schedule and by hand ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). Platform-specific runtime behaviour —
 the startup hardening self-check, runtime-hardening integration tests, and the
 server config/version smoke tests — is exercised on the platform itself, not
 just cross-compiled. A regression on a Tier 1 platform blocks merge.
@@ -118,7 +125,7 @@ carry a job-level `continue-on-error`; a failure there fails the run
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
 | Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:45` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
-| Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (Tumbleweed), `opensuse-leap-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
+| Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (the aggregate check), with its legs `opensuse-suite (opensuse-build-and-test)` (Tumbleweed) and `opensuse-suite (opensuse-leap-build-and-test)` (Leap) | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD 15 | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm`, `release: '15'` |
 | OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
 | NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |
@@ -136,8 +143,9 @@ codecs (`libpng`, `libjpeg-turbo`) and base toolchain come from the OS.
 
 ## Tier 2 — Packaged (CI-built artifacts)
 
-Tier 2 produces installable artifacts in CI. Build and packaging are gated;
-runtime behaviour is covered transitively by the matching Tier 1 platform.
+Tier 2 produces installable artifacts in CI. Build and packaging are gated in the merge queue, not on a
+pull request push, where every `packages.yml` job is skipped ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)); a push to `main` rebuilds them.
+Runtime behaviour is covered transitively by the matching Tier 1 platform.
 
 | Artifact | Workflow | Runtime coverage via |
 |---|---|---|

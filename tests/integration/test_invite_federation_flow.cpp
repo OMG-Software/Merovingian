@@ -62,11 +62,13 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1262,8 +1264,25 @@ struct InviteeServer final
             }
             auto request = read_whole_request(*accepted.connection);
             captured.push_back(request);
-            std::ignore = accepted.connection->write(respond(request));
+            auto response = std::string{};
+            try
+            {
+                response = respond(request);
+            }
+            catch (std::exception const& error)
+            {
+                failure = error.what();
+                response = merovingian::tests::tls_mock::json_http_response("500 Internal Server Error", "{}");
+            }
+            std::ignore = accepted.connection->write(response);
         }};
+    }
+    // Joins the mock thread and returns why its responder could not answer, empty when it could. Check it with
+    // REQUIRE on the main thread: Catch2's assertion state is not thread-safe, so the responder never asserts.
+    [[nodiscard]] auto finish() -> std::string
+    {
+        thread.join();
+        return failure;
     }
     ~InviteeServer()
     {
@@ -1276,6 +1295,11 @@ struct InviteeServer final
     auto operator=(InviteeServer const&) -> InviteeServer& = delete;
     InviteeServer(InviteeServer&&) = delete;
     auto operator=(InviteeServer&&) -> InviteeServer& = delete;
+
+private:
+    // Why the responder could not answer, empty when it could. Written on the mock thread and read only by
+    // finish(), after the join, so the scenario asserts on it from the main thread.
+    std::string failure{};
 };
 
 // How the invited user's server answers an invite it is sent.
@@ -1299,14 +1323,25 @@ enum class InviteeAnswer : std::uint8_t
     return separator == std::string::npos ? std::string{} : request.substr(separator + 4U);
 }
 
+// A precondition of the invitee mock's responder, which runs on the mock thread. A Catch2 assertion there
+// races the main thread's (ThreadSanitizer reports Catch2's last-assertion globals), so a broken precondition
+// throws, InviteeServer records it, and the scenario asserts on InviteeServer::finish() once the thread is joined.
+auto require_in_mock(bool const holds, char const* const what) -> void
+{
+    if (!holds)
+    {
+        throw std::logic_error{what};
+    }
+}
+
 // `event_value` with a signature by the invitee's server made with `seed_text`'s key.
 [[nodiscard]] auto sign_as_invitee(merovingian::canonicaljson::Value const& event_value, std::string_view room_version,
                                    std::string_view seed_text) -> std::string
 {
     auto const* policy = merovingian::rooms::find_room_version_policy(room_version);
-    REQUIRE(policy != nullptr);
+    require_in_mock(policy != nullptr, "policy != nullptr");
     auto const payload = merovingian::events::make_event_signing_payload(event_value, *policy);
-    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    require_in_mock(payload.error == merovingian::canonicaljson::CanonicalJsonError::none, "payload.error == merovingian::canonicaljson::CanonicalJsonError::none");
     auto const keypair = merovingian::federation::test::keypair_from_seed(seed_text);
     auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
     crypto_sign_detached(signature.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
@@ -1315,7 +1350,7 @@ enum class InviteeAnswer : std::uint8_t
         {reinterpret_cast<char const*>(signature.data()), signature.size()});
     auto const attached = merovingian::events::attach_event_signature(
         event_value, {std::string{inviting_server}, std::string{invitee_key_id}}, encoded);
-    REQUIRE(attached.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    require_in_mock(attached.error == merovingian::canonicaljson::CanonicalJsonError::none, "attached.error == merovingian::canonicaljson::CanonicalJsonError::none");
     return attached.output;
 }
 
@@ -1328,11 +1363,11 @@ enum class InviteeAnswer : std::uint8_t
     }
     auto const body = merovingian::canonicaljson::parse_lossless(request_body_of(request));
     auto const* root = std::get_if<merovingian::canonicaljson::Object>(&body.value.storage());
-    REQUIRE(root != nullptr);
+    require_in_mock(root != nullptr, "root != nullptr");
     auto const* event = object_member(*root, "event");
     auto const* room_version = string_member(*root, "room_version");
-    REQUIRE(event != nullptr);
-    REQUIRE(room_version != nullptr);
+    require_in_mock(event != nullptr, "event != nullptr");
+    require_in_mock(room_version != nullptr, "room_version != nullptr");
     auto event_text = std::string{};
     switch (answer)
     {
@@ -1344,19 +1379,19 @@ enum class InviteeAnswer : std::uint8_t
         break;
     case InviteeAnswer::unsigned_echo: {
         auto const serialized = merovingian::canonicaljson::serialize_canonical(*event);
-        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        require_in_mock(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none, "serialized.error == merovingian::canonicaljson::CanonicalJsonError::none");
         event_text = serialized.output;
         break;
     }
     case InviteeAnswer::another_event: {
         auto serialized = merovingian::canonicaljson::serialize_canonical(*event);
-        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        require_in_mock(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none, "serialized.error == merovingian::canonicaljson::CanonicalJsonError::none");
         auto const at = serialized.output.find(R"("depth":)");
-        REQUIRE(at != std::string::npos);
+        require_in_mock(at != std::string::npos, "at != std::string::npos");
         // Depth is kept by redaction, so another depth is another event ID (rooms/v10.md "Event IDs").
         serialized.output.insert(at + std::string_view{R"("depth":)"}.size(), "9");
         auto const altered = merovingian::canonicaljson::parse_lossless(serialized.output);
-        REQUIRE(altered.error == merovingian::canonicaljson::ParseError::none);
+        require_in_mock(altered.error == merovingian::canonicaljson::ParseError::none, "altered.error == merovingian::canonicaljson::ParseError::none");
         event_text = sign_as_invitee(altered.value, *room_version, invitee_key_seed);
         break;
     }
@@ -1425,7 +1460,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
         {
             auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("bob's server was asked before alice was answered, and delia's server hears of the invite")
             {
@@ -1462,7 +1497,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
                                          InviteeAnswer::signed_with_another_key, InviteeAnswer::unsigned_echo);
             auto invitee = InviteeServer{runtime, invitee_answering(answer)};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("alice is refused with 502, no invite is stored, and nobody is told of it")
             {
@@ -1482,7 +1517,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
                                                  "403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"No"})");
                                          }};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("alice is refused, no invite is stored, and delia's server is told nothing")
             {
@@ -1553,7 +1588,7 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
             auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
             auto const room_id =
                 create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("bob's server had been asked by the time createRoom answered, and nothing is queued for it")
             {
@@ -1586,7 +1621,7 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
                 create_room(runtime, alice,
                             std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"(",")" + carol + R"("]})");
             auto const elapsed = std::chrono::steady_clock::now() - started_at;
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("createRoom answers within one remote timeout, and both invites wait in the queue")
             {
@@ -1618,7 +1653,7 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
             auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::unsigned_echo)};
             auto const room_id =
                 create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("the invite is not given bob's server's signature, and is not left for the queue to deliver")
             {
@@ -1659,7 +1694,7 @@ SCENARIO("A remote server that answers an invite with M_INVITE_BLOCKED is not re
             auto invitee = InviteeServer{runtime, blocked_answer};
             auto const invited = call(runtime, "POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
                                       std::string{R"({"user_id":")"} + bob + R"("})");
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("alice is refused with 403 M_INVITE_BLOCKED, nothing is stored and nothing is queued")
             {
@@ -1676,7 +1711,7 @@ SCENARIO("A remote server that answers an invite with M_INVITE_BLOCKED is not re
             auto invitee = InviteeServer{runtime, blocked_answer};
             auto const created = call(runtime, "POST", "/_matrix/client/v3/createRoom", alice,
                                       std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
 
             THEN("createRoom still answers 200 with a room, and the blocked invite is not queued")
             {
@@ -2190,16 +2225,19 @@ SCENARIO("An invite to another server is refused when the inviter loses the powe
         WHEN("alice lowers her own level to 0 while bob's server is answering, and the server co-signs the invite")
         {
             auto const answer = invitee_answering(InviteeAnswer::cosigned);
+            // Set on the mock thread and checked after the join, not asserted there (see require_in_mock).
+            auto lowered_status = 0U;
             auto invitee = InviteeServer{
                 runtime, [&](std::string const& raw_request) {
                     auto const lowered =
                         call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.power_levels",
                              alice, R"({"invite":50,"users":{"@alice:example.org":0}})");
-                    CHECK(lowered.response.status == 200U);
+                    lowered_status = lowered.response.status;
                     return answer(raw_request);
                 }};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
-            invitee.thread.join();
+            REQUIRE(invitee.finish().empty());
+            CHECK(lowered_status == 200U);
 
             THEN("alice is refused 403 M_FORBIDDEN and nothing is stored or sent")
             {
