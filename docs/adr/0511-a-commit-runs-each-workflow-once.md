@@ -47,6 +47,8 @@ still checked, and the duplicate takes under a minute.
   or a draft, runs them.
 * `claude/**` and `codex/**` still run both events if a pull request is opened from one. They are listed because an automated
   agent may push there and open no pull request.
+  *Superseded in part by [ADR-0841](0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md): they are no longer in
+  `push`, and a branch with no pull request runs by hand through `workflow_dispatch`.*
 * A scenario that reaches PostgreSQL must carry `[postgresql]`. Without the URI these scenarios skip, so an untagged one passes
   in CI having tested nothing. `coverage` and `sonarcloud` still run the whole suite with the URI set, so its PostgreSQL code stays
   measured.

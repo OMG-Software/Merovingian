@@ -258,9 +258,10 @@ jobs:
             --sonarqube coverage/sonarqube.xml \
             build-coverage
 
-      # Before the Codecov upload, so the Codecov CLI (downloaded at run time, its
-      # signature check skipped below) has not run in the job when SONAR_TOKEN is
-      # handed out. The token is in this step's environment and no other's.
+      # The only step that receives SONAR_TOKEN. The Codecov upload, whose CLI is downloaded
+      # with its signature check skipped, runs in the separate `codecov` job below: a step can
+      # read every secret its job uses from the runner's memory, so ordering steps within one
+      # job would not keep the token from it (ADR-0250, ADR-0846).
       - name: SonarQube Cloud scan
         # A pull request from a fork gets no secrets, so it cannot be scanned; it is
         # scanned on main once merged. Everything above still runs for it.
@@ -280,10 +281,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Runs when the scan failed, so a failed scan does not also lose the coverage
-      # upload; not when the reports were never produced or the run was cancelled.
+  # Its own job, on its own runner, so the Codecov CLI never shares a job with SONAR_TOKEN
+  # (ADR-0250, ADR-0846). It needs only the Cobertura report the coverage job uploaded, and
+  # runs when the scan failed, so a failed scan does not also lose the Codecov upload.
+  codecov:
+    needs: coverage
+    if: ${{ !cancelled() && needs.coverage.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # v4.4.0, the commit the coverage job pins; Codecov reads the commit and paths from it.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Download coverage artifact
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage
+
+      # No artifact means the reports step failed in the coverage job, which already fails the run.
       - name: Upload coverage to Codecov
-        if: ${{ !cancelled() && steps.reports.outcome == 'success' }}
+        if: steps.download.outcome == 'success'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           # CODECOV_TOKEN must be added as a repository secret.

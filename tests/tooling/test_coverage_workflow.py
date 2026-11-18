@@ -105,12 +105,30 @@ class CoverageWorkflowTests(unittest.TestCase):
         job_ids = re.findall(r"(?m)^  ([A-Za-z0-9_-]+):[ \t]*$", workflow.split("\njobs:\n", 1)[1])
 
         # WHEN its jobs are listed.
-        # THEN there is exactly one, with that name: Sonar's analysis is a step of it, not a second build.
-        self.assertEqual(job_ids, ["coverage"])
+        # THEN `coverage` builds, and Sonar's analysis is a step of it, not a second build; the only other job
+        # uploads to Codecov from the report the build wrote.
+        self.assertEqual(job_ids, ["coverage", "codecov"])
         self.assertRegex(workflow, r"(?m)^name: coverage$")
         self.assertFalse((COVERAGE_WORKFLOW.parent / "sonarcloud.yml").exists())
         # AND the build and the suites run once.
         self.assertEqual(workflow.count("run: sh scripts/build-linux.sh"), 1)
+
+    def test_the_codecov_cli_never_shares_a_job_with_the_sonar_token(self) -> None:
+        # GIVEN the coverage workflow. A step can read every secret its job uses from the runner's memory, and the
+        # Codecov action runs a CLI whose signature check it skips (ADR-0250, ADR-0846).
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        coverage_job, codecov_job = workflow.split("\n  codecov:\n", 1)
+
+        # THEN SONAR_TOKEN is in the coverage job only, and the Codecov action in the codecov job only.
+        self.assertIn("secrets.SONAR_TOKEN", coverage_job)
+        self.assertNotIn("codecov/codecov-action@", coverage_job)
+        self.assertNotIn("SONAR_TOKEN", codecov_job)
+        self.assertIn("codecov/codecov-action@", codecov_job)
+        # AND the codecov job takes the report the coverage job uploaded, and builds nothing.
+        self.assertIn("needs: coverage", codecov_job)
+        self.assertIn("actions/download-artifact@", codecov_job)
+        self.assertIn("name: coverage-${{ github.sha }}", codecov_job)
+        self.assertNotIn("build-linux.sh", codecov_job)
 
     def test_one_gcovr_run_writes_the_codecov_and_the_sonarqube_reports(self) -> None:
         workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
