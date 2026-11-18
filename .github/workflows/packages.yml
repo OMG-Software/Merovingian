@@ -967,23 +967,55 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Two pushes to main build at once, and the slower run used to delete and
+    # recreate `latest` over the newer one. One group serialises every publish,
+    # and the step below refuses to replace a release built from a newer commit
+    # (ADR-0848). Never cancel in progress: a run cancelled between the delete
+    # and the create would leave no `latest` at all.
+    concurrency:
+      group: packages-publish-latest
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: signed-packages
           path: packages/
       - name: Publish rolling latest release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if gh release view latest --repo "${{ github.repository }}" >/dev/null 2>&1; then
+          set -euo pipefail
+          if gh release view latest --repo "${REPOSITORY}" >/dev/null 2>&1; then
+            # The tag points at the commit the published packages were built
+            # from (--target below). Replace it only with the same commit or a
+            # descendant; anything else, or an answer we cannot read, stops.
+            published="$(gh api "repos/${REPOSITORY}/commits/latest" --jq .sha)"
+            if [ -z "${published}" ]; then
+              echo "::error::cannot read the commit the latest release was built from"
+              exit 1
+            fi
+            status="$(gh api "repos/${REPOSITORY}/compare/${published}...${GITHUB_SHA}" --jq .status)"
+            case "${status}" in
+              ahead|identical) ;;
+              behind)
+                echo "::notice::latest is built from ${published}, newer than ${GITHUB_SHA}; leaving it"
+                exit 0
+                ;;
+              *)
+                echo "::error::latest (${published}) and ${GITHUB_SHA} compare as '${status}'; not replacing it"
+                exit 1
+                ;;
+            esac
             gh release delete latest \
-              --repo "${{ github.repository }}" \
+              --repo "${REPOSITORY}" \
               --yes \
               --cleanup-tag
           fi
           gh release create latest \
-            --repo "${{ github.repository }}" \
+            --repo "${REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
             --prerelease \
             --title "Latest ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
             --notes "Rolling release from \`main\` — commit \`${{ github.sha }}\`. Built with hardened profile. Replaced on every push to main. Each package is accompanied by a detached GPG signature (\`.asc\`). The SBOM is \`merovingian.spdx.json\` (SPDX 2.3) and \`merovingian.cdx.json\` (CycloneDX 1.5)." \

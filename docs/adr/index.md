@@ -714,3 +714,4 @@
 * [0833 - The LiveKit webhook is served on the client listener and trusted only to prompt a check](0833-the-livekit-webhook-is-served-on-the-client-listener-and-trusted-only-to-prompt-a-check.md)
 * [0834 - SQLite writes share one pooled connection, whatever database.pool_size says](0834-sqlite-writes-share-one-pooled-connection.md)
 * [0835 - The version changes only when the owner asks](0835-the-version-changes-only-when-the-owner-asks.md)
+* [0848 - `latest` is replaced only by a build of the same or a newer commit](0848-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)

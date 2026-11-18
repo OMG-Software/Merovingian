@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -52,6 +55,47 @@ def workflow_job(workflow: str, job: str) -> str:
     if match is None:
         raise AssertionError(f"workflow job {job} is missing")
     return match.group(1)
+
+
+def publish_latest_script() -> str:
+    """Return the publish-latest step's run script, ready for bash.
+
+    The one expression GitHub would substitute, the run's commit in the release
+    notes, is replaced with `$GITHUB_SHA`; any other is an error, so a new one
+    cannot reach bash as a literal `${{`.
+    """
+    job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
+    match = re.search(
+        r"(?m)^      - name: Publish rolling latest release\n(?:^        (?!run:).*\n)*^        run: \|\n"
+        r"((?:^          .*\n|^\s*\n)+)",
+        job,
+    )
+    if match is None:
+        raise AssertionError("publish-latest has no 'Publish rolling latest release' run step")
+    script = textwrap.dedent(match.group(1)).replace("${{ github.sha }}", "${GITHUB_SHA}")
+    if "${{" in script:
+        raise AssertionError("the publish script uses an expression this test does not substitute")
+    return script
+
+
+def write_fake_gh(path: Path) -> None:
+    """Write a fake `gh` that logs each call and answers from FAKE_* variables."""
+    path.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$GH_LOG"\n'
+        'case "$1 $2" in\n'
+        '  "release view") [ "$FAKE_EXISTS" = 1 ] ;;\n'
+        '  "release delete"|"release create") exit 0 ;;\n'
+        '  "api repos/"*/commits/latest)\n'
+        '    [ "$FAKE_COMMIT" = FAIL ] && exit 1\n'
+        '    printf \'%s\\n\' "$FAKE_COMMIT" ;;\n'
+        '  "api repos/"*/compare/*) printf \'%s\\n\' "$FAKE_STATUS" ;;\n'
+        "  *) echo \"unexpected gh call: $*\" >&2; exit 99 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    path.chmod(0o755)
 
 
 def project_version() -> str:
@@ -136,18 +180,88 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertNotIn('[ -f "$f" ] && mv', stage)
 
     def test_publish_latest_retargets_the_release_in_repository_scope(self) -> None:
-        # GIVEN the rolling package publication workflow.
+        # GIVEN the rolling package publication job.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
-        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
 
         # WHEN the main branch replaces the rolling latest release.
-        # THEN the workflow resolves, deletes, and recreates that release against
-        # the current repository explicitly instead of relying on checkout state.
-        self.assertIn("publish-latest:", workflow)
-        self.assertIn("gh release view latest --repo", workflow)
-        self.assertIn("gh release delete latest \\", workflow)
-        self.assertIn('--repo "${{ github.repository }}"', workflow)
-        self.assertIn("gh release create latest \\", workflow)
+        # THEN every gh call names the repository explicitly instead of relying on
+        # checkout state, and the release is tagged at the commit it was built from.
+        self.assertIn("REPOSITORY: ${{ github.repository }}", job)
+        commands = re.sub(r"\\\n\s*", " ", job)
+        for verb in ("view", "delete", "create"):
+            self.assertRegex(commands, rf'gh release {verb} latest[^\n]*--repo "\$\{{REPOSITORY\}}"')
+        self.assertRegex(commands, r'gh release create latest[^\n]*--target "\$\{GITHUB_SHA\}"')
+
+    def test_every_publish_of_latest_waits_for_the_one_before_it(self) -> None:
+        # GIVEN the rolling package publication job.
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "publish-latest")
+
+        # WHEN two pushes to main reach it at once.
+        # THEN one fixed group holds them in turn, and a publish already deleting
+        # the old release is never cancelled before it creates the new one (ADR-0848).
+        concurrency = re.search(r"(?m)^    concurrency:\n((?:^      .*\n)+)", job)
+        self.assertIsNotNone(concurrency, "publish-latest has no job-level concurrency group")
+        self.assertIn("group: packages-publish-latest\n", concurrency.group(1))
+        self.assertIn("cancel-in-progress: false\n", concurrency.group(1))
+        self.assertNotIn("${{", concurrency.group(1), "the group must be one name for every run")
+
+    def test_publish_latest_never_replaces_a_release_built_from_a_newer_commit(self) -> None:
+        # GIVEN the publish step's own script and a fake gh that records each call.
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not available")
+        run = publish_latest_script()
+        this_commit = "b" * 40
+        published = "a" * 40
+        cases = (
+            # (release exists, gh api answers, compare status, exit, published?)
+            ("no release yet", False, "", "", 0, True),
+            ("this run is newer", True, published, "ahead", 0, True),
+            ("a re-run of the same commit", True, published, "identical", 0, True),
+            ("this run is older", True, published, "behind", 0, False),
+            ("histories diverged", True, published, "diverged", 1, False),
+            ("published commit unreadable", True, "", "ahead", 1, False),
+            ("gh api fails", True, "FAIL", "ahead", 1, False),
+        )
+        for name, exists, commits_answer, status, want_exit, want_publish in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                log = tmp_path / "gh.log"
+                write_fake_gh(tmp_path / "gh")
+                env = {
+                    "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "GITHUB_SHA": this_commit,
+                    "REPOSITORY": "owner/repo",
+                    "GH_LOG": str(log),
+                    "FAKE_EXISTS": "1" if exists else "0",
+                    "FAKE_COMMIT": commits_answer,
+                    "FAKE_STATUS": status,
+                }
+
+                # WHEN the step runs.
+                result = subprocess.run(
+                    [bash, "-c", run], cwd=tmp, env=env, capture_output=True, text=True, check=False
+                )
+
+                # THEN it publishes only over the same commit or an ancestor, and
+                # anything it cannot prove stops the job without deleting anything.
+                calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+                self.assertEqual(result.returncode, want_exit, result.stdout + result.stderr)
+                created = [call for call in calls if call.startswith("release create latest")]
+                deleted = [call for call in calls if call.startswith("release delete latest")]
+                self.assertEqual(bool(created), want_publish, calls)
+                if want_publish:
+                    self.assertIn(f"--target {this_commit}", created[0])
+                    self.assertEqual(bool(deleted), exists, calls)
+                else:
+                    self.assertEqual(deleted, [], "a refused publish must not delete latest")
+                if exists:
+                    self.assertIn("api repos/owner/repo/commits/latest --jq .sha", calls)
+                if exists and commits_answer not in ("", "FAIL"):
+                    self.assertIn(
+                        f"api repos/owner/repo/compare/{published}...{this_commit} --jq .status", calls
+                    )
 
     def test_package_scripts_use_the_project_version(self) -> None:
         # GIVEN the Meson project version is the canonical release version.

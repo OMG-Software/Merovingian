@@ -366,8 +366,18 @@ gpg --verify <package-file>.asc <package-file>
 ```
 
 The publish step resolves and deletes the existing `latest` release with an
-explicit `--repo "${{ github.repository }}"` scope before recreating it so the
-artifact-only job does not depend on checkout state.
+explicit `--repo "${REPOSITORY}"` scope before recreating it so the
+artifact-only job does not depend on checkout state. It recreates the release
+with `--target` set to the commit the packages were built from, so the `latest`
+tag names that commit. Publishes run one at a time in the
+`packages-publish-latest` concurrency group, and before deleting anything the
+step compares the tag's commit with its own: it publishes when its commit is the
+same or newer, leaves `latest` alone when the published build is newer, and
+fails without deleting anything when the two have diverged or the published
+commit cannot be read. After a force-push to `main` rewrote the published
+commit, delete `latest` (`gh release delete latest --cleanup-tag`) and re-run
+the newest run's `publish-latest`
+([ADR-0848](adr/0848-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
 
 The static Linux fallback artifact is built on Alpine/musl with `-static-pie`
 and packaged as `merovingian-<version>-linux-static-x86_64.tar.gz`. It is a
