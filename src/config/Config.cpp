@@ -29,6 +29,7 @@
 #include "merovingian/http/RateLimit.hpp"
 #include "merovingian/oauth/HandOffAllowlist.hpp"
 #include "merovingian/oauth/OAuthBaseUrl.hpp"
+#include "merovingian/oauth/ParsedUri.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -36,7 +37,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -338,6 +341,138 @@ auto is_valid_https_url(std::string_view url) noexcept -> bool
     auto const remainder = url.substr(https_scheme.size());
     return !remainder.empty() && remainder.find(' ') == std::string_view::npos;
 }
+
+namespace
+{
+
+    // The longest server.turn.uris entry and the most entries one list holds.
+    constexpr auto max_turn_uri_bytes = std::size_t{512U};
+    constexpr auto max_turn_uris = std::size_t{16U};
+
+    // Whether `uri` is a TURN URI of RFC 7065, strictly: `turn:` or `turns:`, a host (a name or IPv4 address of ASCII
+    // letters, digits, `.` and `-`, not starting or ending with `.` or `-`, or a valid IPv6 address (checked with
+    // inet_pton) in square brackets, of hex digits, `:` and `.`, so no zone identifier), an optional `:port` of 1 to
+    // 65535, and an optional `?transport=udp` or `?transport=tcp`. No userinfo, path, fragment or other query.
+    auto is_turn_uri(std::string_view uri) -> bool
+    {
+        auto const rest = starts_with(uri, "turn:")    ? uri.substr(5U)
+                          : starts_with(uri, "turns:") ? uri.substr(6U)
+                                                       : std::string_view{};
+        auto const question = rest.find('?');
+        if (question != std::string_view::npos)
+        {
+            auto const query = rest.substr(question + 1U);
+            if (query != "transport=udp" && query != "transport=tcp")
+            {
+                return false;
+            }
+        }
+        auto const authority = rest.substr(0U, question);
+        auto host = std::string_view{};
+        auto port = std::optional<std::string_view>{};
+        if (!authority.empty() && authority.front() == '[')
+        {
+            auto const close = authority.find(']');
+            if (close == std::string_view::npos)
+            {
+                return false;
+            }
+            host = authority.substr(1U, close - 1U);
+            auto const after = authority.substr(close + 1U);
+            if (!after.empty())
+            {
+                if (after.front() != ':')
+                {
+                    return false;
+                }
+                port = after.substr(1U);
+            }
+            if (host.empty() || host.size() >= INET6_ADDRSTRLEN || host.find(':') == std::string_view::npos ||
+                !std::ranges::all_of(host, [](char c) {
+                    return std::isxdigit(static_cast<unsigned char>(c)) != 0 || c == ':' || c == '.';
+                }))
+            {
+                return false;
+            }
+            // Only hex digits, `:` and `.` get here (so no zone identifier); the system parser then says whether they
+            // spell an IPv6 address. The copy is NUL-terminated because the view is not.
+            auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+            std::ranges::copy(host, literal.begin());
+            auto v6 = in6_addr{};
+            if (::inet_pton(AF_INET6, literal.data(), &v6) != 1)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            auto const colon = authority.find(':');
+            host = authority.substr(0U, colon);
+            if (colon != std::string_view::npos)
+            {
+                port = authority.substr(colon + 1U);
+            }
+            auto const is_host_byte = [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+                       c == '-';
+            };
+            if (host.empty() || !std::ranges::all_of(host, is_host_byte) || host.front() == '.' ||
+                host.front() == '-' || host.back() == '.' || host.back() == '-')
+            {
+                return false;
+            }
+        }
+        if (port.has_value())
+        {
+            constexpr auto max_port_digits = std::size_t{5U};
+            if (port->empty() || port->size() > max_port_digits || !std::ranges::all_of(*port, is_ascii_digit))
+            {
+                return false;
+            }
+            auto const value = std::stoul(std::string{*port});
+            if (value == 0U || value > 65535U)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Why `uris` is not an acceptable server.turn.uris list, or nullopt. Fixed text, never the input.
+    auto turn_uris_error(std::vector<std::string> const& uris) -> std::optional<std::string_view>
+    {
+        if (uris.size() > max_turn_uris)
+        {
+            return "at most 16 TURN URIs may be listed";
+        }
+        for (auto index = std::size_t{0U}; index < uris.size(); ++index)
+        {
+            auto const& uri = uris[index];
+            if (!is_turn_uri(uri))
+            {
+                return "each TURN URI must be turn: or turns: and a host, an optional :port and an optional "
+                       "?transport=udp or ?transport=tcp";
+            }
+            if (uri.size() > max_turn_uri_bytes)
+            {
+                return "a TURN URI may be at most 512 bytes";
+            }
+            if (!std::ranges::all_of(uri, [](char c) {
+                    return static_cast<unsigned char>(c) >= 0x21U && static_cast<unsigned char>(c) <= 0x7EU;
+                }))
+            {
+                return "a TURN URI must be printable ASCII without whitespace";
+            }
+            auto const earlier = uris.begin() + static_cast<std::ptrdiff_t>(index);
+            if (std::ranges::find(uris.begin(), earlier, uri) != earlier)
+            {
+                return "a TURN URI may be listed only once";
+            }
+        }
+        return std::nullopt;
+    }
+
+} // namespace
 
 auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
 {
@@ -1151,13 +1286,25 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // A partially populated turn block (e.g. only a username) is rejected
     // because it would advertise a broken relay to clients.
     auto const& turn = config.server().turn;
+    // server.turn.uris is the list form of server.turn.server (ADR-0821). Two ways to name the relays would leave it
+    // unclear which one clients get, so both together is refused; each entry is refused, never repaired, when it is
+    // not a plain turn: or turns: URI.
+    if (!turn.server.empty() && !turn.uris.empty())
+    {
+        findings.push_back({"server.turn.uris", "set either server.turn.server or server.turn.uris, not both"});
+    }
+    if (auto const uris_error = turn_uris_error(turn.uris); uris_error.has_value())
+    {
+        findings.push_back({"server.turn.uris", std::string{*uris_error}});
+    }
+    auto const turn_configured = !turn.server.empty() || !turn.uris.empty();
     if (!turn.shared_secret_file.empty() && (!turn.username.empty() || !turn.password.empty()))
     {
         // Two ways to issue credentials would leave it unclear which one clients get (ADR-0480).
         findings.push_back(
             {"server.turn.shared_secret_file", "set either shared_secret_file or username and password, not both"});
     }
-    else if (!turn.server.empty() && turn.shared_secret_file.empty())
+    else if (turn_configured && turn.shared_secret_file.empty())
     {
         if (turn.username.empty())
         {
@@ -1168,10 +1315,28 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
         }
     }
-    else if (turn.server.empty() &&
-             (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
+    else if (!turn_configured && (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
+    }
+
+    // MatrixRTC transport discovery (ADR-0822): the service URL is sent to every authenticated client and, in the
+    // well-known document, to anyone, so it is refused unless it is an absolute https URL with a host. oauth::ParsedUri
+    // is the project's strict reader: printable ASCII only, no userinfo, no fragment, at most 2048 bytes. Nothing is
+    // repaired, and this server never fetches the URL.
+    if (auto const& service_url = config.server().rtc.livekit_service_url; !service_url.empty())
+    {
+        auto const uri = oauth::ParsedUri::read(service_url);
+        auto const* parsed = std::get_if<oauth::ParsedUri>(&uri);
+        // Clients append `/sfu/get` or `/get_token` to it, so a query or a trailing slash would build a broken URL.
+        if (parsed == nullptr || parsed->scheme() != "https" || !parsed->has_authority() || parsed->host().empty() ||
+            parsed->has_query() || parsed->path().ends_with('/'))
+        {
+            findings.push_back(
+                {"server.rtc.livekit.service_url",
+                 "must be an https URL with a host, no userinfo, query or fragment, a path that does not "
+                 "end in /, no whitespace and at most 2048 bytes"});
+        }
     }
 
     // The built-in OAuth 2.0 API (ADR-0812, ADR-0816). Every OAuth address is derived from public_baseurl, so with the

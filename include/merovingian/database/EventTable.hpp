@@ -134,6 +134,23 @@ public:
         });
     }
 
+    // The rows room_in_stream_order() visits whose stream_ordering is at most `limit`, in the same order: the
+    // first row above `limit` is found by binary search, so the rows above it cost nothing however many there
+    // are (O(log n) to start). std::views::reverse gives newest first. Valid until the table is next changed.
+    [[nodiscard]] auto room_in_stream_order_up_to(std::string_view room_id, std::uint64_t limit) const
+    {
+        auto const room = by_room_stream_.find(room_id);
+        auto positions =
+            room == by_room_stream_.end() ? std::span<std::size_t const>{} : std::span<std::size_t const>{room->second};
+        auto const above = std::ranges::upper_bound(positions, limit, {}, [this](std::size_t held) {
+            return rows_[held].stream_ordering;
+        });
+        positions = positions.first(static_cast<std::size_t>(above - positions.begin()));
+        return std::views::transform(positions, [this](std::size_t position) -> PersistentEvent const& {
+            return rows_[position];
+        });
+    }
+
     // The greatest `origin_server_ts` among the rows of room `room_id`, of every status, counting only a positive
     // integer member of the event's own JSON; 0 when the room has none (ADR-0497).
     [[nodiscard]] auto room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t;

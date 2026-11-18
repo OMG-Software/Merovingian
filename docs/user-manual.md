@@ -807,8 +807,9 @@ support.
 | Key | Default | When to change |
 |---|---|---|
 | `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
-| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
-| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
+| `server.turn.uris` | (empty) | Several TURN URIs advertised in the order listed, e.g. `turn:turn.example.org:3478?transport=udp,turns:turn.example.org:5349?transport=tcp`. An alternative to `server.turn.server`, which stays for existing files; setting both is refused. The list uses the configuration's ordinary comma-separated syntax: whitespace around an entry and empty entries are ignored. Each entry is then checked, and refused (never repaired) unless it follows RFC 7065: `turn:` or `turns:` in lower case, a host (a name or IPv4 address of ASCII letters, digits, `.` and `-` that does not start or end with `.` or `-`, or a valid IPv6 address in square brackets such as `[2001:db8::1]`, with no zone identifier), an optional `:port` from 1 to 65535, and an optional `?transport=udp` or `?transport=tcp`. No user name, path, fragment or other query. An entry is at most 512 bytes of printable ASCII, may appear once, and the list holds at most 16 entries. A bad entry refuses the configuration. `server.turn.server` is not checked this way, so an existing value keeps working. TURN is on when either key is set (ADR-0821). |
+| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` or `server.turn.uris` is set (unless `shared_secret_file` is used). |
+| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` or `server.turn.uris` is set (unless `shared_secret_file` is used). |
 | `server.turn.shared_secret_file` | (empty) | Path to an owner-read-only file (mode `0400`, as every secret file) holding the TURN server's `static-auth-secret`, for coturn run with `use-auth-secret`. Each client then gets its own credentials: username `<expiry>:<user_id>`, password the base64 HMAC-SHA1 of that username under the secret (the coturn REST API), valid for `ttl_seconds`. Cannot be combined with `username` and `password`: the configuration is refused if both are set. |
 | `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response, and with `shared_secret_file` the time until the username's expiry. |
 
@@ -821,6 +822,34 @@ support.
 > an unreadable or empty file makes the endpoint answer `500` and log an error.
 > Set the same value as coturn's `static-auth-secret`, and keep
 > `server.turn.ttl_seconds` at or below coturn's own limits.
+
+#### Voice and video calls — `server.rtc.*` and `server.turn.*`
+
+Merovingian does not carry call media. A call needs a service you run beside it:
+
+- **1:1 calls** need a TURN server such as coturn. Configure it with `server.turn.*` (above).
+- **Group calls (MatrixRTC)** need a LiveKit SFU plus Element's `lk-jwt-service`, the authorisation service that
+  hands a caller a LiveKit token. `lk-jwt-service` checks who is calling through this server's existing OpenID
+  endpoints (`/_matrix/client/v3/user/{userId}/openid/request_token` and the federation `openid/userinfo`), so it must
+  be able to reach this server over HTTPS. Merovingian only tells clients where it is.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.rtc.livekit.service_url` | (empty) | The HTTPS URL of your `lk-jwt-service`, for example `https://livekit-jwt.example.org/lk-jwt-service`. Empty means no group-call transport is advertised. Clients build `<url>/sfu/get` and `<url>/get_token` by appending to it, so give the address without a trailing `/` and without a query: `https://host`, `https://host:8443` and `https://host/jwt` are accepted, `https://host/` and `https://host/jwt?x=1` are refused. It must be an absolute `https` URL with a host, no user name or password, no `#fragment`, no whitespace and at most 2048 bytes; anything else refuses the configuration. The server never contacts this URL. |
+
+With the key set, an authenticated client reading `GET /_matrix/client/v1/rtc/transports` (or the older
+`GET /_matrix/client/unstable/org.matrix.msc4143/rtc/transports`) learns a transport of type `livekit` with that
+`livekit_service_url`, and `GET /.well-known/matrix/client` gains an `org.matrix.msc4143.rtc_foci` member with the same
+entry, which clients built on the Rust SDK fall back to. `/_matrix/client/versions` always lists `org.matrix.msc4143`
+and `org.matrix.msc4143.stable` (ADR-0822). The URL is shown to anyone who can read the well-known document, so give
+it only an address you are happy to publish.
+
+Not implemented yet:
+
+- **Delayed events (MSC4140).** A participant whose client vanishes (a crash or lost network) is not removed from the
+  call's membership state automatically and can stay listed until they rejoin or someone removes them.
+- **A built-in token service.** There is no `/_matrix/client/v1/rtc/livekit/*` endpoint and the transport type
+  `m.livekit` is not advertised; you must run `lk-jwt-service` yourself.
 
 #### OAuth 2.0 API — `server.oauth.*`
 
@@ -1943,6 +1972,7 @@ take effect.
 | `presence.*` | Restart required |
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
+| `server.rtc.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
@@ -2254,6 +2284,9 @@ server {
         default_type application/json;
         add_header Access-Control-Allow-Origin "*" always;
         return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
+        # With server.rtc.livekit.service_url set, a document served here instead of by Merovingian must carry the
+        # "org.matrix.msc4143.rtc_foci" member itself:
+        # {"m.homeserver":{...},"org.matrix.msc4143.rtc_foci":[{"type":"livekit","livekit_service_url":"https://..."}]}
     }
 
     location = /.well-known/matrix/server {
@@ -2343,6 +2376,10 @@ printf '{"m.homeserver":{"base_url":"https://matrix.example.org"}}' \
 printf '{"m.server":"matrix.example.org:443"}' \
     > /var/www/merovingian/.well-known/matrix/server
 ```
+
+A static `client` file is not produced by Merovingian: with `server.rtc.livekit.service_url` set, add the
+`org.matrix.msc4143.rtc_foci` member to it yourself (see Voice and video calls above), or let Merovingian answer
+`/.well-known/matrix/client`.
 
 ### Apache httpd example
 

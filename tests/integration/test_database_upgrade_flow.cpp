@@ -8,17 +8,41 @@
 // current version and then holds exactly the schema a fresh one does, the
 // forward-only seam (migrate_*_schema_to) never moves past this build or
 // backwards, and a database a pre-1.0 build created is refused rather than
-// misread. A fixture written by the last 1.0.x release joins them.
+// misread. The 1.0.3 release's own databases (tests/fixtures/upgrade/1.0.3/)
+// are opened, migrated and served at the end of the file: opening one applies
+// the v1 to v2 step, and what the manifest lists is still served afterwards.
+#include "../support/JsonTestSupport.hpp"
 #include "../support/TempDirectory.hpp"
 #include "ScratchPostgresqlDatabase.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
 #include "merovingian/database/Schema.hpp"
 #include "merovingian/database/SchemaState.hpp"
+#include "merovingian/events/EventSigner.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -28,11 +52,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -310,6 +336,469 @@ constexpr auto pre_collapse_step_names = std::array{
 };
 
 constexpr auto pre_collapse_ledger_rows = static_cast<std::int64_t>(pre_collapse_step_names.size() + 1U);
+
+// ---------------------------------------------------------------------------
+// The previous series' last release's own database (ADR-0216).
+// tests/fixtures/upgrade/<release>/ was written over HTTP by that release's
+// server; manifest.json records what it was asked to store and the credentials
+// to read it back with. Nothing below names an ID, token or key: every value
+// comes from the manifest. Never regenerate the fixture with current code.
+// ---------------------------------------------------------------------------
+
+constexpr auto previous_series_fixture_release = std::string_view{"1.0.3"};
+
+[[nodiscard]] auto fixture_directory() -> std::filesystem::path
+{
+    return std::filesystem::path{MEROVINGIAN_TEST_SOURCE_ROOT} / "tests" / "fixtures" / "upgrade" /
+           std::string{previous_series_fixture_release};
+}
+
+[[nodiscard]] auto read_binary_file(std::filesystem::path const& path) -> std::string
+{
+    auto input = std::ifstream{path, std::ios::binary};
+    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
+[[nodiscard]] auto string_at(merovingian::canonicaljson::Object const& object, std::string_view key) -> std::string
+{
+    auto const* value = merovingian::tests::string_member(object, key);
+    return value == nullptr ? std::string{} : *value;
+}
+
+[[nodiscard]] auto object_at(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Object
+{
+    auto const* value = merovingian::tests::object_member_as_object(object, key);
+    return value == nullptr ? merovingian::canonicaljson::Object{} : *value;
+}
+
+struct FixtureUser final
+{
+    std::string user_id{};
+    std::string password{};
+    std::string device_id{};
+    std::string access_token{};
+};
+
+struct FixtureMessage final
+{
+    std::string sender{};
+    std::string event_id{};
+    std::string body{};
+};
+
+// What one backend's run of the old release stored, as manifest.json records it.
+struct FixtureExpectations final
+{
+    std::string release{};
+    std::int64_t schema_version{0};
+    std::string server_name{};
+    std::string master_key_hex{};
+    FixtureUser alice{};
+    FixtureUser bob{};
+    std::string displayname{};
+    std::string private_room_id{};
+    std::string public_room_id{};
+    std::string alias{};
+    std::vector<FixtureMessage> messages{};
+    std::string media_mxc_uri{};
+    std::string media_sha256{};
+    std::string account_data_type{};
+    std::string account_data_fixture_value{};
+    std::string pushkey{};
+    std::string device_ed25519_key{};
+    std::string next_batch{};
+    std::size_t non_2xx_steps{0U};
+};
+
+[[nodiscard]] auto fixture_user_at(merovingian::canonicaljson::Object const& users, std::string_view name)
+    -> FixtureUser
+{
+    auto const user = object_at(users, name);
+    return {string_at(user, "user_id"), string_at(user, "password"), string_at(user, "device_id"),
+            string_at(user, "access_token")};
+}
+
+[[nodiscard]] auto load_fixture_expectations(std::string_view backend) -> FixtureExpectations
+{
+    auto const manifest =
+        merovingian::tests::parse_object_json(read_binary_file(fixture_directory() / "manifest.json"));
+    auto const run = object_at(manifest, backend);
+    auto const users = object_at(run, "users");
+    auto expected = FixtureExpectations{};
+    expected.release = string_at(manifest, "release");
+    if (auto const* version = merovingian::tests::int_member(manifest, "schema_version"); version != nullptr)
+    {
+        expected.schema_version = *version;
+    }
+    expected.server_name = string_at(manifest, "server_name");
+    expected.master_key_hex = string_at(manifest, "master_key_hex");
+    expected.alice = fixture_user_at(users, "alice");
+    expected.bob = fixture_user_at(users, "bob");
+    expected.displayname = string_at(run, "displayname");
+    expected.private_room_id = string_at(run, "private_room_id");
+    expected.public_room_id = string_at(run, "public_room_id");
+    expected.alias = string_at(run, "alias");
+    if (auto const* messages = merovingian::tests::object_member_as_array(run, "messages"); messages != nullptr)
+    {
+        for (auto const& message : *messages)
+        {
+            if (auto const* fields = std::get_if<merovingian::canonicaljson::Object>(&message.storage()))
+            {
+                expected.messages.push_back(
+                    {string_at(*fields, "sender"), string_at(*fields, "event_id"), string_at(*fields, "body")});
+            }
+        }
+    }
+    auto const media = object_at(run, "media");
+    expected.media_mxc_uri = string_at(media, "mxc_uri");
+    expected.media_sha256 = string_at(media, "sha256");
+    auto const account_data = object_at(run, "account_data");
+    expected.account_data_type = string_at(account_data, "type");
+    expected.account_data_fixture_value = string_at(object_at(account_data, "content"), "fixture");
+    expected.pushkey = string_at(object_at(run, "pusher"), "pushkey");
+    expected.device_ed25519_key = string_at(object_at(run, "device_keys"), "ed25519_public_key");
+    expected.next_batch = string_at(run, "next_batch");
+    if (auto const* non_2xx = merovingian::tests::object_member_as_array(run, "non_2xx"); non_2xx != nullptr)
+    {
+        expected.non_2xx_steps = non_2xx->size();
+    }
+    return expected;
+}
+
+// The old release encrypted its signing secret under this key, so the current
+// runtime needs the same one to read it.
+[[nodiscard]] auto write_fixture_master_key(std::string const& hex) -> std::filesystem::path
+{
+    auto key = std::vector<unsigned char>(crypto_generichash_KEYBYTES);
+    auto length = std::size_t{0U};
+    REQUIRE(sodium_hex2bin(key.data(), key.size(), hex.c_str(), hex.size(), nullptr, &length, nullptr) == 0);
+    REQUIRE(length == key.size());
+    auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-fixture-master", ".key");
+    {
+        auto output = std::ofstream{path, std::ios::binary};
+        REQUIRE(output.is_open());
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        output.write(reinterpret_cast<char const*>(key.data()), static_cast<std::streamsize>(key.size()));
+        output.close();
+        REQUIRE_FALSE(output.fail());
+    }
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read);
+    return path;
+}
+
+[[nodiscard]] auto sha256_hex(std::string const& bytes) -> std::string
+{
+    auto digest = std::vector<unsigned char>(crypto_hash_sha256_BYTES);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    crypto_hash_sha256(digest.data(), reinterpret_cast<unsigned char const*>(bytes.data()), bytes.size());
+    auto hex = std::string(digest.size() * 2U + 1U, '\0');
+    sodium_bin2hex(hex.data(), hex.size(), digest.data(), digest.size());
+    hex.resize(digest.size() * 2U);
+    return hex;
+}
+
+[[nodiscard]] auto fixture_config(merovingian::config::DatabaseConfig database, std::filesystem::path const& master_key,
+                                  std::string const& server_name) -> merovingian::config::Config
+{
+    auto server = merovingian::config::ServerConfig{};
+    server.server_name = server_name;
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = master_key.string();
+    return {server,   merovingian::config::ListenersConfig{},        std::move(database),
+            security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
+}
+
+[[nodiscard]] auto sqlite_fixture_config(std::filesystem::path const& path, std::filesystem::path const& master_key,
+                                         std::string const& server_name) -> merovingian::config::Config
+{
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::sqlite;
+    database.sqlite_path = path.string();
+    return fixture_config(std::move(database), master_key, server_name);
+}
+
+[[nodiscard]] auto postgresql_fixture_config(std::filesystem::path const& uri_file,
+                                             std::filesystem::path const& master_key, std::string const& server_name)
+    -> merovingian::config::Config
+{
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::postgresql;
+    database.uri_file = uri_file.string();
+    return fixture_config(std::move(database), master_key, server_name);
+}
+
+// The runtime reads its database URI only from an owner-read-only file (ISO-7).
+[[nodiscard]] auto write_uri_file(std::string const& conninfo) -> std::filesystem::path
+{
+    auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-uri", "");
+    {
+        auto output = std::ofstream{path};
+        REQUIRE(output.is_open());
+        output << conninfo << '\n';
+        output.close();
+        REQUIRE_FALSE(output.fail());
+    }
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read);
+    return path;
+}
+
+// Runs a whole dump (plain SQL, no COPY, no psql meta-commands) in one PQexec.
+[[nodiscard]] auto pg_execute_script(std::string const& conninfo, std::string const& script) -> bool
+{
+    auto const connection = std::unique_ptr<PGconn, PgFinish>{PQconnectdb(conninfo.c_str())};
+    if (PQstatus(connection.get()) != CONNECTION_OK)
+    {
+        return false;
+    }
+    auto const result = std::unique_ptr<PGresult, PgClear>{PQexec(connection.get(), script.c_str())};
+    auto const status = PQresultStatus(result.get());
+    return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+}
+
+// The server signing key the old release stored for the server, read from its
+// own database rather than the manifest: what the runtime must keep signing with.
+struct FixtureSigningKey final
+{
+    std::string key_id{};
+    std::string public_key{};
+};
+
+[[nodiscard]] auto sqlite_fixture_signing_key(std::filesystem::path const& path, std::string const& server_name)
+    -> FixtureSigningKey
+{
+    auto* raw = static_cast<sqlite3*>(nullptr);
+    auto const opened = sqlite3_open_v2(path.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
+    auto const connection = std::unique_ptr<sqlite3, SqliteClose>{raw};
+    auto* raw_statement = static_cast<sqlite3_stmt*>(nullptr);
+    if (opened != SQLITE_OK ||
+        sqlite3_prepare_v2(connection.get(),
+                           "SELECT key_id, public_key FROM server_signing_keys WHERE server_name = ?1", -1,
+                           &raw_statement, nullptr) != SQLITE_OK)
+    {
+        return {};
+    }
+    auto const statement = std::unique_ptr<sqlite3_stmt, SqliteFinalize>{raw_statement};
+    if (sqlite3_bind_text(statement.get(), 1, server_name.c_str(), static_cast<int>(server_name.size()), nullptr) !=
+            SQLITE_OK ||
+        sqlite3_step(statement.get()) != SQLITE_ROW)
+    {
+        return {};
+    }
+    auto const text = [&statement](int column) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        auto const* value = reinterpret_cast<char const*>(sqlite3_column_text(statement.get(), column));
+        return value == nullptr ? std::string{} : std::string{value};
+    };
+    return {text(0), text(1)};
+}
+
+[[nodiscard]] auto postgresql_fixture_signing_key(std::string const& conninfo, std::string const& server_name)
+    -> FixtureSigningKey
+{
+    auto const connection = std::unique_ptr<PGconn, PgFinish>{PQconnectdb(conninfo.c_str())};
+    auto const* values = server_name.c_str();
+    auto const result = std::unique_ptr<PGresult, PgClear>{
+        PQexecParams(connection.get(), "SELECT key_id, public_key FROM server_signing_keys WHERE server_name = $1", 1,
+                     nullptr, &values, nullptr, nullptr, 0)};
+    if (PQresultStatus(result.get()) != PGRES_TUPLES_OK || PQntuples(result.get()) != 1)
+    {
+        return {};
+    }
+    return {PQgetvalue(result.get(), 0, 0), PQgetvalue(result.get(), 0, 1)};
+}
+
+struct Response final
+{
+    unsigned status{0U};
+    std::string body{};
+};
+
+[[nodiscard]] auto request(merovingian::homeserver::ClientServerRuntime& runtime, std::string method,
+                           std::string target, std::string token, std::string body = {}) -> Response
+{
+    auto const handled = merovingian::homeserver::handle_client_server_request(
+        runtime, {std::move(method), std::move(target), std::move(token), std::move(body)});
+    return {handled.response.status, handled.response.body};
+}
+
+[[nodiscard]] auto json_string_field(std::string const& body, std::string_view name) -> std::string
+{
+    return string_at(merovingian::tests::parse_object_json(body), name);
+}
+
+// Everything a client can read back of the old release's data, and writes that
+// need its signing secret. Not the room directory: it is checked by neither
+// release's fixture run beyond the old server's own read-back.
+struct FixtureView final
+{
+    Response alice_whoami{};
+    Response bob_whoami{};
+    Response bob_login{};
+    Response displayname{};
+    Response account_data{};
+    Response messages{};
+    Response members{};
+    Response alias{};
+    Response pushers{};
+    Response media{};
+    Response device_keys{};
+    Response sync_since_old_token{};
+    Response initial_sync{};
+    Response replay_old_transaction{};
+    Response send_into_old_room{};
+    Response read_new_event{};
+};
+
+[[nodiscard]] auto view_fixture(merovingian::homeserver::ClientServerRuntime& runtime,
+                                FixtureExpectations const& expected) -> FixtureView
+{
+    auto const& alice = expected.alice.access_token;
+    auto const media_id = expected.media_mxc_uri.substr(expected.media_mxc_uri.rfind('/') + 1U);
+    auto const private_room = "/_matrix/client/v3/rooms/" + expected.private_room_id;
+    auto view = FixtureView{};
+    view.alice_whoami = request(runtime, "GET", "/_matrix/client/v3/account/whoami", alice);
+    view.bob_whoami = request(runtime, "GET", "/_matrix/client/v3/account/whoami", expected.bob.access_token);
+    view.bob_login = request(runtime, "POST", "/_matrix/client/v3/login", {},
+                             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" +
+                                 expected.bob.user_id + R"("},"password":")" + expected.bob.password + R"("})");
+    view.displayname =
+        request(runtime, "GET", "/_matrix/client/v3/profile/" + expected.alice.user_id + "/displayname", alice);
+    view.account_data = request(
+        runtime, "GET",
+        "/_matrix/client/v3/user/" + expected.alice.user_id + "/account_data/" + expected.account_data_type, alice);
+    view.messages = request(runtime, "GET", private_room + "/messages?dir=b&limit=50", alice);
+    view.members = request(runtime, "GET", private_room + "/joined_members", alice);
+    view.alias = request(runtime, "GET", "/_matrix/client/v3/directory/room/%23" + expected.alias.substr(1U), alice);
+    view.pushers = request(runtime, "GET", "/_matrix/client/v3/pushers", alice);
+    view.media =
+        request(runtime, "GET", "/_matrix/client/v1/media/download/" + expected.server_name + "/" + media_id, alice);
+    view.device_keys = request(runtime, "POST", "/_matrix/client/v3/keys/query", alice,
+                               R"({"device_keys":{")" + expected.alice.user_id + R"(":[]}})");
+    view.sync_since_old_token =
+        request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&since=" + expected.next_batch, alice);
+    // The control: a sync with no token, which must replay the room's timeline.
+    view.initial_sync = request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0", alice);
+    // The old release sent the first fixture message as `upgrade-txn-1` from this
+    // device, so repeating it must replay that event, not create one.
+    view.replay_old_transaction = request(runtime, "PUT", private_room + "/send/m.room.message/upgrade-txn-1", alice,
+                                          R"({"msgtype":"m.text","body":")" + expected.messages.front().body + R"("})");
+    // A transaction ID the old release never saw, so a new event is created and signed.
+    view.send_into_old_room = request(runtime, "PUT", private_room + "/send/m.room.message/after-upgrade-txn-1", alice,
+                                      R"({"msgtype":"m.text","body":"sent after the upgrade"})");
+    view.read_new_event = request(
+        runtime, "GET", private_room + "/event/" + json_string_field(view.send_into_old_room.body, "event_id"), alice);
+    return view;
+}
+
+auto require_fixture_served(FixtureView const& view, FixtureExpectations const& expected) -> void
+{
+    // The old release wrote a clean, complete run: it is the manifest that says what to expect.
+    REQUIRE(expected.release == previous_series_fixture_release);
+    REQUIRE(expected.non_2xx_steps == 0U);
+    REQUIRE_FALSE(expected.alice.access_token.empty());
+    REQUIRE_FALSE(expected.bob.access_token.empty());
+    // Both users' old access tokens still authenticate: their hash format is read.
+    REQUIRE(view.alice_whoami.status == 200U);
+    REQUIRE(json_string_field(view.alice_whoami.body, "user_id") == expected.alice.user_id);
+    REQUIRE(json_string_field(view.alice_whoami.body, "device_id") == expected.alice.device_id);
+    REQUIRE(view.bob_whoami.status == 200U);
+    REQUIRE(json_string_field(view.bob_whoami.body, "user_id") == expected.bob.user_id);
+    // Its password hashes still verify.
+    REQUIRE(view.bob_login.status == 200U);
+    REQUIRE(json_string_field(view.bob_login.body, "user_id") == expected.bob.user_id);
+    REQUIRE(view.displayname.status == 200U);
+    REQUIRE(json_string_field(view.displayname.body, "displayname") == expected.displayname);
+    REQUIRE(view.account_data.status == 200U);
+    REQUIRE(json_string_field(view.account_data.body, "fixture") == expected.account_data_fixture_value);
+    REQUIRE(view.messages.status == 200U);
+    REQUIRE_FALSE(expected.messages.empty());
+    for (auto const& message : expected.messages)
+    {
+        INFO("message " << message.event_id);
+        REQUIRE(view.messages.body.find(message.event_id) != std::string::npos);
+        REQUIRE(view.messages.body.find(message.body) != std::string::npos);
+        REQUIRE(view.messages.body.find(message.sender) != std::string::npos);
+    }
+    REQUIRE(view.members.status == 200U);
+    REQUIRE(view.members.body.find(expected.alice.user_id) != std::string::npos);
+    REQUIRE(view.members.body.find(expected.bob.user_id) != std::string::npos);
+    REQUIRE(view.alias.status == 200U);
+    REQUIRE(json_string_field(view.alias.body, "room_id") == expected.public_room_id);
+    REQUIRE(view.pushers.status == 200U);
+    REQUIRE(view.pushers.body.find(expected.pushkey) != std::string::npos);
+    REQUIRE(view.media.status == 200U);
+    REQUIRE(sha256_hex(view.media.body) == expected.media_sha256);
+    REQUIRE(view.device_keys.status == 200U);
+    REQUIRE(view.device_keys.body.find(expected.device_ed25519_key) != std::string::npos);
+    // A client that synced against the old release carries on from its token. A token whose epoch is not the
+    // store's is served as an initial sync, also with a 200 (src/sync/AGENTS.md), so the status alone would pass a
+    // migration that replaced the stream token epoch. Prove the answer is incremental and the epoch survived.
+    REQUIRE(view.sync_since_old_token.status == 200U);
+    REQUIRE(view.initial_sync.status == 200U);
+    for (auto const& message : expected.messages)
+    {
+        INFO("message " << message.event_id);
+        // The control replays what the old release had already delivered; the answer to the old token must not.
+        REQUIRE(view.initial_sync.body.find(message.event_id) != std::string::npos);
+        REQUIRE(view.sync_since_old_token.body.find(message.event_id) == std::string::npos);
+    }
+    auto const old_token = merovingian::sync::decode_stream_token(expected.next_batch);
+    REQUIRE(old_token.has_value());
+    REQUIRE(old_token->epoch != 0U);
+    auto const new_token =
+        merovingian::sync::decode_stream_token(json_string_field(view.sync_since_old_token.body, "next_batch"));
+    REQUIRE(new_token.has_value());
+    REQUIRE(new_token->epoch == old_token->epoch);
+    // The old release's transaction IDs still deduplicate: a retried send replays its event.
+    REQUIRE(view.replay_old_transaction.status == 200U);
+    REQUIRE(json_string_field(view.replay_old_transaction.body, "event_id") == expected.messages.front().event_id);
+    // A new event in an old room needs the old signing secret, decrypted.
+    REQUIRE(view.send_into_old_room.status == 200U);
+    auto const new_event_id = json_string_field(view.send_into_old_room.body, "event_id");
+    REQUIRE_FALSE(new_event_id.empty());
+    REQUIRE(std::ranges::none_of(expected.messages, [&new_event_id](FixtureMessage const& message) {
+        return message.event_id == new_event_id;
+    }));
+    REQUIRE(view.read_new_event.status == 200U);
+    REQUIRE(view.read_new_event.body.find("sent after the upgrade") != std::string::npos);
+}
+
+// The event created after the upgrade carries the server's signature under the
+// old release's key ID, and that signature verifies against the old public key:
+// the runtime decrypted the old secret rather than signing with a replacement.
+auto require_signed_with_fixture_key(merovingian::homeserver::ClientServerRuntime& runtime,
+                                     FixtureExpectations const& expected, FixtureView const& view,
+                                     FixtureSigningKey const& key) -> void
+{
+    REQUIRE_FALSE(key.key_id.empty());
+    REQUIRE_FALSE(key.public_key.empty());
+    auto const& store = runtime.homeserver.database.persistent_store;
+    auto const event_id = json_string_field(view.send_into_old_room.body, "event_id");
+    auto const stored = store.events.find(event_id);
+    REQUIRE(stored != store.events.end());
+    auto const parsed = merovingian::canonicaljson::parse_lossless(stored->json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(event != nullptr);
+    auto const* signatures = merovingian::tests::object_member_as_object(*event, "signatures");
+    REQUIRE(signatures != nullptr);
+    auto const* by_server = merovingian::tests::object_member_as_object(*signatures, expected.server_name);
+    REQUIRE(by_server != nullptr);
+    auto const* signature = merovingian::tests::string_member(*by_server, key.key_id);
+    INFO("signing key " << key.key_id);
+    REQUIRE(signature != nullptr);
+
+    auto const* policy = merovingian::homeserver::stored_room_version_policy(store, expected.private_room_id);
+    REQUIRE(policy != nullptr);
+    auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const verified = merovingian::crypto::ed25519_verify(
+        merovingian::crypto::Ed25519PublicKey{merovingian::events::matrix_bytes_from_base64(key.public_key)},
+        payload.output,
+        merovingian::crypto::Ed25519Signature{merovingian::events::matrix_bytes_from_base64(*signature)});
+    REQUIRE(verified.valid);
+}
 
 } // namespace
 
@@ -844,5 +1333,130 @@ SCENARIO("A PostgreSQL database a pre-1.0 build created is refused, not upgraded
                         pre_collapse_ledger_rows);
             }
         }
+    }
+}
+
+SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this build",
+         "[database][upgrade][sqlite][homeserver][fixture]")
+{
+    GIVEN("a copy of the SQLite database the last 1.0.x release wrote, and its master key")
+    {
+        auto const expected = load_fixture_expectations("sqlite");
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-upgrade-fixture", ".sqlite3");
+        std::filesystem::copy_file(fixture_directory() / "merovingian.sqlite3", path,
+                                   std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+        auto const master_key = write_fixture_master_key(expected.master_key_hex);
+        auto const signing_key = sqlite_fixture_signing_key(path, expected.server_name);
+        // The release wrote schema v1: one ledger row, and none of version 2's tables.
+        auto const ledger_rows_before = sqlite_count(path, "SELECT count(*) FROM schema_migrations");
+        auto const oauth_objects_before =
+            sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'");
+
+        WHEN("the migration path runs on it and the current runtime starts on the result")
+        {
+            auto const migrated = merovingian::database::migrate_sqlite_schema_to(
+                path.string(), merovingian::database::current_schema_version());
+            // Version 2's tables take a row and give it back; the runtime is not started yet, so nothing else holds the
+            // file.
+            auto const oauth_tables_usable =
+                sqlite_execute(path, "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
+                sqlite_count(path, "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
+                sqlite_execute(path, "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
+            auto started = merovingian::homeserver::start_client_server(
+                sqlite_fixture_config(path, master_key, expected.server_name));
+            REQUIRE(started.started);
+            auto const view = view_fixture(started.runtime, expected);
+
+            THEN(
+                "the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
+            {
+                REQUIRE(migrated.ok);
+                REQUIRE(expected.schema_version == 1);
+                REQUIRE(ledger_rows_before == 1);
+                REQUIRE(oauth_objects_before == 0);
+                REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
+                REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
+                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM schema_migrations") ==
+                        static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_clients") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_sessions") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
+                                           "name = 'idx_oauth_sessions_client_id'") == 1);
+                REQUIRE(oauth_tables_usable);
+                REQUIRE(started.runtime.homeserver.database.schema_version ==
+                        merovingian::database::current_schema_version());
+                require_fixture_served(view, expected);
+                require_signed_with_fixture_key(started.runtime, expected, view, signing_key);
+            }
+        }
+        std::filesystem::remove(path);
+        std::filesystem::remove(master_key);
+    }
+}
+
+SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by this build",
+         "[database][upgrade][postgresql][integration][homeserver][fixture]")
+{
+    GIVEN("a PostgreSQL database restored from the dump the last 1.0.x release wrote")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const expected = load_fixture_expectations("postgresql");
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
+        REQUIRE(scratch.created());
+        REQUIRE(pg_execute_script(scratch.conninfo(), read_binary_file(fixture_directory() / "postgresql.sql")));
+        auto const uri_file = write_uri_file(scratch.conninfo());
+        auto const master_key = write_fixture_master_key(expected.master_key_hex);
+        auto const signing_key = postgresql_fixture_signing_key(scratch.conninfo(), expected.server_name);
+        // The release wrote schema v1: one ledger row, and none of version 2's tables.
+        auto const ledger_rows_before = pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations");
+        auto const oauth_tables_before =
+            pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
+                                         "table_schema = 'public' AND table_name LIKE 'oauth%'");
+
+        WHEN("the migration path runs on it and the current runtime starts on the result")
+        {
+            auto const migrated = merovingian::database::migrate_postgresql_schema_to(
+                scratch.conninfo(), merovingian::database::current_schema_version());
+            // Version 2's tables take a row and give it back; the runtime is not started yet.
+            auto const oauth_tables_usable =
+                pg_execute(scratch.conninfo(), "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") ==
+                    1 &&
+                pg_execute(scratch.conninfo(), "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
+            auto started = merovingian::homeserver::start_client_server(
+                postgresql_fixture_config(uri_file, master_key, expected.server_name));
+            REQUIRE(started.started);
+            auto const view = view_fixture(started.runtime, expected);
+
+            THEN(
+                "the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
+            {
+                REQUIRE(migrated.ok);
+                REQUIRE(expected.schema_version == 1);
+                REQUIRE(ledger_rows_before == 1);
+                REQUIRE(oauth_tables_before == 0);
+                REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
+                REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
+                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations") ==
+                        static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
+                REQUIRE(oauth_tables_usable);
+                REQUIRE(started.runtime.homeserver.database.schema_version ==
+                        merovingian::database::current_schema_version());
+                require_fixture_served(view, expected);
+                require_signed_with_fixture_key(started.runtime, expected, view, signing_key);
+            }
+        }
+        std::filesystem::remove(uri_file);
+        std::filesystem::remove(master_key);
     }
 }

@@ -9,6 +9,7 @@
 #include "merovingian/config/IdentityServerConfig.hpp"
 #include "merovingian/config/OAuthConfig.hpp"
 #include "merovingian/config/PushConfig.hpp"
+#include "merovingian/config/RtcConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
 #include "merovingian/config/TurnServerConfig.hpp"
 
@@ -37,6 +38,8 @@ struct ServerConfig final
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};
+    // MatrixRTC transport discovery (MSC4143). Empty by default: no transport is advertised (see RtcConfig).
+    RtcConfig rtc{};
     // The built-in OAuth 2.0 API. Off by default (see OAuthConfig).
     OAuthConfig oauth{};
     // Identity Service API client config for 3PID invites/bind/unbind/

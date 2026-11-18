@@ -1,0 +1,472 @@
+{
+  "release": "1.0.3",
+  "commit": "5f458d5732809f096042cb5c74392537c2b47c6e",
+  "schema_version": 1,
+  "server_name": "example.org",
+  "master_key_hex": "e20a57ef7ee73bc1cc86594aa3954498e1b4ce7e4f06f7c32c285f8e2b6a2989",
+  "registration_token": "test-registration-token",
+  "sqlite": {
+    "device_keys": {
+      "device_keys": {
+        "user_id": "@alice:example.org",
+        "device_id": "UPGRADE1",
+        "algorithms": [
+          "m.olm.v1.curve25519-aes-sha2",
+          "m.megolm.v1.aes-sha2"
+        ],
+        "keys": {
+          "curve25519:UPGRADE1": "avkVfi/n0gvWx3G6YuPrB25Fy5tWrqUpFe0NfOvzyGw",
+          "ed25519:UPGRADE1": "N5GQ6FD/1Zsb98rTHyr22OIGA80WqwICtUZ4X5XPD6s"
+        },
+        "signatures": {
+          "@alice:example.org": {
+            "ed25519:UPGRADE1": "UBBsAgbpMe0FdxfQPzzBo7xekw1ImFlqIJdcAuhXafvTbd/1ynySi1jxrc1N5nFSl1CaTAmqhJCeLK1EF3nIDg"
+          }
+        }
+      },
+      "one_time_keys": {
+        "signed_curve25519:AAAAAQ": {
+          "key": "b60hLnOYxauXUjJqQzghgaK3oPo4ft3LInvHYLRF1xo",
+          "signatures": {
+            "@alice:example.org": {
+              "ed25519:UPGRADE1": "QtIiXHH1v3RHnRxMPRzgWxcyWgImVJnyoDn1CPxf2ZAXmpykFWOAVXDh9Daldfag6MPwNQo8Ir6X4FmAygp5Cg"
+            }
+          }
+        }
+      },
+      "ed25519_public_key": "N5GQ6FD/1Zsb98rTHyr22OIGA80WqwICtUZ4X5XPD6s"
+    },
+    "next_batch": "1a_1a_b_290d4aac260e176b",
+    "users": {
+      "alice": {
+        "user_id": "@alice:example.org",
+        "password": "CorrectHorse7!",
+        "device_id": "UPGRADE1",
+        "access_token": "mvs_ec0853b0434ffd9915e5ecbedf5c9239d1fea2435329e2f68277dd988f66c7a3"
+      },
+      "bob": {
+        "user_id": "@bob:example.org",
+        "password": "BatteryStaple9!",
+        "device_id": "UPGRADE2",
+        "access_token": "mvs_e32fb00b0b46036c634ed0ce07f31a054b567f87d462351239a12a7ee8ec5e80"
+      }
+    },
+    "displayname": "Alice Upgrade",
+    "private_room_id": "!izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY",
+    "public_room_id": "!0en5oBPugaFyvTPadaX1TvcE6Y6yAuTJ3e68KXpMojA",
+    "alias": "#upgrade-public:example.org",
+    "messages": [
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$Bvm248Nwe5VYLasWdIIuUcPjIFQLXm-Cn6H6uMX7bfw",
+        "body": "upgrade message 1"
+      },
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$-f3HSwamy2GXuPwpavYDXFIKSgUXyoUClPrX2pBYcfY",
+        "body": "upgrade message 2"
+      },
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$W1InbbGrmfwJJ3llrJzq5dBwrFUau7RDNzzWyqEs0TE",
+        "body": "upgrade message 3"
+      },
+      {
+        "sender": "@bob:example.org",
+        "event_id": "$j9Jx8wXbfA_HTVzxwwNUwT-qc8rp2Sl0kx-naT1Fn6U",
+        "body": "reply from bob"
+      }
+    ],
+    "media": {
+      "mxc_uri": "mxc://example.org/Mj56RocdRWUhla3HMB-Crg",
+      "sha256": "7dbc7d20d54b5924ceb6ba419e522d699394d55f052f8b8815c15d199c357143",
+      "content_type": "text/plain",
+      "size": 340
+    },
+    "account_data": {
+      "type": "org.merovingian.upgrade",
+      "content": {
+        "fixture": "0.11.13"
+      }
+    },
+    "pusher": {
+      "kind": "http",
+      "app_id": "org.merovingian.upgrade",
+      "app_display_name": "Upgrade Fixture App",
+      "device_display_name": "Upgrade Fixture Device",
+      "lang": "en",
+      "pushkey": "upgrade-pushkey",
+      "data": {
+        "url": "https://push.example.org/_matrix/push/v1/notify"
+      }
+    },
+    "http_log": [
+      {
+        "step": "register alice",
+        "method": "POST",
+        "path": "/_matrix/client/v3/register",
+        "status": 200
+      },
+      {
+        "step": "login alice",
+        "method": "POST",
+        "path": "/_matrix/client/v3/login",
+        "status": 200
+      },
+      {
+        "step": "register bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/register",
+        "status": 200
+      },
+      {
+        "step": "login bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/login",
+        "status": 200
+      },
+      {
+        "step": "alice displayname",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+        "status": 200
+      },
+      {
+        "step": "alice create private room",
+        "method": "POST",
+        "path": "/_matrix/client/v3/createRoom",
+        "status": 200
+      },
+      {
+        "step": "alice invite bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/invite",
+        "status": 200
+      },
+      {
+        "step": "bob join",
+        "method": "POST",
+        "path": "/_matrix/client/v3/join/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY",
+        "status": 200
+      },
+      {
+        "step": "send message 1",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/send/m.room.message/upgrade-txn-1",
+        "status": 200
+      },
+      {
+        "step": "send message 2",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/send/m.room.message/upgrade-txn-2",
+        "status": 200
+      },
+      {
+        "step": "send message 3",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/send/m.room.message/upgrade-txn-3",
+        "status": 200
+      },
+      {
+        "step": "send message 4",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/send/m.room.message/upgrade-txn-4",
+        "status": 200
+      },
+      {
+        "step": "alice create public room",
+        "method": "POST",
+        "path": "/_matrix/client/v3/createRoom",
+        "status": 200
+      },
+      {
+        "step": "publicRooms listing",
+        "method": "GET",
+        "path": "/_matrix/client/v3/publicRooms",
+        "status": 200
+      },
+      {
+        "step": "resolve alias",
+        "method": "GET",
+        "path": "/_matrix/client/v3/directory/room/%23upgrade-public%3Aexample.org",
+        "status": 200
+      },
+      {
+        "step": "alice upload media",
+        "method": "POST",
+        "path": "/_matrix/media/v3/upload",
+        "status": 200
+      },
+      {
+        "step": "alice download media",
+        "method": "GET",
+        "path": "/_matrix/client/v1/media/download/example.org/Mj56RocdRWUhla3HMB-Crg",
+        "status": 200
+      },
+      {
+        "step": "alice account data",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/org.merovingian.upgrade",
+        "status": 200
+      },
+      {
+        "step": "alice set pusher",
+        "method": "POST",
+        "path": "/_matrix/client/v3/pushers/set",
+        "status": 200
+      },
+      {
+        "step": "alice keys/upload",
+        "method": "POST",
+        "path": "/_matrix/client/v3/keys/upload",
+        "status": 200
+      },
+      {
+        "step": "alice read messages",
+        "method": "GET",
+        "path": "/_matrix/client/v3/rooms/%21izamUNbT8G68FVAZUuIfKH_NKgSJzyrrD8CJIz9mxTY/messages",
+        "status": 200
+      },
+      {
+        "step": "alice initial sync",
+        "method": "GET",
+        "path": "/_matrix/client/v3/sync",
+        "status": 200
+      }
+    ],
+    "non_2xx": [],
+    "server_exit_code": 0
+  },
+  "postgresql": {
+    "device_keys": {
+      "device_keys": {
+        "user_id": "@alice:example.org",
+        "device_id": "UPGRADE1",
+        "algorithms": [
+          "m.olm.v1.curve25519-aes-sha2",
+          "m.megolm.v1.aes-sha2"
+        ],
+        "keys": {
+          "curve25519:UPGRADE1": "aJoAYROXT9rrYFhiSAmFkQk8DgPUrZKIq59YFaOAgQg",
+          "ed25519:UPGRADE1": "xZ6DW0uuhQKl7HY7m4J5dMmK6CWpCCrtYwps1QBYoyE"
+        },
+        "signatures": {
+          "@alice:example.org": {
+            "ed25519:UPGRADE1": "khdpySd56eC7863q/p2A8IOUUe2TQ28I4eBVO45kevqFspi6gW12BDvcz2qiB9GpsnS2zCNOxcde/LyLPA7RCw"
+          }
+        }
+      },
+      "one_time_keys": {
+        "signed_curve25519:AAAAAQ": {
+          "key": "0kBH0U8cIYy+UylyqqSe4teHLhfX/hYBgpiZZlNp4zk",
+          "signatures": {
+            "@alice:example.org": {
+              "ed25519:UPGRADE1": "kAxIom4YQ7T7Q2laPSclXDUngDWrsn4yPReEKDnH+1YVJhB2s8Mdy3x4YtyxOMw8e1c/K6C2UeGeeSyOXuS6CA"
+            }
+          }
+        }
+      },
+      "ed25519_public_key": "xZ6DW0uuhQKl7HY7m4J5dMmK6CWpCCrtYwps1QBYoyE"
+    },
+    "next_batch": "1a_1a_b_e5ec87dc1fb83319",
+    "users": {
+      "alice": {
+        "user_id": "@alice:example.org",
+        "password": "CorrectHorse7!",
+        "device_id": "UPGRADE1",
+        "access_token": "mvs_7a19c309ef7f5e848267afa7e1fe9612b6dde5e761a351c4fa8f2533e2a05287"
+      },
+      "bob": {
+        "user_id": "@bob:example.org",
+        "password": "BatteryStaple9!",
+        "device_id": "UPGRADE2",
+        "access_token": "mvs_227bf7f91b938d3870b3c8e6e5bec1b25f998cec088857a7ff424d48485a0044"
+      }
+    },
+    "displayname": "Alice Upgrade",
+    "private_room_id": "!C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY",
+    "public_room_id": "!WLDmyNQlQnw_RhR08m7Jk_JO2mbtD9pY5COByGjLODA",
+    "alias": "#upgrade-public:example.org",
+    "messages": [
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$gbIXT6cBYsLvEAdCmvz_-Z-MLge4BnaLY_O1-PtdjGo",
+        "body": "upgrade message 1"
+      },
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$mC5T62vlKtDEaC4l1ujmOJ3dA5q-PM-ku8SS1xRZCek",
+        "body": "upgrade message 2"
+      },
+      {
+        "sender": "@alice:example.org",
+        "event_id": "$h7M6qztmLUOCjFAmWrrrh-vd87KuCykZl7jvFLSK3Ds",
+        "body": "upgrade message 3"
+      },
+      {
+        "sender": "@bob:example.org",
+        "event_id": "$GcOCV1AahAZenbnTVGpvMmYTyB2XNFzhRLwjkRT0Cy8",
+        "body": "reply from bob"
+      }
+    ],
+    "media": {
+      "mxc_uri": "mxc://example.org/eu-rBrEY7MSJKUy6o7pmMw",
+      "sha256": "7dbc7d20d54b5924ceb6ba419e522d699394d55f052f8b8815c15d199c357143",
+      "content_type": "text/plain",
+      "size": 340
+    },
+    "account_data": {
+      "type": "org.merovingian.upgrade",
+      "content": {
+        "fixture": "0.11.13"
+      }
+    },
+    "pusher": {
+      "kind": "http",
+      "app_id": "org.merovingian.upgrade",
+      "app_display_name": "Upgrade Fixture App",
+      "device_display_name": "Upgrade Fixture Device",
+      "lang": "en",
+      "pushkey": "upgrade-pushkey",
+      "data": {
+        "url": "https://push.example.org/_matrix/push/v1/notify"
+      }
+    },
+    "http_log": [
+      {
+        "step": "register alice",
+        "method": "POST",
+        "path": "/_matrix/client/v3/register",
+        "status": 200
+      },
+      {
+        "step": "login alice",
+        "method": "POST",
+        "path": "/_matrix/client/v3/login",
+        "status": 200
+      },
+      {
+        "step": "register bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/register",
+        "status": 200
+      },
+      {
+        "step": "login bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/login",
+        "status": 200
+      },
+      {
+        "step": "alice displayname",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+        "status": 200
+      },
+      {
+        "step": "alice create private room",
+        "method": "POST",
+        "path": "/_matrix/client/v3/createRoom",
+        "status": 200
+      },
+      {
+        "step": "alice invite bob",
+        "method": "POST",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/invite",
+        "status": 200
+      },
+      {
+        "step": "bob join",
+        "method": "POST",
+        "path": "/_matrix/client/v3/join/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY",
+        "status": 200
+      },
+      {
+        "step": "send message 1",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/send/m.room.message/upgrade-txn-1",
+        "status": 200
+      },
+      {
+        "step": "send message 2",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/send/m.room.message/upgrade-txn-2",
+        "status": 200
+      },
+      {
+        "step": "send message 3",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/send/m.room.message/upgrade-txn-3",
+        "status": 200
+      },
+      {
+        "step": "send message 4",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/send/m.room.message/upgrade-txn-4",
+        "status": 200
+      },
+      {
+        "step": "alice create public room",
+        "method": "POST",
+        "path": "/_matrix/client/v3/createRoom",
+        "status": 200
+      },
+      {
+        "step": "publicRooms listing",
+        "method": "GET",
+        "path": "/_matrix/client/v3/publicRooms",
+        "status": 200
+      },
+      {
+        "step": "resolve alias",
+        "method": "GET",
+        "path": "/_matrix/client/v3/directory/room/%23upgrade-public%3Aexample.org",
+        "status": 200
+      },
+      {
+        "step": "alice upload media",
+        "method": "POST",
+        "path": "/_matrix/media/v3/upload",
+        "status": 200
+      },
+      {
+        "step": "alice download media",
+        "method": "GET",
+        "path": "/_matrix/client/v1/media/download/example.org/eu-rBrEY7MSJKUy6o7pmMw",
+        "status": 200
+      },
+      {
+        "step": "alice account data",
+        "method": "PUT",
+        "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/org.merovingian.upgrade",
+        "status": 200
+      },
+      {
+        "step": "alice set pusher",
+        "method": "POST",
+        "path": "/_matrix/client/v3/pushers/set",
+        "status": 200
+      },
+      {
+        "step": "alice keys/upload",
+        "method": "POST",
+        "path": "/_matrix/client/v3/keys/upload",
+        "status": 200
+      },
+      {
+        "step": "alice read messages",
+        "method": "GET",
+        "path": "/_matrix/client/v3/rooms/%21C7Cym0uRg_x2vckbuDPCwO4QgdsxfXpDiOi1WoH89NY/messages",
+        "status": 200
+      },
+      {
+        "step": "alice initial sync",
+        "method": "GET",
+        "path": "/_matrix/client/v3/sync",
+        "status": 200
+      }
+    ],
+    "non_2xx": [],
+    "server_exit_code": 0
+  }
+}

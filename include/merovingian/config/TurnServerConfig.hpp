@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace merovingian::config
 {
@@ -14,6 +15,10 @@ struct TurnServerConfig final
     // When empty the TURN endpoint returns an empty object so VoIP clients
     // gracefully disable relay support.
     std::string server{};
+    // Several TURN URIs advertised to clients in the configured order, e.g. a UDP and a TLS relay (ADR-0821). An
+    // alternative to `server`, which stays for 1.0.x config files: setting both is refused. Each entry is a `turn:` or
+    // `turns:` URI, validated by validate(). TURN is enabled when either `server` or `uris` is set.
+    std::vector<std::string> uris{};
     // Static credentials issued to every authenticated client, for a TURN server that takes one shared account
     // or none. Mutually exclusive with shared_secret_file.
     std::string username{};

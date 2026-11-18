@@ -1052,3 +1052,31 @@ SCENARIO("An event table lists the children of an event without scanning its row
         }
     }
 }
+
+SCENARIO("An event table walks one room's rows at or below a stream ordering", "[database][event-table][room-stream]")
+{
+    GIVEN("a room with rows sharing an ordering and another room")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$a3", 30U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$a1", 10U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$a2", 20U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$a2b", 20U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$b1", 15U, "!b:example.org")));
+
+        WHEN("it is read up to several limits")
+        {
+            THEN("the rows at or below the limit come in stream order, equal orderings in the order added")
+            {
+                REQUIRE(ids_of(table.room_in_stream_order_up_to("!a:example.org", 20U)) ==
+                        std::vector<std::string>{"$a1", "$a2", "$a2b"});
+                REQUIRE(ids_of(table.room_in_stream_order_up_to("!a:example.org", 19U)) ==
+                        std::vector<std::string>{"$a1"});
+                REQUIRE(ids_of(table.room_in_stream_order_up_to("!a:example.org", 9U)).empty());
+                REQUIRE(ids_of(table.room_in_stream_order_up_to("!a:example.org", UINT64_MAX)) ==
+                        ids_of(table.room_in_stream_order("!a:example.org")));
+                REQUIRE(ids_of(table.room_in_stream_order_up_to("!none:example.org", UINT64_MAX)).empty());
+            }
+        }
+    }
+}

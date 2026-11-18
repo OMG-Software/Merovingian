@@ -984,6 +984,15 @@ namespace
         {
             server.turn.server = std::string{value};
         }
+        else if (key == "server.turn.uris")
+        {
+            server.turn.uris = parse_string_list(value);
+        }
+        // MatrixRTC transport discovery (ADR-0822). validate() judges the URL.
+        else if (key == "server.rtc.livekit.service_url")
+        {
+            server.rtc.livekit_service_url = std::string{value};
+        }
         else if (key == "server.turn.username")
         {
             server.turn.username = std::string{value};

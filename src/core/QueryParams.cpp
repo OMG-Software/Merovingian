@@ -241,6 +241,10 @@ auto parse_query_params(std::string_view target) -> SyncRequest
         {
             request.full_state = (value == "true");
         }
+        else if (key == "use_state_after")
+        {
+            request.use_state_after = (value == "true");
+        }
         else if (key == "filter")
         {
             request.filter = std::string{value};

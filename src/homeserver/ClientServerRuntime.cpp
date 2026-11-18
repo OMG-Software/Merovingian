@@ -856,6 +856,18 @@ namespace
         return canonicaljson::make_member(std::move(key), std::move(value));
     }
 
+    // The MatrixRTC transport entry for the LiveKit authorisation service at `service_url` (MSC4143, MSC4195;
+    // ADR-0822). The type is `livekit`, never `m.livekit`, and there is no `url` member.
+    [[nodiscard]] auto livekit_transport_json(std::string const& service_url) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{
+            canonicaljson::Object{
+                                  canonicaljson::make_member("type", canonicaljson::Value{std::string{"livekit"}}),
+                                  canonicaljson::make_member("livekit_service_url", canonicaljson::Value{service_url}),
+                                  }
+        };
+    }
+
     [[nodiscard]] auto json_serialize(canonicaljson::Value const& value) -> std::string
     {
         auto const result = canonicaljson::serialize_canonical(value);
@@ -4104,6 +4116,8 @@ namespace
             "/_matrix/client/v1/media/upload",
             "/_matrix/client/v1/media/preview_url",
             "/_matrix/client/v3/voip/turnServer",
+            "/_matrix/client/v1/rtc/transports",
+            "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
             "/_matrix/client/v3/devices",
@@ -4207,6 +4221,8 @@ namespace
             {"/_matrix/client/v1/media/upload",                                             "POST"            },
             {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
             {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
+            {"/_matrix/client/v1/rtc/transports",                                           "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                  "GET"             },
             {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
             {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
             {"/_matrix/client/v3/devices",                                                  "GET"             },
@@ -5428,8 +5444,12 @@ namespace
             std::set<std::string, std::less<>> senders{};
             std::string own_user_id{};
             bool own_forced{false};
-            // A member event above this stream ordering (and below the timeline) is a gap change.
+            // A member event above this stream ordering is a change since `since`: in the gap when `state` is built,
+            // and in the timeline as well for `state_after`, whose client takes no state from the timeline.
             std::optional<std::uint64_t> gap_after{};
+            // The events of a `state_after` delta (ADR-0819): each is a change the client must apply, whatever its
+            // stream ordering (state resolution can move a key back to an older event).
+            std::unordered_set<std::string> changed_event_ids{};
             // Drop every state event that is not a member event (an incremental left room's state is a delta).
             bool members_only{false};
             // Do not consult the tracker: a client may discard a room when it leaves it, so after a rejoin it may no
@@ -5455,6 +5475,11 @@ namespace
             return plan_.members_only;
         }
 
+        [[nodiscard]] auto is_changed(std::string const& event_id) const -> bool
+        {
+            return plan_.changed_event_ids.contains(event_id);
+        }
+
         // Whether `event`, the member state event for `state_key`, goes in `state`; notes it when it does.
         [[nodiscard]] auto keep(database::PersistentEvent const& event, std::string_view state_key) -> bool
         {
@@ -5467,7 +5492,7 @@ namespace
                 return false;
             }
             auto const forced = (plan_.gap_after.has_value() && event.stream_ordering > *plan_.gap_after) ||
-                                (plan_.own_forced && state_key == plan_.own_user_id);
+                                (plan_.own_forced && state_key == plan_.own_user_id) || is_changed(event.event_id);
             if (!forced)
             {
                 if (!plan_.senders.contains(state_key) ||
@@ -5753,10 +5778,8 @@ namespace
     // `position` only while an earlier ordering is pending; then the state is the
     // state before the earliest such event, which no event at or below `position`
     // follows. Failing that, the events above `position` are left out.
-    [[nodiscard]] auto build_state_events_at_position(database::PersistentStore const& store,
-                                                      sync::EventTypeFilter const& filter, std::string_view room_id,
-                                                      std::uint64_t position, LazySelectorRef lazy = std::nullopt)
-        -> canonicaljson::Array
+    [[nodiscard]] auto state_event_ids_at_position(database::PersistentStore const& store, std::string_view room_id,
+                                                   std::uint64_t position) -> std::vector<std::string>
     {
         auto earliest_above = store.events.end();
         auto ids = std::vector<std::string>{};
@@ -5776,7 +5799,7 @@ namespace
         });
         if (earliest_above == store.events.end())
         {
-            return build_current_state_events_array(store, filter, room_id, lazy);
+            return ids;
         }
         if (auto const* policy = stored_room_version_policy(store, room_id); policy != nullptr)
         {
@@ -5788,7 +5811,7 @@ namespace
                 {
                     before_ids.push_back(entry.event_id);
                 }
-                return build_state_events_array_for_ids(store, filter, before_ids, lazy);
+                return before_ids;
             }
         }
         // Each key held above `position` keeps the value it held before, where its
@@ -5804,7 +5827,82 @@ namespace
                 }
             }
         }
-        return build_state_events_array_for_ids(store, filter, ids, lazy);
+        return ids;
+    }
+
+    [[nodiscard]] auto build_state_events_at_position(database::PersistentStore const& store,
+                                                      sync::EventTypeFilter const& filter, std::string_view room_id,
+                                                      std::uint64_t position, LazySelectorRef lazy = std::nullopt)
+        -> canonicaljson::Array
+    {
+        return build_state_events_array_for_ids(store, filter, state_event_ids_at_position(store, room_id, position),
+                                                lazy);
+    }
+
+    // Removes from `ids` what `held`, the state the client holds, already has. An event is the value of one key, so an
+    // event `held` lacks is exactly a key whose value differs.
+    auto remove_state_held(std::vector<std::string>& ids, std::vector<std::string> const& held) -> void
+    {
+        auto const held_ids = std::unordered_set<std::string_view>{held.begin(), held.end()};
+        std::erase_if(ids, [&](std::string const& id) {
+            return held_ids.contains(id);
+        });
+    }
+
+    // ADR-0819: the IDs of the state events that make a joined room's state at `position` differ from its state at
+    // `since_ordering`, for `state_after`. A key can change with no event of the window about it (state resolution can
+    // move it back), so this compares the two states; it does not list the window's state events.
+    //
+    // Cost: nothing for a room with no event since `since` (one look at the newest row). Otherwise the anchor at
+    // `since` is a binary search of the room's index plus the withheld rows stepped over below it, however many rows
+    // the window holds (`state_anchor_rows_examined`). With an unforked graph, then the state group rows between the
+    // two points, none for a window of messages. Otherwise (a fork, a snapshot between the points, an unreadable chain)
+    // it reads the room's state twice, its own rows only.
+    [[nodiscard]] auto joined_state_changes(database::PersistentStore const& store, std::string_view room_id,
+                                            std::uint64_t since_ordering, std::uint64_t position)
+        -> std::vector<std::string>
+    {
+        auto newest_first = store.events.room_in_stream_order(room_id) | std::views::reverse;
+        if (std::ranges::empty(newest_first) || (*newest_first.begin()).stream_ordering <= since_ordering)
+        {
+            return {};
+        }
+        auto const access = sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U};
+        auto const* const since_anchor = sync::state_anchor_event(store, room_id, access, since_ordering);
+        auto const since_group = since_anchor == nullptr
+                                     ? std::optional<std::string>{}
+                                     : database::find_event_state_group(store, since_anchor->event_id);
+        if (since_group.has_value())
+        {
+            // With one extremity the current state is that event's recorded state (ADR-0064). The forward extremity
+            // index answers for one room: it costs that room's tips.
+            auto const tips = store.forward_extremities.tips_of_room(room_id);
+            if (tips.size() == 1U)
+            {
+                auto const tip = store.events.find(tips.front());
+                auto const tip_group = tip != store.events.end() && tip->stream_ordering <= position
+                                           ? database::find_event_state_group(store, tip->event_id)
+                                           : std::optional<std::string>{};
+                if (tip_group.has_value())
+                {
+                    if (auto changes = sync::state_changes_along_chain(store, *since_group, *tip_group);
+                        changes.has_value())
+                    {
+                        return std::move(*changes);
+                    }
+                }
+            }
+        }
+        auto changes = state_event_ids_at_position(store, room_id, position);
+        // A `since` older than anything recorded here gets all of it: an update the client already holds is harmless.
+        if (since_anchor != nullptr)
+        {
+            if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
+            {
+                remove_state_held(changes, *held);
+            }
+        }
+        return changes;
     }
 
     // Whether a timeline carries the join of `user_id`: the join then tells the client everything the spec's "own
@@ -5866,6 +5964,83 @@ namespace
         return current;
     }
 
+    // What stands in for a sender's member event above the position when the state group chain cannot be read: a joined
+    // user may read the current one and a member too many is valid; a user who left may not read past their leave.
+    enum class UnreadableMember
+    {
+        current_stands_in,
+        omitted,
+    };
+
+    // The `m.room.member` event of `sender` in force at `position`, for `state_after` (ADR-0454's cost rule): two hash
+    // lookups when their current member event is at or below it, which is nearly always; otherwise one walk of the
+    // state group chain of the state anchor at `position`.
+    [[nodiscard]] auto member_event_at_position(database::PersistentStore const& store, std::string_view room_id,
+                                                sync::RoomReadAccess const& access, std::uint64_t position,
+                                                std::string_view sender, UnreadableMember unreadable)
+        -> std::optional<std::string>
+    {
+        auto const current = database::find_current_state_event_id(store, room_id, "m.room.member", sender);
+        if (current.has_value())
+        {
+            auto const event = store.events.find(*current);
+            if (event != store.events.end() && event->stream_ordering <= position)
+            {
+                return current;
+            }
+        }
+        auto const fallback = unreadable == UnreadableMember::current_stands_in ? current : std::nullopt;
+        auto const* const anchor = sync::state_anchor_event(store, room_id, access, position);
+        auto const group = anchor == nullptr ? std::optional<std::string>{}
+                                             : database::find_event_state_group(store, anchor->event_id);
+        if (!group.has_value())
+        {
+            return fallback;
+        }
+        auto const found = sync::lookup_state_in_group(store, *group, "m.room.member", sender);
+        switch (found.outcome)
+        {
+        case sync::GroupLookup::found:
+            return std::string{found.event_id};
+        case sync::GroupLookup::absent:
+            return std::nullopt;
+        case sync::GroupLookup::broken:
+            break;
+        }
+        return fallback;
+    }
+
+    // Appends the client event of `event_id`, the member event of `sender`, when the filter and the selector keep it.
+    auto add_lazy_sender_member(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+                                std::string const& event_id, std::string const& sender, LazyRoomSelector& selector,
+                                canonicaljson::Array& members) -> void
+    {
+        auto const event = store.events.find(event_id);
+        if (event != store.events.end() && sync::event_passes_filter(filter, "m.room.member", event->sender_user_id) &&
+            selector.keep(*event, sender))
+        {
+            members.push_back(client_event_with_id(store, *event));
+        }
+    }
+
+    // The member events a `state_after` delta adds for `senders`: each as of `position`, unless the delta already holds
+    // it, that the selector keeps.
+    auto add_lazy_senders_at_position(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+                                      std::string_view room_id, sync::RoomReadAccess const& access,
+                                      std::uint64_t position, std::vector<std::string> const& senders,
+                                      UnreadableMember unreadable, LazyRoomSelector& selector,
+                                      canonicaljson::Array& members) -> void
+    {
+        for (auto const& sender : senders)
+        {
+            auto const event_id = member_event_at_position(store, room_id, access, position, sender, unreadable);
+            if (event_id.has_value() && !selector.is_changed(*event_id))
+            {
+                add_lazy_sender_member(store, filter, *event_id, sender, selector, members);
+            }
+        }
+    }
+
     // The member events a lazy response carries when `state` is not otherwise built: those of `senders`, as they were
     // at the start of the timeline whose first event is `first_event`, that the selector keeps.
     [[nodiscard]] auto build_lazy_sender_members(database::PersistentStore const& store,
@@ -5878,18 +6053,10 @@ namespace
         for (auto const& sender : senders)
         {
             auto const event_id = member_event_at_timeline_start(store, first_event.room_id, first_event, sender);
-            if (!event_id.has_value())
+            if (event_id.has_value())
             {
-                continue;
+                add_lazy_sender_member(store, filter, *event_id, sender, selector, members);
             }
-            auto const event = store.events.find(*event_id);
-            if (event == store.events.end() ||
-                !sync::event_passes_filter(filter, "m.room.member", event->sender_user_id) ||
-                !selector.keep(*event, sender))
-            {
-                continue;
-            }
-            members.push_back(client_event_with_id(store, *event));
         }
         return members;
     }
@@ -6350,6 +6517,8 @@ namespace
         // What room state the user may read (ADR-0357). `none` for a user who never joined: a retracted
         // knock, a declined invite, a ban before any join.
         sync::RoomReadAccess access{};
+        // GET /sync `use_state_after`: answer `state_after` instead of `state` (ADR-0820).
+        bool use_state_after{false};
     };
 
     // Ignoring Users for a stored event: whether `ignored_senders` withholds it. The event's JSON is parsed for
@@ -6361,6 +6530,119 @@ namespace
         return ignored_senders.contains(event.sender_user_id) &&
                trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
                                                     trust_safety::event_json_is_state_event(event.json));
+    }
+
+    // The members of a left room's section.
+    [[nodiscard]] auto left_room_object(std::string_view state_member, canonicaljson::Array state_events,
+                                        canonicaljson::Array timeline_events, bool limited,
+                                        std::string const& prev_batch) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member(std::string{state_member},
+                        json_obj({json_member("events", json_arr(std::move(state_events)))})),
+            json_member("timeline", json_obj({
+                                        json_member("events", json_arr(std::move(timeline_events))),
+                                        json_member("limited", json_bool(limited)),
+                                        json_member("prev_batch", json_str(prev_batch)),
+                                    })),
+        });
+    }
+
+    // ADR-0820: a left room's `state_after`: "The state updates for the room up to the end of the timeline", which ends
+    // at the leave. The room's state is read only as far as the user may read it (ADR-0357, room_read_access_for), so
+    // nothing after their leave is told, however late the ban that ended their membership came. The user's own
+    // membership is the event in `leave_event` (the leave, or the ban that followed it); the client takes no state from
+    // the timeline, so it is here even though the timeline carries it.
+    //
+    // A delta is only a delta for a client that held the room's state at `since`. When the join this departure ended
+    // began after `since` (`RoomReadAccess::join_ordering`, found by the walk that found the boundary), the client held
+    // nothing of this room, so the whole readable state as of the leave is sent, as an initial sync sends it, still
+    // capped by `room_read_access_for`. The test is the one `joined_membership_changed_since` applies to a joined room,
+    // read from the join event instead of the current member event, which for a departed user is the leave.
+    [[nodiscard]] auto build_left_room_state_after(
+        database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+        sync::ViewerEventUnsigned& viewer_unsigned, LeftRoomRequest const& request,
+        std::optional<std::reference_wrapper<database::PersistentEvent const>> leave_event, std::uint64_t upper_bound,
+        std::vector<std::string> const& senders, LazySyncRequest& lazy) -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        auto const joined_in_window = request.since_ordering.has_value() &&
+                                      request.access.kind == sync::RoomReadKind::as_of &&
+                                      request.access.join_ordering > *request.since_ordering;
+        auto const delta_since = joined_in_window ? std::optional<std::uint64_t>{} : request.since_ordering;
+        if (request.access.kind != sync::RoomReadKind::none)
+        {
+            auto const readable_to = request.access.kind == sync::RoomReadKind::as_of
+                                         ? std::min(upper_bound, request.access.boundary_ordering)
+                                         : upper_bound;
+            auto const* const anchor = sync::state_anchor_event(store, request.room_id, request.access, readable_to);
+            auto ids = anchor == nullptr ? std::optional<std::vector<std::string>>{}
+                                         : sync::state_event_ids_after(store, *anchor);
+            if (ids.has_value() && leave_event.has_value())
+            {
+                // Replaced by the event that ended their stay, below.
+                if (auto const group = database::find_event_state_group(store, anchor->event_id); group.has_value())
+                {
+                    auto const own = sync::lookup_state_in_group(store, *group, "m.room.member", request.user_id);
+                    if (own.outcome == sync::GroupLookup::found)
+                    {
+                        std::erase(*ids, own.event_id);
+                    }
+                }
+            }
+            if (ids.has_value() && delta_since.has_value())
+            {
+                if (*delta_since >= readable_to)
+                {
+                    ids->clear();
+                }
+                else if (auto const* const since_anchor =
+                             sync::state_anchor_event(store, request.room_id, request.access, *delta_since);
+                         since_anchor != nullptr)
+                {
+                    if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
+                    {
+                        remove_state_held(*ids, *held);
+                    }
+                }
+            }
+            auto selector = std::optional<LazyRoomSelector>{};
+            if (lazy.enabled())
+            {
+                auto plan = LazyRoomSelector::Plan{};
+                plan.senders.insert(senders.begin(), senders.end());
+                plan.own_user_id = std::string{request.user_id};
+                plan.own_forced = true;
+                plan.ignore_tracker = joined_in_window;
+                if (delta_since.has_value() && ids.has_value())
+                {
+                    plan.changed_event_ids.insert(ids->begin(), ids->end());
+                }
+                selector.emplace(lazy, request.room_id, std::move(plan));
+            }
+            auto const lazy_ref = selector.has_value() ? LazySelectorRef{std::ref(*selector)} : LazySelectorRef{};
+            if (ids.has_value())
+            {
+                state_events = build_state_events_array_for_ids(store, filter, *ids, lazy_ref);
+            }
+            if (selector.has_value() && delta_since.has_value())
+            {
+                // A delta names only what changed: the other senders' members come by key, as of the leave.
+                auto others = std::vector<std::string>{};
+                std::ranges::copy_if(senders, std::back_inserter(others), [&](std::string const& sender) {
+                    return sender != request.user_id;
+                });
+                add_lazy_senders_at_position(store, filter, request.room_id, request.access, readable_to, others,
+                                             UnreadableMember::omitted, *selector, state_events);
+            }
+        }
+        if (leave_event.has_value() &&
+            sync::event_passes_filter(filter, "m.room.member", leave_event->get().sender_user_id))
+        {
+            state_events.push_back(
+                viewer_unsigned.apply(leave_event->get(), client_event_with_id(store, leave_event->get())));
+        }
+        return state_events;
     }
 
     [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
@@ -6416,6 +6698,27 @@ namespace
                 ? std::to_string((*window_begin)->stream_ordering)
                 : std::to_string(window.budget_ran_out ? window.oldest_examined.value_or(since_ordering)
                                                        : since_ordering);
+
+        if (request.use_state_after)
+        {
+            auto senders = std::vector<std::string>{};
+            if (lazy.enabled())
+            {
+                auto unique = std::set<std::string, std::less<>>{};
+                for (auto it = window_begin; it != matched.end(); ++it)
+                {
+                    unique.insert((*it)->sender_user_id);
+                }
+                senders.assign(unique.begin(), unique.end());
+            }
+            auto const leave = leave_event == store.events.end()
+                                   ? std::optional<std::reference_wrapper<database::PersistentEvent const>>{}
+                                   : std::optional{std::cref(*leave_event)};
+            return left_room_object("state_after",
+                                    build_left_room_state_after(store, filter.room.state, viewer_unsigned, request,
+                                                                leave, upper_bound, senders, lazy),
+                                    std::move(timeline_events), limited, prev_batch);
+        }
 
         auto state_events = canonicaljson::Array{};
         // ADR-0357: a user who never joined (`none`) was never entitled to any of the room's state, so an
@@ -6552,14 +6855,7 @@ namespace
             }
         }
 
-        return json_obj({
-            json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
-            json_member("timeline", json_obj({
-                                        json_member("events", json_arr(std::move(timeline_events))),
-                                        json_member("limited", json_bool(limited)),
-                                        json_member("prev_batch", json_str(prev_batch)),
-                                    })),
-        });
+        return left_room_object("state", std::move(state_events), std::move(timeline_events), limited, prev_batch);
     }
 
     // Spec (Push Rules: Events): `m.push_rules` "Describes all push rules for this user", and its
@@ -6659,6 +6955,7 @@ namespace
         // may omit a redundant member (not include_redundant_members, not full_state), and fed by one that may; it
         // is begun here, after any long-poll wait, so a rerun judges afresh and records only what it returns.
         auto const full_state = request.full_state.value_or(false);
+        auto const use_state_after = request.use_state_after.value_or(false);
         auto const lazy_on = filter.present && filter.room.state.lazy_load_members;
         auto const may_omit = lazy_on && !filter.room.state.include_redundant_members;
         auto lazy = LazySyncRequest{
@@ -6798,10 +7095,16 @@ namespace
                 since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
             // Spec (GET /sync, `full_state`): "all state events will be returned, even if since is non-empty".
-            auto const state_path = !since_token.has_value() || newly_joined || limited || full_state;
+            // ADR-0818: `state_after` is the changes since `since`, on a limited sync too: they hold everything the gap
+            // changed, and whole state would only repeat what the client has.
+            auto const state_path =
+                !since_token.has_value() || newly_joined || full_state || (limited && !use_state_after);
+            auto const state_changes = use_state_after && !state_path
+                                           ? joined_state_changes(store, room.room_id, since_ordering, sync_position)
+                                           : std::vector<std::string>{};
             auto lazy_senders = std::vector<std::string>{};
             auto selector = std::optional<LazyRoomSelector>{};
-            if (lazy.enabled() && (state_path || window_begin != matched.end()))
+            if (lazy.enabled() && (state_path || window_begin != matched.end() || !state_changes.empty()))
             {
                 auto plan = LazyRoomSelector::Plan{};
                 for (auto it = window_begin; it != matched.end(); ++it)
@@ -6811,16 +7114,39 @@ namespace
                 lazy_senders.assign(plan.senders.begin(), plan.senders.end());
                 plan.own_user_id = std::string{user};
                 plan.ignore_tracker = newly_joined;
+                // A timeline event is not state to a `state_after` client: only the join in `state_after` tells it.
                 plan.own_forced = (!since_token.has_value() || full_state || newly_joined) &&
-                                  !timeline_carries_join_of(timeline_events, user);
-                if (since_token.has_value() && limited)
+                                  (use_state_after || !timeline_carries_join_of(timeline_events, user));
+                if (since_token.has_value() && (limited || use_state_after))
                 {
                     plan.gap_after = since_ordering;
                 }
+                plan.changed_event_ids.insert(state_changes.begin(), state_changes.end());
                 selector.emplace(lazy, room.room_id, std::move(plan));
             }
             auto const lazy_ref = selector.has_value() ? LazySelectorRef{std::ref(*selector)} : LazySelectorRef{};
-            if (state_path)
+            if (use_state_after)
+            {
+                // ADR-0818: as of the response's position, not the last delivered event: a state event the timeline
+                // filter hides lies before `next_batch`, and no later sync would report it.
+                if (state_path)
+                {
+                    state_events =
+                        build_state_events_at_position(store, filter.room.state, room.room_id, sync_position, lazy_ref);
+                }
+                else
+                {
+                    state_events = build_state_events_array_for_ids(store, filter.room.state, state_changes, lazy_ref);
+                    if (selector.has_value())
+                    {
+                        add_lazy_senders_at_position(store, filter.room.state, room.room_id,
+                                                     sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U},
+                                                     sync_position, lazy_senders, UnreadableMember::current_stands_in,
+                                                     *selector, state_events);
+                    }
+                }
+            }
+            else if (state_path)
             {
                 auto at_start = window_begin != matched.end()
                                     ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id,
@@ -6897,7 +7223,8 @@ namespace
                                             json_member("limited", json_bool(limited)),
                                             json_member("prev_batch", json_str(prev_batch)),
                                         })),
-                json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
+                json_member(use_state_after ? "state_after" : "state",
+                            json_obj({json_member("events", json_arr(std::move(state_events)))})),
                 json_member("account_data", json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
                 json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
                 json_member("unread_notifications", counts_object(room_counts)),
@@ -6994,7 +7321,8 @@ namespace
                         store, filter, history_visibility, viewer_unsigned, ignored_senders,
                         {membership.room_id, user, membership.stream_ordering,
                          since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
-                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user)},
+                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user),
+                         use_state_after},
                         lazy);
                     leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
@@ -15006,10 +15334,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && request_path == "/.well-known/matrix/client")
     {
         auto const& base_url = rt.homeserver.config.server().public_baseurl;
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(json_obj({
-                                 json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
-                             })));
+        auto document = canonicaljson::Object{
+            json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
+        };
+        // MSC4143: the Rust SDK falls back to this member when it cannot read the transports route (ADR-0822). Only
+        // with a service configured; without one the body is what it always was.
+        if (auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url; !service_url.empty())
+        {
+            auto foci = canonicaljson::Array{};
+            foci.push_back(livekit_transport_json(service_url));
+            document.push_back(json_member("org.matrix.msc4143.rtc_foci", json_arr(std::move(foci))));
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(document))));
     }
 
     // GET /_matrix/client/versions is the unauthenticated discovery endpoint
@@ -15029,6 +15365,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 json_member("versions", json_arr(std::move(versions))),
                 json_member("unstable_features", json_obj({
                                                      json_member("org.matrix.msc4186", json_bool(true)),
+                                                     json_member("org.matrix.msc4143", json_bool(true)),
+                                                     json_member("org.matrix.msc4143.stable", json_bool(true)),
                                                      json_member("org.matrix.simplified_msc3575", json_bool(true)),
                                                  })),
             })));
@@ -19257,7 +19595,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && request_path == "/_matrix/client/v3/voip/turnServer")
     {
         auto const& turn = rt.homeserver.config.server().turn;
-        if (turn.server.empty())
+        if (turn.server.empty() && turn.uris.empty())
         {
             return dispatch_resp(req, rt, 200U, "{}");
         }
@@ -19288,8 +19626,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             username = std::move(credentials->username);
             password = std::move(credentials->password);
         }
+        // server.turn.server (one URI, kept for 1.0.x configs) or server.turn.uris (ADR-0821), in configured order.
+        // The two are never both set: validate() refuses it.
         auto uris = canonicaljson::Array{};
-        uris.push_back(json_str(turn.server));
+        if (!turn.server.empty())
+        {
+            uris.push_back(json_str(turn.server));
+        }
+        else
+        {
+            for (auto const& uri : turn.uris)
+            {
+                uris.push_back(json_str(uri));
+            }
+        }
         auto const body = json_serialize(json_obj({
             json_member("username", json_str(username)),
             json_member("password", json_str(password)),
@@ -19297,6 +19647,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("uris", json_arr(std::move(uris))),
         }));
         return dispatch_resp(req, rt, 200U, body);
+    }
+
+    // GET /_matrix/client/v1/rtc/transports and its unstable MSC4143 path: where the operator's MatrixRTC
+    // authorisation service is (ADR-0822). The two differ in the property name and in what they answer when no
+    // service is configured, as the reference server's do.
+    if (req.method == "GET" && (request_path == "/_matrix/client/v1/rtc/transports" ||
+                                request_path == "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports"))
+    {
+        auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url;
+        auto const stable = request_path == "/_matrix/client/v1/rtc/transports";
+        auto transports = canonicaljson::Array{};
+        if (!service_url.empty())
+        {
+            transports.push_back(livekit_transport_json(service_url));
+        }
+        if (!stable && transports.empty())
+        {
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member(stable ? "transports" : "rtc_transports", json_arr(std::move(transports))),
+                             })));
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);

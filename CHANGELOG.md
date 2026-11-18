@@ -3,6 +3,44 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.1
+
+## Features
+
+* `GET /_matrix/client/v3/sync` honours `use_state_after` (Matrix v1.16): with it true each joined and left room
+  carries `state_after` and no `state` (ADR-0818, ADR-0819, ADR-0820).
+* The cross-release upgrade fixture `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3 release, is opened, taken
+  through migration 002 and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
+* MatrixRTC transport discovery (MSC4143): `server.rtc.livekit.service_url` is advertised as a `livekit` transport
+  on `/rtc/transports`, `/versions` and the well-known document (ADR-0822).
+* `server.turn.uris` lists several TURN URIs for `GET /voip/turnServer`, in order; `server.turn.server` still works and
+  both together are refused (ADR-0821).
+* The `use_state_after` scenarios asserting project choices, not spec rows, moved from the conformance suite to
+  `tests/integration/test_sync_state_after_flow.cpp`.
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* `use_state_after`: the state anchor at `since` is a binary search of the room's index, so a client back after a long
+  absence no longer walks every row it missed under the runtime lock.
+* `use_state_after`: a room joined and left inside one sync window now gets its whole readable state as of the leave in
+  `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0820).
+* The sync row of `docs/todos/capability-gaps.md` no longer says a limited sync gives no gap state, and tracks the
+  `state_after` limit after a state fork (ADR-0819).
+* Tests: the upgrade fixture scenarios prove the 1.0.3 sync token stays incremental and its epoch survives
+  migration; scratch files are uniquely named; a missing JSON field fails one scenario, not the binary.
+
+## Release notes
+
+1.1.1 adds `use_state_after` to `/sync`, `server.turn.uris` and MatrixRTC transport discovery. The new keys
+(`server.turn.uris`, `server.rtc.livekit.service_url`) are optional; no configuration change is needed. Group calls
+still need your own LiveKit SFU and `lk-jwt-service`, and delayed events (MSC4140) are not implemented. Known limit
+of `use_state_after`: after a state fork at the client's `since`, a key that state resolution later flips back to the
+value recorded at `since` is not sent in `state_after`; a client repairs itself with `full_state=true` (ADR-0819).
+
 # Version 1.1.0
 
 ## Features

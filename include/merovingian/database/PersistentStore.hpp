@@ -370,6 +370,10 @@ struct PersistentStore final
     // readers looked at, so a test proves cost by count, not time.
     std::unordered_map<std::string, std::vector<std::size_t>> membership_user_index{};
     ExaminedRows membership_rows_examined{};
+    // Event rows `sync::state_anchor_event` visited to find a room's newest accepted event at or below a stream
+    // ordering: the rows it stepped over to reach one, never the rows above the limit, which a seek skips. A test
+    // proves the cost by it, not by time.
+    ExaminedRows state_anchor_rows_examined{};
     // Event rows the sliding-sync long-poll relevance check walked (ADR-0609).
     ExaminedRows sync_relevance_rows_examined{};
     // (room, user) -> position in `memberships` (ADR-0603), same trust rule as `membership_room_index`.
