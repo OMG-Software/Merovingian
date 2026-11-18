@@ -17,8 +17,9 @@ struct OutboundCallResult final
     bool ok{false};
     std::string body{};
     std::uint16_t remote_status{0U};
-    // The `errcode` of a non-2xx answer's Matrix error body when it is `M_INVITE_BLOCKED` (SS7), else empty. A remote
-    // body is untrusted, so only this one fixed value is carried, never the remote's text.
+    // The `errcode` of a non-2xx answer's Matrix error body when it is `M_INVITE_BLOCKED` (SS7), `M_FORBIDDEN` or
+    // `M_INVALID_PARAM` (a LiveKit token relay, ADR-0831), else empty. A remote body is untrusted, so only these fixed
+    // values are carried, never the remote's text.
     std::string remote_errcode{};
     // ADR-0761: true when the destination itself gave no answer: discovery found no server, or the request got no
     // connection, no verified TLS session or no response in time. False on success, on any HTTP answer (including a

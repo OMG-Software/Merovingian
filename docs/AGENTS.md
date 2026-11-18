@@ -8,7 +8,7 @@ new documents.
 
 | Document | What to add/update |
 |---|---|
-| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `# Version X.Y.Z` entry when the version changes, with exactly the headings `## Features`, `## Security Fixes`, `## Bug fixes` and `## Release notes`: bullets of two lines at most, and one short release-notes paragraph ([changelog format](versioning.md#changelog-format), [ADR-0741](adr/0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)). Documentation-only changes add bullets to the current version's entry without a bump. Never add to `../CHANGELOG-pre-release.md`, the frozen record of the 0.x series ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)). |
+| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `# Version X.Y.Z` entry only when the owner asks for a new version, with exactly the headings `## Features`, `## Security Fixes`, `## Bug fixes` and `## Release notes`: bullets of two lines at most, and one short release-notes paragraph ([changelog format](versioning.md#changelog-format), [ADR-0741](adr/0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)). Every other change, documentation-only or not, adds bullets to the newest version's entry and never changes the version ([ADR-0835](adr/0835-the-version-changes-only-when-the-owner-asks.md)). Never add to `../CHANGELOG-pre-release.md`, the frozen record of the 0.x series ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)). |
 
 ## Update when the matching domain changes
 
@@ -17,7 +17,7 @@ new documents.
 | `coding-rules.md` | A project-wide coding rule is added, changed, or removed. Maintain the rule here; the root `AGENTS.md` requires this document rather than copying its rules. |
 | `security-coding-rules.md` | A security-relevant rule is added, changed, or removed in any module `AGENTS.md` file |
 | `testing-standards.md` | A new testing convention is adopted |
-| `versioning.md` | Version scheme changes; see also the version bump table |
+| `versioning.md` | Version scheme or bump policy changes; see also its table of version locations |
 | `auth-identity.md` | Auth, session token, or identity changes |
 | `crypto-boundary.md` | Crypto interface, key management, or signing changes |
 | `database-persistence.md` | Schema changes (migrations), store interface changes |

@@ -823,7 +823,10 @@ Built-in per-endpoint refinements inside a tier: device and key APIs at
 120/60s, search at 20/60s, thumbnails at 240/60s, and the delayed-event management and lookup paths (both prefixes, ADR-0826) at 3000/60s. Search requests do real
 work (a bounded in-memory
 scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
-lookup. The built-in per-user caps are 5/60s on `/login`, 4/60s on `/login/get_token` (ADR-0548), 30/60s on the two `preview_url` routes (ADR-0213) and 30/60s on `/_matrix/media/v1/create` (ADR-0212). The delayed-event management and lookup paths (`/_matrix/client/v1/delayed_events/` and `/_matrix/client/unstable/org.matrix.msc4140/delayed_events/`) are 120/60s per user, and the dedicated scheduling paths (`.../rooms/{roomId}/delayed_event/...`, both prefixes) 60/60s per user (ADR-0826); each path template is its own bucket.
+lookup. The built-in per-user caps are 5/60s on `/login`, 4/60s on `/login/get_token` (ADR-0548), 30/60s on the two `preview_url` routes (ADR-0213) and 30/60s on `/_matrix/media/v1/create` (ADR-0212). The delayed-event management and lookup paths (`/_matrix/client/v1/delayed_events/` and `/_matrix/client/unstable/org.matrix.msc4140/delayed_events/`) are 120/60s per user, and the dedicated scheduling paths (`.../rooms/{roomId}/delayed_event/...`, both prefixes) 60/60s per user (ADR-0826). The two LiveKit `get_token` paths are 60/60s per user (ADR-0829) and the two
+`delegate_delayed_leave` paths 30/60s per user (ADR-0832); LiveKit's webhook, `/_merovingian/livekit/webhook`, has only
+the default per-IP limit, because LiveKit sends every event from one address (ADR-0833). Each path template is its own
+bucket.
 
 The per-user tier keys on the *authenticated* user, which before a login
 succeeds is nobody — so a `/login` guessing spree against one account spread
@@ -849,7 +852,8 @@ Per-IP policy resolution is most-specific-first:
    `client_rate_limits.default_per_ip`.
 
 Per-user resolution: `client_rate_limits.per_user.<target-prefix>` first, then
-the built-in per-user caps (`/login`, `/login/get_token`, `preview_url`, media `create`, the delayed-event paths); routes with neither have no per-user cap (the
+the built-in per-user caps (`/login`, `/login/get_token`, `preview_url`, media `create`, the delayed-event paths, the
+LiveKit `get_token` and `delegate_delayed_leave` paths); routes with neither have no per-user cap (the
 per-IP cap still applies). Tier names are `auth_sensitive`, `media`, `sync`,
 `federation`, `admin`, `generic`; an unknown name is a parse-time finding, not a
 silently ignored key. All `client_rate_limits.*` changes require a server

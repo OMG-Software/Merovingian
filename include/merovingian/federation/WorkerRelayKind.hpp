@@ -20,6 +20,10 @@ enum class WorkerRelayKind : std::uint8_t
     user_devices,
     // GET /query/profile. Argument: the percent-decoded `user_id` query parameter.
     profile_query,
+    // POST /rtc/livekit/get_token (ADR-0831): main mints a token with the LiveKit secret, which no worker holds.
+    // Argument: the request body. The relay frame also names the verified origin, which main checks against the
+    // pending request's.
+    livekit_token,
 };
 
 } // namespace merovingian::federation

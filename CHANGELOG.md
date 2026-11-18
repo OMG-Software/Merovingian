@@ -3,10 +3,18 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
-# Version 1.1.4
+# Version 1.1.3
 
 ## Features
 
+* MatrixRTC calls on LiveKit need no `lk-jwt-service`: `POST .../rtc/livekit/get_token` (MSC4195) issues tokens to
+  joined users; `server.rtc.livekit.url`, `api_url`, `api_key` and `api_secret_file` turn it on (ADR-0829, ADR-0830).
+* A token for another server's SFU is relayed to it over federation, and other servers' joined users get subscribe-only
+  tokens for this server's SFU, judged by the main process and refused to a server the room's ACL denies (ADR-0831).
+* `delegate_delayed_leave` (MSC4195): this server sends a caller's delayed leave once LiveKit no longer shows them,
+  checked every 30 s and sooner on LiveKit's signed webhook, kept across restarts (ADR-0832, ADR-0833).
+* A branch no longer bumps the version: it changes only when the owner asks, and a change adds its bullets to the
+  newest version's entry here (ADR-0835).
 * A pull request runs a core CI gate (Ubuntu, FreeBSD and the analyses); the other platforms and every package run
   in the merge queue before a merge, as skipped checks on the pull request (ADR-0840).
 * A new push to a pull request cancels the runs for its previous head; other events are never cancelled (ADR-0842).
@@ -16,10 +24,20 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Security Fixes
 
-* None.
+* LiveKit tokens are HS256, signed only by typed functions that cannot grant room creation, administration or hidden
+  participants; the API secret is read per token and never logged (ADR-0828).
+* LiveKit's webhook is believed only when signed with the API secret for its exact body and recent, and even then only
+  brings a check forward: it never sends or restarts an event (ADR-0833).
+* The federation worker refuses to start if a Landlock rule would let it read the LiveKit API secret file (ADR-0062).
+* A LiveKit call's host lookup counts against the call's deadline: the exchange gets only the time the lookup left,
+  and none starts once the deadline has passed (ADR-0830).
 
 ## Bug fixes
 
+* `use_state_after`: a room forked at `since` now gets exactly what changed since what the client was told, read from an
+  in-memory log of state changes, and so does a left room (ADR-0827).
+* SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
+  first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
 * ccache now caches compiles in CI: the jobs restored a cache but compiled without it, so it stayed empty; only `main`
   writes the cache (ADR-0843).
 * `claude/**` and `codex/**` pushes no longer run every workflow a second time beside their pull request (ADR-0841).
@@ -30,8 +48,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Release notes
 
-A CI-only release: the server, its configuration and its packages are unchanged. Before merging it, turn on the merge
-queue in the "Protect main" ruleset, or pull requests will merge after the core gate alone.
+Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
+and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
+`state_after` sync of each room with news carries its whole state once. A SQLite server no longer refuses writes under
+sustained write load, and `database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request
+and the full matrix in the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge
+after the core gate alone.
 
 # Version 1.1.2
 

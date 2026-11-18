@@ -1,6 +1,6 @@
 # Documentation-only changes do not require a version bump
 
-* Status: accepted
+* Status: superseded by [ADR-0835](0835-the-version-changes-only-when-the-owner-asks.md)
 * Date: 2026-11-05
 
 ## Context and Problem Statement
@@ -32,3 +32,7 @@ The maintained policy is in [versioning](../versioning.md#bump-policy).
 ### Negative Consequences
 
 * Authors must check whether later changes make a branch more than documentation-only.
+
+## Links
+
+* Superseded by [ADR-0835](0835-the-version-changes-only-when-the-owner-asks.md)

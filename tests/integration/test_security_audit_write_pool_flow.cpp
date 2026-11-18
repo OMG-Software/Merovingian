@@ -3,16 +3,20 @@
 // DB-7 (29 Sep 2026 audit): every persisted write opened a fresh database
 // connection (SQLite open with its path checks, or a PostgreSQL connect and
 // SET ROLE) while the runtime mutex was usually held. Writes now reuse at most
-// database.pool_size connections (ADR-0154).
+// database.pool_size connections on PostgreSQL (ADR-0154) and one on SQLite
+// (ADR-0834).
 
 #include "../support/TempDirectory.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/database/SqliteConnectionDeleter.hpp"
+#include "merovingian/database/SqliteWritePool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <atomic>
@@ -22,6 +26,7 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -34,6 +39,28 @@ namespace
 
 constexpr auto writers = 64U;
 constexpr auto limit = std::uint32_t{4U};
+// SQLite's busy handler gives up after 5 s (busy_timeout_ms in SqliteStore.cpp);
+// a write held this long would outlast it by 2 s.
+constexpr auto longer_than_sqlite_busy_timeout = std::chrono::milliseconds{7000};
+
+// A plain read-write connection to the store's file, for a test that holds
+// SQLite's write lock itself. Opened by SQLite, as ADR-0157 requires.
+[[nodiscard]] auto open_raw_writer(std::filesystem::path const& path)
+    -> std::optional<merovingian::database::SqliteConnection>
+{
+    auto* raw = static_cast<sqlite3*>(nullptr);
+    if (sqlite3_open_v2(path.string().c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
+    {
+        sqlite3_close(raw);
+        return std::nullopt;
+    }
+    return merovingian::database::SqliteConnection{raw};
+}
+
+[[nodiscard]] auto run_sql(merovingian::database::SqliteConnection const& connection, char const* sql) -> bool
+{
+    return sqlite3_exec(connection.get(), sql, nullptr, nullptr, nullptr) == SQLITE_OK;
+}
 
 [[nodiscard]] auto insert_room(std::string const& room_id) -> merovingian::database::PreparedStatement
 {
@@ -150,10 +177,12 @@ auto terminate_other_backends(std::string const& uri) -> bool
 
 } // namespace
 
-SCENARIO("DB-7 concurrent writes to SQLite reuse at most database.pool_size connections",
+// SQLite runs one write at a time, so its writes share one connection whatever
+// database.pool_size allows (ADR-0834).
+SCENARIO("DB-7 concurrent writes to SQLite share one connection, whatever database.pool_size allows",
          "[db7][integration][database]")
 {
-    GIVEN("a real SQLite store whose write connections are limited to four")
+    GIVEN("a real SQLite store whose write connections database.pool_size would limit to four")
     {
         auto const directory = TemporaryDirectory{};
         auto const path = directory.path() / "db7.sqlite3";
@@ -166,13 +195,69 @@ SCENARIO("DB-7 concurrent writes to SQLite reuse at most database.pool_size conn
         {
             auto const committed = commit_concurrently(store, "!db7-sqlite-");
 
-            THEN("every write is durable and no more than four connections were ever opened for them")
+            THEN("every write is durable and one connection was opened for all of them")
             {
                 CHECK(committed == writers);
-                CHECK(merovingian::database::write_connections_opened(store) <= limit);
+                CHECK(merovingian::database::write_connections_opened(store) == 1U);
                 auto const reopened = merovingian::database::open_sqlite_persistent_store(path.string());
                 REQUIRE(reopened.ok);
                 CHECK(reopened.store.rooms.size() == writers);
+            }
+        }
+    }
+}
+
+// SQLite's lock wait is a busy handler that polls, backing off to every 100 ms,
+// and gives up after 5 s. A second write connection of this process waiting for
+// the first one's lock polls against it, and is refused if the first holds the
+// lock for longer: a single slow write, or one connection committing back to back
+// (every journal and database sync runs under EXCLUSIVE), which is how the DB-7
+// scenario above lost three writes under load on 2026-11-17 (ADR-0834).
+SCENARIO("A SQLite write waits for another write of this process for longer than SQLite's busy timeout",
+         "[db7][integration][database]")
+{
+    GIVEN("a real SQLite store allowed four write connections, one of whose writes holds SQLite's write lock")
+    {
+        auto const directory = TemporaryDirectory{};
+        auto const path = directory.path() / "db7-held.sqlite3";
+        auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        merovingian::database::set_write_connection_limit(store, limit);
+        REQUIRE(store.sqlite_write_pool != nullptr);
+        // The held write leases a slot of the store's own pool, as a write of the
+        // store does, but on a connection this test drives.
+        auto held = store.sqlite_write_pool->pool.acquire(
+            [&path] {
+                return open_raw_writer(path);
+            },
+            [](merovingian::database::SqliteConnection const&) {
+                return true;
+            });
+        REQUIRE(held.has_value());
+        held->discard();
+        REQUIRE(run_sql(held->get(), "BEGIN IMMEDIATE"));
+        REQUIRE(run_sql(held->get(), "INSERT INTO rooms (room_id, creator_user_id, directory_public) VALUES "
+                                     "('!db7-held:example.org', '@db7:example.org', 'false')"));
+
+        WHEN("a second write starts and the first commits only after SQLite's busy timeout has passed")
+        {
+            auto second = std::async(std::launch::async, [&store] {
+                return merovingian::database::commit_persistent_transaction(store,
+                                                                            {insert_room("!db7-waiting:example.org")});
+            });
+            std::this_thread::sleep_for(longer_than_sqlite_busy_timeout);
+            auto const first_committed = run_sql(held->get(), "COMMIT");
+            held.reset();
+            auto const second_committed = second.get();
+
+            THEN("the second write waited for the first instead of being refused, and both are durable")
+            {
+                CHECK(first_committed);
+                CHECK(second_committed);
+                auto const reopened = merovingian::database::open_sqlite_persistent_store(path.string());
+                REQUIRE(reopened.ok);
+                CHECK(reopened.store.rooms.size() == 2U);
             }
         }
     }

@@ -28,6 +28,7 @@
 #include "merovingian/homeserver/CrossSigningResetApprovals.hpp"
 #include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
+#include "merovingian/homeserver/LiveKitDelegationProgress.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/MediaUploadNotifier.hpp"
@@ -292,6 +293,21 @@ struct HomeserverRuntime final
     // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
     // before the thread is stopped.
     std::function<void()> delayed_events_wake{};
+    // Wakes the "livekit-delegations" job (ADR-0832) when a delegation is stored or a webhook brings a check forward.
+    // Set by the process entry point once that thread exists; null in tests, which call run_livekit_delegations
+    // directly. Called with runtime.mutex held, so it must not block or wait for runtime.mutex on another thread
+    // (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown before the thread is stopped.
+    std::function<void()> livekit_delegations_wake{};
+    // What the "livekit-delegations" job knows of each stored delegation, by delay ID (ADR-0832). In memory only: after
+    // a restart each starts again as never seen and due now. Guarded by `mutex`.
+    std::map<std::string, LiveKitDelegationProgress, std::less<>> livekit_delegation_progress{};
+    // The delay IDs in `livekit_delegation_progress` by LiveKit participant (room name, NUL, identity), so a webhook
+    // finds its delegations without scanning everyone's. Kept in step with that map by LiveKitDelegations.cpp, its only
+    // writer. Guarded by `mutex`.
+    std::multimap<std::string, std::string, std::less<>> livekit_delegation_participants{};
+    // The `id`s of the last `livekit_webhook_seen_ids` authenticated LiveKit webhook events, oldest first, so a replay
+    // inside a token's lifetime prompts nothing (ADR-0833). In memory only. Guarded by `mutex`.
+    std::deque<std::string> livekit_webhook_seen_ids{};
     // Users whose profile change has rooms left to reach, with the index in database.rooms to
     // resume from (F-11, ADR-0353). No token and no event body: the job sends as the user and reads
     // the profile when it sends. In memory only: a restart leaves those rooms for the next profile
@@ -343,6 +359,10 @@ struct HomeserverRuntime final
     // play a compromised worker, and count the calls that reach one, without a worker process. An
     // unverified call never reaches it. Always empty in production.
     std::function<http::OutboundResult(http::OutboundRequest const&)> test_worker_outbound_route{};
+    // Test-only (ADR-0830): stands in for the operator's LiveKit server. When set, every call to LiveKit's room service
+    // (perform_livekit_request) hands it the finished request, token and body included, in place of resolving the
+    // API host and connecting, and uses what it returns as LiveKit's answer. Always empty in production.
+    std::function<http::OutboundResult(http::OutboundRequest const&)> test_livekit_perform{};
     // Owned implementation of the runtime signing provider: the production
     // multi-key provider in main, or the refusing provider in the federation
     // worker (RuntimeStartOptions::signing_disabled, ADR-0078).

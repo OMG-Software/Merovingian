@@ -37,6 +37,10 @@ inline constexpr std::uint64_t min_delayed_event_delay_ms = 1'000U;
 inline constexpr std::uint64_t max_delayed_event_delay_ms = 2'678'400'000U; // 31 days
 inline constexpr std::uint32_t max_delayed_events_per_user = 1'000U;
 
+// server.rtc.livekit.token_lifetime range (ADR-0829).
+inline constexpr std::uint32_t min_livekit_token_lifetime_seconds = 60U;
+inline constexpr std::uint32_t max_livekit_token_lifetime_seconds = 3'600U;
+
 class Config final
 {
 public:

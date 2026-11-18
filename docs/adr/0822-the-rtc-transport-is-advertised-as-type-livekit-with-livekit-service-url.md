@@ -33,6 +33,9 @@ Element Call understand only that type.
 
 A future reader must not "fix" the type to the MSC's stable name `m.livekit` without also adding the token
 endpoints.
+*Superseded in part by [ADR-0829](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md):
+the token endpoints exist for the built-in service. With it configured, the transport is `{"type":"livekit","url":...}`,
+and the stable answer also lists `m.livekit`. The external service is still advertised as this record says.*
 
 ## Pros and Cons of the Options
 

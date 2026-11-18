@@ -36,6 +36,8 @@ namespace
             return {"device_keys_query_ingest", "request_body"};
         case federation::WorkerRelayKind::user_devices:
             return {"user_devices_ingest", "user_id"};
+        case federation::WorkerRelayKind::livekit_token:
+            return {"livekit_token_ingest", "request_body"};
         case federation::WorkerRelayKind::profile_query:
             break;
         }
@@ -44,10 +46,15 @@ namespace
 
 } // namespace
 
-auto worker_relay_frame(federation::WorkerRelayKind kind, std::string_view argument, std::uint64_t parent_request_id)
-    -> std::optional<std::string>
+auto worker_relay_frame(federation::WorkerRelayKind kind, std::string_view argument, std::uint64_t parent_request_id,
+                        std::string_view origin) -> std::optional<std::string>
 {
     if (parent_request_id == 0U)
+    {
+        return std::nullopt;
+    }
+    auto const names_origin = kind == federation::WorkerRelayKind::livekit_token;
+    if (names_origin && origin.empty())
     {
         return std::nullopt;
     }
@@ -61,14 +68,20 @@ auto worker_relay_frame(federation::WorkerRelayKind kind, std::string_view argum
     frame += ipc::ipc_json_str(shape.argument_field);
     frame += ":";
     frame += ipc::ipc_json_str(argument);
+    if (names_origin)
+    {
+        frame += R"(,"origin":)";
+        frame += ipc::ipc_json_str(origin);
+    }
     frame += '}';
     return frame;
 }
 
 auto relay_to_main(ipc::IpcChannel& channel, federation::WorkerRelayKind kind, std::string_view argument,
-                   std::uint64_t parent_request_id, std::chrono::seconds timeout) -> std::optional<std::string>
+                   std::uint64_t parent_request_id, std::chrono::seconds timeout, std::string_view origin)
+    -> std::optional<std::string>
 {
-    auto const frame = worker_relay_frame(kind, argument, parent_request_id);
+    auto const frame = worker_relay_frame(kind, argument, parent_request_id, origin);
     if (!frame.has_value())
     {
         return std::nullopt;

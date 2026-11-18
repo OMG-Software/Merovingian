@@ -788,9 +788,10 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(applied.size() == merovingian::database::current_schema_version());
                 REQUIRE(applied.front().direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(applied.front().name == "initial_schema");
-                REQUIRE(applied.back().name == "delayed_events");
+                REQUIRE(applied.back().name == "livekit_delegations");
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "oauth_clients"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "delayed_events"));
+                REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "livekit_delegations"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "oauth_sessions"));
             }
         }

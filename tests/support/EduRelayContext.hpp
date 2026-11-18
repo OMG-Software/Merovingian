@@ -182,6 +182,17 @@ public:
         return std::move(*built);
     }
 
+    // As frame(), for a relay that also names the verified `origin` the worker serves (the LiveKit token relay).
+    [[nodiscard]] auto frame(federation::WorkerRelayKind kind, std::string_view argument, std::string_view origin) const
+        -> std::string
+    {
+        auto guard = std::lock_guard{mutex_};
+        REQUIRE(parent_id_ != 0U);
+        auto built = federation_worker::worker_relay_frame(kind, argument, parent_id_, origin);
+        REQUIRE(built.has_value());
+        return std::move(*built);
+    }
+
     [[nodiscard]] auto finish() noexcept -> bool
     {
         if (finished_)

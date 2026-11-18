@@ -25,8 +25,9 @@ value. Test fixtures that do not exercise persistence select it through
   migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
   schema-state transitions, enabling backfill and corrective migrations
   should a later migration need one.
-- The schema has three steps. `schema::current_schema_version()` is `3`, and
-  `migrations/` holds `001_initial_schema.sql`, `002_oauth_tables.sql` and `003_delayed_events.sql`.
+- The schema has four steps. `schema::current_schema_version()` is `4`, and
+  `migrations/` holds `001_initial_schema.sql`, `002_oauth_tables.sql`, `003_delayed_events.sql` and
+  `004_livekit_delegations.sql`.
 - Version `1` (`initial_schema`) is the frozen v1 schema. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
@@ -42,12 +43,14 @@ value. Test fixtures that do not exercise persistence select it through
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
-  `src/database/Migration.cpp` has three upgrade steps (version `1`,
-  `initial_schema`; version `2`, `oauth_tables`; version `3`, `delayed_events`) and three downgrade steps, newest
-  first (`drop_delayed_events` to version `2`, `drop_oauth_tables` to version `1`, then `drop_initial_schema` to
-  version `0`, which drops every v1 table).
+  `src/database/Migration.cpp` has four upgrade steps (version `1`,
+  `initial_schema`; version `2`, `oauth_tables`; version `3`, `delayed_events`; version `4`, `livekit_delegations`)
+  and four downgrade steps, newest first (`drop_livekit_delegations` to version `3`, `drop_delayed_events` to
+  version `2`, `drop_oauth_tables` to version `1`, then `drop_initial_schema` to version `0`, which drops every v1
+  table).
   `migrations/001_initial_schema.sql` is the frozen record of v1,
-  `002_oauth_tables.sql` of version 2 and `003_delayed_events.sql` of version 3; a unit test requires each file to
+  `002_oauth_tables.sql` of version 2, `003_delayed_events.sql` of version 3 and `004_livekit_delegations.sql` of
+  version 4; a unit test requires each file to
   match the build's step statement for statement.
 - Version `2` (`oauth_tables`, 1.1.0) adds the OAuth 2.0 tables
   ([ADR-0776](adr/0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)),
@@ -111,6 +114,29 @@ value. Test fixtures that do not exercise persistence select it through
     memory is finalised even when the finalising commit fails (the function says so), and the database row still
     reads `scheduled`, so the next start-up sends it again (at least once, ADR-0825). Every other function changes
     memory only after the commit.
+- Version `4` (`livekit_delegations`, ADR-0832) adds one table for delayed leave events the LiveKit token service
+  keeps alive for a user (MSC4195 `delegate_delayed_leave`), and changes no existing table:
+  - `livekit_delegations` (`delay_id TEXT PRIMARY KEY`, then `user_id`, `room_id`, `slot_id`, `member_id` and
+    `created_ms`, all `TEXT NOT NULL`: `created_ms` is wall-clock milliseconds since the epoch as decimal text), with
+    `idx_livekit_delegations_user_id` on `user_id`, which serves the delete at deactivation. `delay_id` is the
+    `delayed_events.delay_id` of the delayed event; there is no foreign key, the store keeps its rules in code. One row
+    per (user, room, slot, member): MSC4195 allows one delegation per key.
+  - Caps, enforced by `store_livekit_delegation` and again when hydrating (`LiveKitDelegationStore.hpp`,
+    `LiveKitDelegationTable.hpp`): `delay_id` 1 to 64 bytes, and 1 to 255 bytes for `user_id`, `room_id`, `slot_id`
+    and `member_id`, none holding a NUL byte. A row outside them is refused, never truncated.
+  - Writes: `store_livekit_delegation` deletes the row holding the same key, deletes the row holding the same delay ID
+    and inserts the new row in one transaction, so a new delay ID for a key replaces the old delegation;
+    `delete_livekit_delegation` deletes one row (success also when there was none); and
+    `delete_livekit_delegations_of_user` deletes all of a user's rows, always running the `DELETE` so a row hydration
+    skipped does not outlive the account, and runs beside `delete_delayed_events_of_user` at account deactivation. Every
+    write is bound parameters only, and memory changes only after the commit returns true.
+  - In memory: `PersistentStore::livekit_delegations` (`LiveKitDelegationTable`), hydrated on both backends (neither
+    loads it for the federation worker profile), with no lock of its own (`runtime.mutex` serialises it). It indexes the
+    rows by delay ID and by (user, room, slot, member) and counts them per user; `rows()` lists them in insertion
+    order. A row the loader cannot read is skipped, never repaired and never guessed: an empty or over-long field, a
+    `created_ms` that is not decimal digits fitting 64 bits, or a duplicate delay ID or key (the first by delay ID
+    wins). The count skipped is `PersistentStore::livekit_delegation_rows_skipped_at_load`, logged once at start-up as
+    `livekit_delegations.rows_skipped_at_load`.
 - The schema registry is split by version
   ([ADR-0778](adr/0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)):
   `initial_schema_definitions()` is what v1 created, and the SQLite and
@@ -699,6 +725,12 @@ value. Test fixtures that do not exercise persistence select it through
   memory only: at most 1024 entries, the oldest dropped first, each naming the
   group that holds the state before an event for a room, a resolution context and
   sorted distinct prev groups. The same three writers forget the room.
+  `PersistentStore::state_change_log` is a `StateChangeLog` (ADR-0827), in memory
+  only and started by the main process after hydration: every change to a room's
+  current state, filed at the sync position from which a client sees it, at most
+  1024 per room and 65536 in all, the oldest dropped first. The four writers of
+  `current_state` record into it and `apply_room_snapshot` forgets the room;
+  `/sync`'s `state_after` reads it. No table backs it, so nothing is migrated.
 
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
@@ -950,9 +982,9 @@ value. Test fixtures that do not exercise persistence select it through
   (`[fixture]`, one per backend) open it, run `migrate_*_schema_to`, start the runtime on it and read back the users,
   access tokens, rooms, events, media, account data, pusher and device keys the manifest lists, then send a new
   event signed with the old release's key. Opening the 1.0.3 database applies migration 002 (the OAuth 2.0 tables), so
-  the scenarios first assert the v1 to v3 steps ran: the schema version is `current_schema_version()`, the ledger gained the
-  `oauth_tables` and `delayed_events` rows, and `oauth_clients`, `oauth_sessions` and `delayed_events` exist and take a row (the fixture
-  held none of them before). They then assert everything the manifest lists is still served.
+  the scenarios first assert the v1 to v4 steps ran: the schema version is `current_schema_version()`, the ledger gained the
+  `oauth_tables`, `delayed_events` and `livekit_delegations` rows, and `oauth_clients`, `oauth_sessions`, `delayed_events`
+  and `livekit_delegations` exist and take a row (the fixture held none of them before). They then assert everything the manifest lists is still served.
   The PostgreSQL scenario needs `MEROVINGIAN_TEST_POSTGRESQL_URI` and reports itself skipped without it.
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
@@ -1266,7 +1298,8 @@ migration's table cannot go unclassified:
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
   `receipts`, `appservice_directory`, `media_pending_uploads`, `oauth_clients` and `oauth_sessions` (migration
   002; every OAuth 2.0 endpoint runs in main), `delayed_events` (migration 003; the federation worker sends no events
-  and holds no signing key, so it never reads a scheduled event), plus six tables `Schema.cpp`
+  and holds no signing key, so it never reads a scheduled event), `livekit_delegations` (migration 004; the token
+  service runs in main and the worker keeps no delayed event alive), plus six tables `Schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
@@ -1320,7 +1353,11 @@ membership is `invite` or `knock`, or deletes it; a new reader must check the me
 ### Write connection pool (DB-7, 0.12.26)
 
 Persisted writes reuse connections from a per-store `ConnectionPool` instead of opening one per
-transaction: at most `database.pool_size` (16) are in use at once, and a write waits for a free one.
+transaction, and a write waits for a free one. On PostgreSQL at most `database.pool_size` (16) are in use at
+once. On SQLite there is always exactly one write connection, whatever `database.pool_size` says (ADR-0834):
+SQLite runs one write transaction at a time, and a second connection of this process waiting for the first's
+lock would poll SQLite's busy handler, lose to the first connection's back-to-back commits and be refused after
+5 s. Writers wait in the pool instead, without a time limit, and are woken in turn.
 PostgreSQL connections assume the runtime role once when opened; a pooled one is reused only while idle
 (`PQTRANS_IDLE`) with nothing to read on its socket, so one the server has closed is replaced. SQLite
 connections keep their pragmas and `foreign_keys=ON`. Reads, migrations and the worker's read-only store

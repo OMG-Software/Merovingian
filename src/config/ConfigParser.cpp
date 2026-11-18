@@ -993,6 +993,35 @@ namespace
         {
             server.rtc.livekit_service_url = std::string{value};
         }
+        // The built-in MatrixRTC token service (ADR-0829). validate() judges every value and the combination.
+        else if (key == "server.rtc.livekit.url")
+        {
+            server.rtc.token_service.url = std::string{value};
+        }
+        else if (key == "server.rtc.livekit.api_url")
+        {
+            server.rtc.token_service.api_url = std::string{value};
+        }
+        else if (key == "server.rtc.livekit.api_key")
+        {
+            server.rtc.token_service.api_key = std::string{value};
+        }
+        else if (key == "server.rtc.livekit.api_secret_file")
+        {
+            server.rtc.token_service.api_secret_file = std::string{value};
+        }
+        else if (key == "server.rtc.livekit.token_lifetime")
+        {
+            auto const lifetime = parse_duration_seconds(value);
+            if (!lifetime.valid)
+            {
+                add_parse_finding(findings, std::string{key}, "expected a duration such as 600s or 60m");
+            }
+            else
+            {
+                server.rtc.token_service.token_lifetime_seconds = lifetime.seconds;
+            }
+        }
         // Delayed events (ADR-0826). validate() judges the ranges.
         else if (key == "server.delayed_events.enabled")
         {

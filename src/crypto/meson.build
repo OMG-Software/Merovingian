@@ -4,6 +4,7 @@ crypto_sources = files(
   'Encoding.cpp',
   'GenericHash.cpp',
   'HmacSha1.cpp',
+  'LiveKitToken.cpp',
   'IpcAuthKey.cpp',
   'IpcStreamCipher.cpp',
   'LibraryVersions.cpp',

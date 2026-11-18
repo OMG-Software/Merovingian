@@ -103,6 +103,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   tests. `src/database/AGENTS.md#Security rules — non-negotiable`
 - Every BLOB write sets `BoundValue::binary`.
 - One transaction is one pooled lease. Never take a second lease while holding one: that deadlocks (ADR-0154).
+  SQLite has exactly one write connection; a change that lets it open more brings back writes refused after
+  SQLite's 5 s busy timeout (ADR-0834).
 - A read that combines several tables into one picture of a room runs in one read transaction (ADR-0161).
   Federated join writes are single transactions (ADR-0714).
 - Reads go by index, never scan. `PersistentStore` mutexes follow ADR-0517. A member added to `PersistentStore`

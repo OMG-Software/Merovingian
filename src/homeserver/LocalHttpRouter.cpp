@@ -74,6 +74,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LiveKitTokenService.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
@@ -3365,6 +3366,22 @@ namespace
                                                              return user.user_id == user_id;
                                                          });
             return user_exists ? federation::FederationProfile{true, {}, {}} : federation::FederationProfile{};
+        };
+
+        // ADR-0831: main serves a federation request itself on some paths, and a worker's relay lands here too.
+        runtime.federation.livekit_token_provider = [rt](std::string_view origin,
+                                                         std::string_view body) -> federation::FederationResponse {
+            auto const guard = RuntimeLock{rt->mutex};
+            auto const result = issue_federation_livekit_token(*rt, origin, body);
+            if (result.ok)
+            {
+                return {result.status, result.value};
+            }
+            auto const errcode =
+                result.errcode.empty() ? std::string_view{"M_UNKNOWN"} : std::string_view{result.errcode};
+            return {result.status, result.retry_after_ms > 0U
+                                       ? matrix_error(errcode, result.reason, result.retry_after_ms)
+                                       : matrix_error(errcode, result.reason)};
         };
 
         runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {

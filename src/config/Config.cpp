@@ -23,10 +23,12 @@
 #include "merovingian/config/SizeLimitParseResult.hpp"
 #include "merovingian/config/SpecialUseIpRanges.hpp"
 #include "merovingian/core/Error.hpp"
+#include "merovingian/crypto/LiveKitToken.hpp"
 #include "merovingian/email/MailboxAddress.hpp"
 #include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/http/KeepAlive.hpp"
 #include "merovingian/http/RateLimit.hpp"
+#include "merovingian/net/LoopbackLiteral.hpp"
 #include "merovingian/oauth/HandOffAllowlist.hpp"
 #include "merovingian/oauth/OAuthBaseUrl.hpp"
 #include "merovingian/oauth/ParsedUri.hpp"
@@ -76,6 +78,35 @@ namespace
             findings.push_back(
                 {std::string{prefix} + ".tls_private_key_file", "TLS listener requires a private key file"});
         }
+    }
+
+    // Which LiveKit address a URL names: the SFU clients connect to, or the room service this server calls.
+    enum class livekit_url_kind : std::uint8_t
+    {
+        sfu,
+        api,
+    };
+
+    // A LiveKit URL as server.rtc.livekit.url or api_url must be (ADR-0829): read with oauth::ParsedUri (printable
+    // ASCII, no userinfo, no fragment, at most 2048 bytes), with a host, no query and a path that does not end in `/`.
+    // The SFU URL is `wss`. The API URL is `https`, or `http` only to a loopback IP literal
+    // (net::is_loopback_ip_literal, shared with the appservice and SMTP checks), so a cleartext request signed under
+    // the API secret never leaves the host.
+    [[nodiscard]] auto livekit_url_is_valid(std::string const& url, livekit_url_kind const kind) -> bool
+    {
+        auto const uri = oauth::ParsedUri::read(url);
+        auto const* parsed = std::get_if<oauth::ParsedUri>(&uri);
+        if (parsed == nullptr || !parsed->has_authority() || parsed->host().empty() || parsed->has_query() ||
+            parsed->path().ends_with('/'))
+        {
+            return false;
+        }
+        if (kind == livekit_url_kind::sfu)
+        {
+            return parsed->scheme() == "wss";
+        }
+        return parsed->scheme() == "https" ||
+               (parsed->scheme() == "http" && net::is_loopback_ip_literal(parsed->host()));
     }
 
 } // namespace
@@ -1348,6 +1379,56 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                  "must be an https URL with a host, no userinfo, query or fragment, a path that does not "
                  "end in /, no whitespace and at most 2048 bytes"});
         }
+    }
+
+    // The built-in MatrixRTC token service (ADR-0829). Its four keys go together, and with the external service URL as
+    // well it would be unclear which one clients are sent to, so both are refused. Nothing is repaired.
+    auto const& token_service = config.server().rtc.token_service;
+    auto const token_service_any_set = !token_service.url.empty() || !token_service.api_url.empty() ||
+                                       !token_service.api_key.empty() || !token_service.api_secret_file.empty();
+    if (token_service_any_set)
+    {
+        if (!config.server().rtc.livekit_service_url.empty())
+        {
+            findings.push_back({"server.rtc.livekit.service_url",
+                                "set either service_url or the built-in token service (server.rtc.livekit.url, "
+                                "api_url, api_key and api_secret_file), not both"});
+        }
+        auto const require = [&findings](std::string const& value, std::string_view key) {
+            if (value.empty())
+            {
+                findings.push_back({std::string{key}, "the built-in token service needs server.rtc.livekit.url, "
+                                                      "api_url, api_key and api_secret_file together"});
+            }
+        };
+        require(token_service.url, "server.rtc.livekit.url");
+        require(token_service.api_url, "server.rtc.livekit.api_url");
+        require(token_service.api_key, "server.rtc.livekit.api_key");
+        require(token_service.api_secret_file, "server.rtc.livekit.api_secret_file");
+        if (!token_service.url.empty() && !livekit_url_is_valid(token_service.url, livekit_url_kind::sfu))
+        {
+            findings.push_back({"server.rtc.livekit.url",
+                                "must be a wss URL with a host, no userinfo, query or fragment, a path that does not "
+                                "end in /, no whitespace and at most 2048 bytes"});
+        }
+        if (!token_service.api_url.empty() && !livekit_url_is_valid(token_service.api_url, livekit_url_kind::api))
+        {
+            findings.push_back(
+                {"server.rtc.livekit.api_url",
+                 "must be an https URL, or an http URL to a loopback IP literal, with no userinfo, query "
+                 "or fragment, a path that does not end in /, no whitespace and at most 2048 bytes"});
+        }
+        if (!token_service.api_key.empty() && !crypto::livekit_api_key_is_valid(token_service.api_key))
+        {
+            findings.push_back({"server.rtc.livekit.api_key", "must be 1 to 128 ASCII letters, digits, _, - and ."});
+        }
+    }
+    if (token_service.token_lifetime_seconds < min_livekit_token_lifetime_seconds ||
+        token_service.token_lifetime_seconds > max_livekit_token_lifetime_seconds)
+    {
+        findings.push_back({"server.rtc.livekit.token_lifetime",
+                            "must be between " + std::to_string(min_livekit_token_lifetime_seconds) + "s and " +
+                                std::to_string(max_livekit_token_lifetime_seconds) + "s"});
     }
 
     // The built-in OAuth 2.0 API (ADR-0812, ADR-0816). Every OAuth address is derived from public_baseurl, so with the

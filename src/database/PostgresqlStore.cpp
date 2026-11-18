@@ -9,6 +9,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
 #include "merovingian/database/DelayedEventRowText.hpp"
+#include "merovingian/database/LiveKitDelegationRowText.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
@@ -1446,6 +1447,32 @@ namespace
                 if (!store.delayed_events.insert(std::move(*parsed)))
                 {
                     ++store.delayed_event_rows_skipped_at_load;
+                }
+            }
+        }
+
+        // Migration 004 (ADR-0832): LiveKit delegations, main only. A row with an empty or over-long field, a
+        // created_ms that is not digits, or a duplicate delay ID or key is skipped and counted, never repaired.
+        if (table_load_profile_includes("livekit_delegations", profile))
+        {
+            auto delegations = query_rows(connection, "postgresql_load_livekit_delegations",
+                                          "SELECT delay_id, user_id, room_id, slot_id, member_id, created_ms FROM "
+                                          "livekit_delegations ORDER BY delay_id");
+            if (!delegations.ok)
+            {
+                return false;
+            }
+            for (auto const& row : delegations.rows)
+            {
+                auto parsed = parse_livekit_delegation_row(row);
+                if (!parsed.has_value())
+                {
+                    ++store.livekit_delegation_rows_skipped_at_load;
+                    continue;
+                }
+                if (!store.livekit_delegations.insert(std::move(*parsed)))
+                {
+                    ++store.livekit_delegation_rows_skipped_at_load;
                 }
             }
         }

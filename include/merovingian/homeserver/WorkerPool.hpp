@@ -133,6 +133,15 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
                                                            ipc::IpcChannel& receiving_channel) -> std::string;
 
+// Handles a "livekit_token_ingest" IPC request (a worker relaying an inbound
+// POST /_matrix/federation/v1/rtc/livekit/get_token, ADR-0831). The frame names the `origin` the worker's request
+// was verified as; it is answered only when that origin is the pending request's AND the request's one permit over
+// this body is unused (ADR-0595). Otherwise the reply carries status 403 and a standard `M_FORBIDDEN` body, and the
+// token service is not reached. Reply: `{"type":"livekit_token_ingest_result","status":N,"response_body":"..."}`,
+// a standard Matrix error body for a failure.
+[[nodiscard]] auto handle_livekit_token_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                                       ipc::IpcChannel& receiving_channel) -> std::string;
+
 // Handles a "profile_query_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/query/profile), for the same reason and against
 // the same stale-snapshot failure mode as handle_user_devices_ingest_request

@@ -29,6 +29,9 @@ namespace merovingian::database
 // Migration 003 (1.1.2): the delayed-events table (ADR-0824).
 [[nodiscard]] auto delayed_events_migration() -> MigrationStep;
 [[nodiscard]] auto downgrade_delayed_events_migration() -> MigrationStep;
+// Migration 004: the LiveKit delegations table (ADR-0832).
+[[nodiscard]] auto livekit_delegations_migration() -> MigrationStep;
+[[nodiscard]] auto downgrade_livekit_delegations_migration() -> MigrationStep;
 [[nodiscard]] auto upgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto downgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto migration_plan_for(SchemaState const& state) -> MigrationPlan;

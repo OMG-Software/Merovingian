@@ -938,6 +938,62 @@ SCENARIO("Inbound federation hands a valid exchange_third_party_invite to the ex
     }
 }
 
+SCENARIO("Inbound federation hands a LiveKit token request to the provider with the verified origin and body",
+         "[federation][inbound][livekit]")
+{
+    GIVEN("a runtime with a verified peer matrix.example.org")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const body = std::string{R"({"room_id":"!r:matrix.example.org","slot_id":"s"})"};
+        auto const send = [&](std::string const& path) {
+            auto request = signed_request(origin, key_id, token, body);
+            request.method = "POST";
+            request.target = path;
+            request.signature = merovingian::federation::make_federation_signature(
+                origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+            return merovingian::federation::handle_inbound_federation_request(runtime, request);
+        };
+
+        WHEN("a provider is set and each path is requested")
+        {
+            auto origins = std::vector<std::string>{};
+            auto bodies = std::vector<std::string>{};
+            runtime.livekit_token_provider = [&](std::string_view from, std::string_view request_body) {
+                origins.emplace_back(from);
+                bodies.emplace_back(request_body);
+                return merovingian::federation::FederationResponse{418U, R"({"jwt":"x"})"};
+            };
+            auto const stable = send("/_matrix/federation/v1/rtc/livekit/get_token");
+            auto const unstable = send("/_matrix/federation/unstable/io.element.msc4195/rtc/livekit/get_token");
+
+            THEN("the provider gets the verified origin and the body, and its status and body are the answer")
+            {
+                REQUIRE(stable.status == 418U);
+                REQUIRE(stable.body == R"({"jwt":"x"})");
+                REQUIRE(unstable.status == 418U);
+                REQUIRE(origins == std::vector<std::string>{origin, origin});
+                REQUIRE(bodies == std::vector<std::string>{body, body});
+            }
+        }
+
+        WHEN("there is no provider")
+        {
+            runtime.livekit_token_provider = {};
+            auto const response = send("/_matrix/federation/v1/rtc/livekit/get_token");
+
+            THEN("the endpoint is not implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", "[federation][inbound][security]")
 {
     GIVEN("a runtime with malformed transaction requests")

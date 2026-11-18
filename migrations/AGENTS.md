@@ -54,6 +54,16 @@ with `schema_step_creating` and its downgrade with `schema_step_dropping`, a fil
 (`drop_delayed_events`, to version 2) at the front of the downgrade catalog, and the file equal to the step. The
 table is classified in the worker's never-reads set (the worker sends no events), not in the allowlist.
 
+## Migration 004: LiveKit delegations (ADR-0832)
+
+`004_livekit_delegations.sql` creates `livekit_delegations` (six `TEXT` columns, `delay_id` the primary key) and
+`idx_livekit_delegations_user_id` on `(user_id)`. It follows migration 003's pattern exactly: its own arrays
+`livekit_delegation_tables` and `livekit_delegation_indexes` in `Schema.cpp`, a case in both `*_added_by` functions and
+in `schema_table_definition`, the step `livekit_delegations_migration()` built with `schema_step_creating` and its
+downgrade `downgrade_livekit_delegations_migration()` (`drop_livekit_delegations`, to version 3) at the front of the
+downgrade catalog, and the file equal to the step. The table is classified in the worker's never-reads set (the token
+service runs in main), not in the allowlist.
+
 ## File naming
 
 ```
@@ -62,7 +72,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `003`.
+Current highest: `004`.
 
 ## File format
 

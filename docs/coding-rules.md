@@ -239,9 +239,10 @@ defects on executed paths; a clean run does not prove that all paths are safe.
   bug fix, or experiment. Never make development changes on `main`. Follow the
   branch prefix required by the project or tool instructions, and submit changes
   through a pull request.
-- Documentation-only changes do not require a version bump. For other changes,
-  increment the version once when creating the branch. Update all locations in
-  [versioning](versioning.md) together.
+- Do not change the version unless the owner asks for it; a branch keeps the
+  version of its base. When the owner asks, update all locations in
+  [versioning](versioning.md) together. See
+  [ADR-0835](adr/0835-the-version-changes-only-when-the-owner-asks.md).
 - Update `CHANGELOG.md` for every change, in the
   [changelog format](versioning.md#changelog-format). Use the
   [documentation update table](AGENTS.md) to find the other required updates.

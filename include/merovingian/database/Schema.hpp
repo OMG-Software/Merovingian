@@ -16,7 +16,8 @@ namespace merovingian::database
 
 [[nodiscard]] auto current_schema_version() noexcept -> std::uint32_t;
 // The schema split (ADR-0778). The tables and indexes migration `version` creates: version 1 is the frozen v1
-// schema, version 2 the OAuth 2.0 tables, version 3 the delayed-events table; any other version adds none. A migration step is built from these.
+// schema, version 2 the OAuth 2.0 tables, version 3 the delayed-events table, version 4 the LiveKit delegations table;
+// any other version adds none. A migration step is built from these.
 [[nodiscard]] auto schema_definitions_added_by(std::uint32_t version) -> std::vector<SchemaTableDefinition>;
 [[nodiscard]] auto schema_indexes_added_by(std::uint32_t version) -> std::vector<SchemaIndexDefinition>;
 // Exactly what v1 created, which the SQLite and PostgreSQL bootstraps build before any later step runs.
