@@ -712,3 +712,4 @@
 * [0831 - A federated LiveKit token request is judged by main and answered subscribe-only](0831-a-federated-livekit-token-request-is-judged-by-main-and-answered-subscribe-only.md)
 * [0832 - A delegated delayed leave is restarted while LiveKit shows the participant, and sent once it does not](0832-a-delegated-delayed-leave-is-restarted-while-livekit-shows-the-participant-and-sent-once-it-does-not.md)
 * [0833 - The LiveKit webhook is served on the client listener and trusted only to prompt a check](0833-the-livekit-webhook-is-served-on-the-client-listener-and-trusted-only-to-prompt-a-check.md)
+* [0834 - SQLite writes share one pooled connection, whatever database.pool_size says](0834-sqlite-writes-share-one-pooled-connection.md)

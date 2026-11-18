@@ -1353,7 +1353,11 @@ membership is `invite` or `knock`, or deletes it; a new reader must check the me
 ### Write connection pool (DB-7, 0.12.26)
 
 Persisted writes reuse connections from a per-store `ConnectionPool` instead of opening one per
-transaction: at most `database.pool_size` (16) are in use at once, and a write waits for a free one.
+transaction, and a write waits for a free one. On PostgreSQL at most `database.pool_size` (16) are in use at
+once. On SQLite there is always exactly one write connection, whatever `database.pool_size` says (ADR-0834):
+SQLite runs one write transaction at a time, and a second connection of this process waiting for the first's
+lock would poll SQLite's busy handler, lose to the first connection's back-to-back commits and be refused after
+5 s. Writers wait in the pool instead, without a time limit, and are woken in turn.
 PostgreSQL connections assume the runtime role once when opened; a pooled one is reused only while idle
 (`PQTRANS_IDLE`) with nothing to read on its socket, so one the server has closed is replaced. SQLite
 connections keep their pragmas and `foreign_keys=ON`. Reads, migrations and the worker's read-only store

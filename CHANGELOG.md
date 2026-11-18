@@ -3,6 +3,27 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.4
+
+## Features
+
+* None.
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
+  first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
+
+## Release notes
+
+1.1.4 stops a SQLite server from refusing writes under sustained write load. Writes now wait their turn on the one
+SQLite write connection instead of racing for SQLite's lock on several and failing after 5 s. `database.pool_size`
+now applies to PostgreSQL only. No configuration change is needed.
+
 # Version 1.1.3
 
 ## Features

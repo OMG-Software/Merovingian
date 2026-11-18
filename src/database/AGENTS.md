@@ -61,7 +61,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
 
 7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
-   goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
+   goes through the store's `ConnectionPool` (at most `database.pool_size` in use on PostgreSQL, ADR-0154; exactly one
+   on SQLite, ADR-0834: never give SQLite a second write connection, whose wait for the first's lock is SQLite's
+   polling busy handler, which loses to back-to-back commits and refuses the write after 5 s). Hold a lease for exactly
    one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
    A PostgreSQL connection is reused only while idle with nothing to read on its socket.
    Main's reads for a federation worker (room list, room snapshots) lease a reader from `SnapshotReaderPool`, opened
