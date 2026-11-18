@@ -67,6 +67,8 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/Tls.hpp"
@@ -683,7 +685,7 @@ SCENARIO("join_room completes a live federated join with every member of the ret
             {
                 CAPTURE(template_has_hashes, profile_mode, result.reason);
                 REQUIRE(result.ok);
-                auto const lock = std::lock_guard{runtime.mutex};
+                auto lock = merovingian::homeserver::RuntimeLock{runtime.mutex};
                 auto const& store = runtime.database.persistent_store;
 
                 auto const join_state_row =
@@ -791,7 +793,12 @@ SCENARIO("join_room completes a live federated join with every member of the ret
                     envelope.auth_event_ids = std::move(auth_event_ids);
                     envelope.json = signed_json.output;
 
-                    auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    // Ingestion takes the room stripe before runtime.mutex (ADR-0848), so it runs with the
+                    // lock this THEN took released; nothing read under it is used while it is released.
+                    auto const ingest_result = [&] {
+                        auto const released = merovingian::homeserver::RuntimeLockRelease{lock};
+                        return merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    }();
                     CAPTURE(ingest_result.reason);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
                 }

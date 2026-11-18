@@ -1089,6 +1089,8 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net", {}, {}});
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the answer is 200 with displayname and avatar_url only, from one federation request")
             {
@@ -1228,6 +1230,8 @@ SCENARIO("GET /profile/{userId} does not ask again a server that just gave no an
                 rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aremote.example.net", {}, {}});
             auto const second = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aremote.example.net", {}, {}});
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("both are 404 and both were asked of the server")
             {
@@ -1275,6 +1279,8 @@ SCENARIO("GET /profile/{userId} does not ask again a server that just gave no an
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40dave%3Amoved.example.net", {}, {}});
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the redirect is not followed, but the server answered, so it is forgotten")
             {
@@ -1370,6 +1376,8 @@ SCENARIO("GET /profile/{userId} for a user of another server relays m.tz and val
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net/m.tz", {}, {}});
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the federation request named the field and the answer holds just it")
             {

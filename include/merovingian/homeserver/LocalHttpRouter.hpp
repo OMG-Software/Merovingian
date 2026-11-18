@@ -57,6 +57,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 // global runtime mutex for the backend commit so independent rooms can persist in
 // parallel. The global mutex is re-acquired only to apply the committed rows to
 // the in-memory store and update membership.
+//
+// Lock order (ADR-0848): the room stripe, then runtime.mutex. Call it with
+// runtime.mutex released, at every recursion level (`RuntimeLockRelease`): a
+// call from a thread that holds it is refused with `internal_error` and does
+// nothing, because taking the stripe under runtime.mutex reverses the order and
+// can deadlock against an ingest of the same room.
 [[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult;
 

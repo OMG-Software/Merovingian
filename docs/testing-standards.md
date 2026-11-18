@@ -369,6 +369,14 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 - TSan suppressions live in `tests/sanitizer/tsan.supp` and may target only
   third-party dependencies. Never suppress a report whose stack runs through
   `merovingian::` code — fix the race instead.
+- A socket exchange orders nothing TSan can see. A test that reads what a mock
+  server's thread recorded (`captured`, `request_seen`) joins that thread first,
+  in the `WHEN` after the action; `ScopedThreadJoin` joins only at scope exit,
+  after the `THEN` has read it. A counter a test double bumps from calls that
+  may overlap is a `std::atomic`. Never order such accesses with a sleep.
+- A test calls `homeserver::ingest_pdu_event` with `runtime.mutex` released at
+  every level: it refuses a caller that holds it (ADR-0848). Read the store under
+  a `RuntimeLock`, then call ingestion inside a `RuntimeLockRelease` scope.
 
 ## Coverage
 

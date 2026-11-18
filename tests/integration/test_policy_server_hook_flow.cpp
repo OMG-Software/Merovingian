@@ -166,6 +166,9 @@ struct HookAnswer final
     }};
     auto const server_join = tls_mock::ScopedThreadJoin{server_thread};
     auto hook = homeserver::resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, "bad.example");
+    // The mock writes `request_seen` on its own thread. `server_join` joins only when this function returns, after
+    // the return value has read it, so the join that orders the write before the read is this one.
+    server_thread.join();
     return {std::move(hook), std::move(request_seen)};
 }
 

@@ -423,7 +423,11 @@ the only thread.
 `lookup_srv` can run on several delivery threads at once, so never call a resolver function that keeps process-wide state
 there. On NetBSD `res_query`, `res_search` and `res_send` all share one state with no lock, and a thread can end up blocked
 reading a socket another is closing, past any budget or request to stop (ADR-0355). Do not put a lock around them instead:
-one slow name server, which a remote operator chooses, would hold every other lookup.
+one slow name server, which a remote operator chooses, would hold every other lookup. On glibc a lookup also owns its
+state (`ResolverState`): `res_ninit` and `res_nclose` change the configuration array every thread's resolver shares, under
+a glibc lock ThreadSanitizer cannot see, so they run under `resolver_configuration_mutex`; `res_nquery` runs outside it
+(ADR-0849). Never move the query under that mutex, and never suppress a resolver report in `tsan.supp`: its stack runs
+through `lookup_srv`.
 
 ## The federation state mutex is not recursive (ADR-0518)
 

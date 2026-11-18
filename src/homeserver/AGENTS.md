@@ -772,7 +772,13 @@ room, in any status, before it parses, allocates a stream ordering or sync strea
 (`answer_for_stored_pdu`). The check is made again, with the room stripe and `runtime.mutex` held, after any
 missing-history fetch and before the ordering is reserved; that one is the race-proof one, because an ingest
 applies its event to the in-memory store before it releases the stripe. Keep nothing between that check and
-`prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
+`prepare_store_event_with_state` that releases either lock.
+
+The lock order is the room stripe, then `runtime.mutex` (ADR-0848). `ingest_pdu_event` releases and re-takes
+`runtime.mutex` with the stripe held, so it refuses (`internal_error`, nothing done, an error logged) a caller that holds
+`runtime.mutex` at any level: that caller would take the stripe under it and can deadlock against an ingest of the same
+room. Call it, or `federation.pdu_sink`, inside a `RuntimeLockRelease` scope, as every production caller does. Never make
+it release the caller's lock itself. `pdu_event_already_stored` takes `runtime.mutex`
 itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
 
 ## A join sent by another user is refused at receipt (ADR-0612)

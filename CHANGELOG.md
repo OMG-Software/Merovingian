@@ -32,6 +32,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   in-memory log of state changes, and so does a left room (ADR-0827).
 * SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
   first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
+* PDU ingestion refuses a caller that holds the runtime lock: it would take the room's lock in the reverse order and
+  could deadlock against an ingest of the same room (ADR-0848).
+* SRV lookups on glibc each own their resolver state, set up and torn down under a lock that ThreadSanitizer can see;
+  the query itself stays unlocked (ADR-0849).
+* Tests no longer read what a mock server's thread recorded before joining it, and count concurrent discovery calls
+  atomically, so the `tsan` job reports no races.
 
 ## Release notes
 

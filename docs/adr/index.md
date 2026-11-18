@@ -714,3 +714,5 @@
 * [0833 - The LiveKit webhook is served on the client listener and trusted only to prompt a check](0833-the-livekit-webhook-is-served-on-the-client-listener-and-trusted-only-to-prompt-a-check.md)
 * [0834 - SQLite writes share one pooled connection, whatever database.pool_size says](0834-sqlite-writes-share-one-pooled-connection.md)
 * [0835 - The version changes only when the owner asks](0835-the-version-changes-only-when-the-owner-asks.md)
+* [0848 - PDU ingestion refuses a caller that holds the runtime mutex](0848-pdu-ingestion-refuses-a-caller-that-holds-the-runtime-mutex.md)
+* [0849 - SRV lookups on glibc own their resolver state and serialise its setup](0849-srv-lookups-on-glibc-own-their-resolver-state-and-serialise-its-setup.md)

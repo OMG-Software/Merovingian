@@ -2124,6 +2124,8 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                // Joined before any THEN reads `captured_requests`: the socket exchange orders nothing TSan can see.
+                server_thread.join();
 
                 THEN("the PDU is accepted")
                 {
@@ -2265,6 +2267,8 @@ SCENARIO("ingest_pdu_event respects the shared total backfill call budget", "[pd
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                // Joined before any THEN reads `captured_requests`: the socket exchange orders nothing TSan can see.
+                server_thread.join();
 
                 THEN("the PDU is accepted from the final permitted response")
                 {
@@ -2349,6 +2353,8 @@ SCENARIO("ingest_pdu_event rejects a /state_ids response just above the configur
             WHEN("the incoming PDU triggers fallback recovery")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                // Joined before any THEN reads `captured_requests`: the socket exchange orders nothing TSan can see.
+                server_thread.join();
 
                 THEN("the PDU remains unresolved instead of materialising an oversized snapshot")
                 {
@@ -3107,6 +3113,8 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event against it
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                // Joined before any THEN reads `captured_requests`: the socket exchange orders nothing TSan can see.
+                server_thread.join();
 
                 THEN("the PDU is accepted")
                 {
