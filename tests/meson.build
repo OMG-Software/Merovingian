@@ -62,6 +62,12 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-tiers-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_tiers.py'],
+  )
+
+  test(
     'changelog-format-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_changelog_format.py'],

@@ -430,7 +430,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         # every leg succeeded.
         self.assertIn("name: Fedora RPM package\n", job)
         self.assertIn("needs: rpm", job)
-        self.assertIn("if: always()", job)
+        self.assertIn("if: ${{ always() && github.event_name != 'pull_request' }}", job)
         self.assertIn("${{ needs.rpm.result }}", job)
         self.assertIn('test "${RESULT}" = success', job)
 
@@ -658,7 +658,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         aggregate = workflow_job(workflow, "deb-all-releases")
         self.assertIn("name: Debian package\n", aggregate)
         self.assertIn("needs: deb", aggregate)
-        self.assertIn("if: always()", aggregate)
+        self.assertIn("if: ${{ always() && github.event_name != 'pull_request' }}", aggregate)
         self.assertIn("${{ needs.deb.result }}", aggregate)
         self.assertIn('test "${RESULT}" = success', aggregate)
 
@@ -676,7 +676,12 @@ class PackagesWorkflowTests(unittest.TestCase):
         # WHEN the OpenSUSE package matrix is read
         # THEN Tumbleweed keeps the required check name and its dist tag, Leap 16.0 gets
         # its own, and each leg keeps its own cache and artifact.
-        self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM", job)
+        self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM package", job)
+        # AND the check the ruleset requires comes from an aggregate: a matrix job that a
+        # job-level `if` skips reports its unexpanded name, which matches nothing.
+        aggregate = workflow_job(workflow, "opensuse-rpm-all-flavours")
+        self.assertIn("name: OpenSUSE Tumbleweed RPM\n", aggregate)
+        self.assertIn("needs: opensuse-rpm", aggregate)
         self.assertIn("- flavour: Tumbleweed\n            image: opensuse/tumbleweed\n", job)
         self.assertIn("- flavour: Leap 16.0\n            image: opensuse/leap:16.0\n", job)
         self.assertIn("dist: .tumbleweed\n", job)
