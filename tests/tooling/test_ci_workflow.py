@@ -561,9 +561,13 @@ class CiWorkflowTests(unittest.TestCase):
         # loads two OpenSSLs in one process, which werror's --fatal-warnings
         # link rightly refuses.
         for name, workflow in workflows.items():
-            installs = [line for line in workflow.splitlines() if "install_packages clang" in line]
+            # The list is defined once, by the step that exports NETBSD_PACKAGES to the host-side
+            # package fetch and to the VM, which installs it with `install_packages $NETBSD_PACKAGES`.
+            lists = [line for line in workflow.splitlines() if "NETBSD_PACKAGES=clang" in line]
+            installs = [line for line in workflow.splitlines() if "install_packages $NETBSD_PACKAGES" in line]
+            self.assertEqual(len(lists), 1, f"{name}: the NetBSD package list must be defined once")
             self.assertTrue(installs, f"{name}: no NetBSD package install found")
-            for line in installs:
+            for line in lists:
                 self.assertNotIn(" openssl ", f" {line.strip()} ", f"{name}: {line.strip()}")
             self.assertEqual(
                 workflow.count("pkg_delete openssl"),
