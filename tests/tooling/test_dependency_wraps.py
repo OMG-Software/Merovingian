@@ -516,7 +516,8 @@ class DependencyWrapTests(unittest.TestCase):
             start = tests_meson.index(f"'{name}'")
             end = re.search(r"\n {2,4}\)\n", tests_meson[start:])
             registration = tests_meson[start : start + end.start()]
-            self.assertEqual(registration.count("timeout: integration_tests_timeout,"), 1, name)
+            active = [re.sub(r"\s*#.*$", "", line).strip() for line in registration.splitlines()]
+            self.assertEqual(active.count("timeout: integration_tests_timeout,"), 1, name)
 
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.

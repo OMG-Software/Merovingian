@@ -721,3 +721,4 @@
 * [0844 - The CI host fetches and caches NetBSD packages, and the VM installs them locally](0844-the-ci-host-fetches-and-caches-netbsd-packages-and-the-vm-installs-them-locally.md)
 * [0845 - The integration binary runs as four Catch2 shards with one fixed seed](0845-the-integration-binary-runs-as-four-catch2-shards-with-one-fixed-seed.md)
 * [0846 - One coverage build feeds the Sonar scan, and Codecov uploads from its own job](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)
+* [0847 - clang-tidy gates only the lines a change adds or edits](0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)

@@ -47,8 +47,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   the Sonar token (ADR-0846).
 * The ThreadSanitizer job fails when its build or tests fail: the step piped into `tee` without `pipefail`, so it
   reported `tee`'s success.
-* The NetBSD package fetcher matches NetBSD's version order for letter suffixes, moves to the next mirror on a file that
-  fails verification, keeps `gdb` optional, and keys the cache on each package's size and checksum (ADR-0844).
+* clang-tidy runs on pull requests: a failed diff on the shallow checkout read as no changed files. It now checks the
+  lines a change adds or edits (ADR-0847).
+* The NetBSD package fetcher matches NetBSD's version order, uses only a summary holding every required package and
+  moves to the next mirror on a bad file; the guest tries the cached packages alone before any mirror (ADR-0844).
+* A failed Codecov upload fails the `codecov` job instead of the required `coverage` check; its report is kept 30 days
+  so the job can be re-run alone (ADR-0846). `coverage.yml` grants its permissions per job, none to the workflow.
 
 ## Release notes
 

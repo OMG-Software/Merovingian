@@ -905,7 +905,7 @@ jobs:
             # ships a default repo). The vmaction image exports none, so bare
             # `pkg_add clang` fails with "no pkg found for 'clang'" and the
             # build step then aborts with "missing command: clang". Point pkg_add
-            # at the packages the host downloaded first (netbsd-packages, in the
+            # at the packages the host downloaded (netbsd-packages, in the
             # synced checkout), then at the CDN and the origin if either is
             # unavailable. Both endpoints are official NetBSD package mirrors; the
             # VM occasionally sees a transient connection refusal from either one.
@@ -916,13 +916,24 @@ jobs:
             local_packages=""
             if [ "$(uname -r | sed 's/_.*//')" = "$NETBSD_RELEASE" ] && [ "$(uname -m)" = "$NETBSD_ARCH" ]; then
               for base in "${GITHUB_WORKSPACE:-$PWD}" "$PWD"; do
-                if [ -d "$base/netbsd-packages" ]; then local_packages="$base/netbsd-packages;"; break; fi
+                if [ -d "$base/netbsd-packages" ]; then local_packages="$base/netbsd-packages"; break; fi
               done
             fi
             echo "NetBSD local package directory: ${local_packages:-none (installing from the mirrors)}"
+            # pkg_add searches every PKG_PATH entry and keeps the best match, so a
+            # local directory listed before a mirror still costs a mirror lookup
+            # per package. Try the local directory alone first; the mirrors are
+            # needed only when it cannot satisfy the whole set (a missed package
+            # or a cache restored for another lockfile).
             install_packages() {
+              if [ -n "$local_packages" ]; then
+                if PKG_PATH="$local_packages" /usr/sbin/pkg_add -U "$@"; then
+                  return 0
+                fi
+                echo "NetBSD local packages did not satisfy the set; trying the mirrors"
+              fi
               for mirror in cdn.netbsd.org ftp.netbsd.org; do
-                export PKG_PATH="${local_packages}https://${mirror}/${package_path}"
+                export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"
                 for attempt in 1 2 3; do
                   if /usr/sbin/pkg_add -U "$@"; then
                     return 0
@@ -956,12 +967,15 @@ jobs:
             package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
             local_packages=""
             if [ "$(uname -r | sed 's/_.*//')" = "$NETBSD_RELEASE" ] && [ "$(uname -m)" = "$NETBSD_ARCH" ] && [ -d netbsd-packages ]; then
-              local_packages="$PWD/netbsd-packages;"
+              local_packages="$PWD/netbsd-packages"
             fi
-            for mirror in cdn.netbsd.org ftp.netbsd.org; do
-              export PKG_PATH="${local_packages}https://${mirror}/${package_path}"
-              /usr/sbin/pkg_add -U gdb && break
-            done
+            # Local directory alone first, as in prepare; then each mirror.
+            if [ -z "$local_packages" ] || ! PKG_PATH="$local_packages" /usr/sbin/pkg_add -U gdb; then
+              for mirror in cdn.netbsd.org ftp.netbsd.org; do
+                export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"
+                /usr/sbin/pkg_add -U gdb && break
+              done
+            fi
             # The VM action copies the workspace back; the packages are not wanted there.
             rm -rf netbsd-packages
             if ! sh scripts/build-bsd.sh --builddir build --skip-job netbsd; then

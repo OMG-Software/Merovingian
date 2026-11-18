@@ -15,11 +15,8 @@ on:
   merge_group:
   workflow_dispatch:
 
-# pull-requests: read is for the SonarQube Cloud scan, which reads the pull request it
-# decorates.
-permissions:
-  contents: read
-  pull-requests: read
+# No permission at workflow level: each job names the ones it uses.
+permissions: {}
 
 concurrency:
   group: coverage-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
@@ -28,6 +25,11 @@ concurrency:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    # pull-requests: read is for the SonarQube Cloud scan, which reads the pull request it
+    # decorates.
+    permissions:
+      contents: read
+      pull-requests: read
     # The codecov job runs only when this job published the reports, and then requires them.
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
@@ -323,7 +325,7 @@ jobs:
           name: coverage-${{ github.sha }}
           path: coverage
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
   # Its own job, on its own runner, so the Codecov CLI never shares a job with SONAR_TOKEN
   # (ADR-0250, ADR-0846). It needs only the Cobertura report the coverage job uploaded, and
@@ -333,6 +335,8 @@ jobs:
     needs: coverage
     if: ${{ !cancelled() && needs.coverage.outputs.artifact-id != '' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
       # v4.4.0, the commit the coverage job pins; Codecov reads the commit and paths from it.

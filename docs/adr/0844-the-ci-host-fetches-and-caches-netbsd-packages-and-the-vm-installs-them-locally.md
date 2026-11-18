@@ -23,14 +23,18 @@ log shows some 30 pauses of about 3 minutes each after `Trying to reconnect http
 Chosen: the host fetches. `scripts/fetch-netbsd-packages.py` reads the release's `pkg_summary` over HTTPS, resolves the
 DEPENDS closure of the job's package list, and downloads what the cache lacks, moving a stalled mirror to the back of the list.
 Every file, restored or downloaded, is checked against `FILE_SIZE`, against `FILE_CKSUM` when the repository publishes one, and
-by reading its whole compressed stream. A mismatch is downloaded again once, then fails the step. The lockfile of resolved
-names keys `actions/cache`. The guest sets `PKG_PATH` to that directory first and the mirrors second, so a package the
-resolver missed still installs, more slowly, instead of failing. The package list, release and architecture are set once per
+by reading its whole compressed stream. A cached file that fails is downloaded again; a download is tried on each mirror in turn, and a file no mirror serves verified fails the step. The lockfile of resolved
+names keys `actions/cache`. The guest runs `pkg_add` with `PKG_PATH` set to that directory alone, and only if that fails
+again with the directory first and a mirror second, so a package the resolver missed still installs, more slowly, instead of
+failing. Listing the directory before the mirrors is not enough by itself: `pkg_add` searches every `PKG_PATH` entry and
+keeps the best match, so each package would still cost a mirror lookup. The package list, release and architecture are set once per
 job and passed to the host script, the cache key and the guest; the VM's `release:` is pinned to match.
 
 Each lockfile line is `<FILE_NAME> <FILE_SIZE> <FILE_CKSUM or ->`, so the cache key changes when a size or checksum does. A
 package with no `FILE_SIZE` is refused. A file that fails verification moves the download to the next mirror. Packages marked
-`--optional` (gdb) are best-effort: a failure to fetch one does not fail the step. HTTPS redirects to any host are followed, as
+`--optional` (gdb) are best-effort: a failure to fetch one does not fail the step, and the lockfile is rewritten without it,
+so the cache is never saved under the key of a set it does not hold. A summary, cached or downloaded, is used only when every
+required package and its dependencies are in it with a `FILE_SIZE`; otherwise the next mirror's is tried. HTTPS redirects to any host are followed, as
 `pkg_add` does.
 
 Only `main` saves the cache. NetBSD 11.0's repository publishes no `FILE_CKSUM`, so a restored file is checked for its size and

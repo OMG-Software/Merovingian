@@ -18,6 +18,12 @@ CODECOV_CONFIG = REPO_ROOT / ".codecov.yml"
 
 
 class CoverageWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def active_lines(text: str) -> list[str]:
+        """The stripped, non-empty lines of `text` with whole-line and trailing YAML comments removed."""
+        lines = (re.sub(r"(?:^|[ \t])#.*$", "", line).strip() for line in text.splitlines())
+        return [line for line in lines if line]
+
     def test_coverage_upload_targets_project_headers_and_sources_only(self) -> None:
         # GIVEN the dedicated coverage workflow.
         self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")
@@ -181,6 +187,11 @@ class CoverageWorkflowTests(unittest.TestCase):
         # THEN the upload step has an id and the job exports the artifact id from it.
         self.assertRegex(coverage_job, r"(?m)^      - name: Upload coverage artifact\n        id: upload\n")
         self.assertRegex(coverage_job, r"(?m)^    outputs:\n      artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}$")
+        # AND the upload step's own active guard runs it after a failed scan, but only once the reports were
+        # written, and its artifact is kept for 30 days.
+        uploaded = self.active_lines(coverage_job.split("- name: Upload coverage artifact", 1)[1].split("\n\n", 1)[0])
+        self.assertIn("if: ${{ !cancelled() && steps.reports.outcome == 'success' }}", uploaded)
+        self.assertIn("retention-days: 30", uploaded)
         # AND the codecov job runs, even after a failed scan, only when that output is set.
         self.assertRegex(
             codecov_job,
@@ -190,6 +201,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         # Codecov step has no condition of its own.
         download = codecov_job.split("- name: Download coverage artifact", 1)[1].split("\n      - name:", 1)[0]
         self.assertNotIn("continue-on-error", download)
+        self.assertEqual([line for line in self.active_lines(download) if line.startswith("if:")], [], "the download has an `if:`")
         self.assertNotIn("continue-on-error", codecov_job)
         upload = codecov_job.split("- name: Upload coverage to Codecov", 1)[1]
         self.assertNotRegex(upload, r"(?m)^        if:")

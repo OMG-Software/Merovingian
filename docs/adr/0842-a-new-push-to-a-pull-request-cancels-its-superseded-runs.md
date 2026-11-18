@@ -38,8 +38,12 @@ Rejected:
 
 ## Consequences
 
-* Only a run for a commit that is no longer the pull request's head is cancelled. ADR-0511's objection to `concurrency`
-  (a cancelled required check shows as failed on the commit) applies only to that superseded commit, which nobody merges.
+* Cancellation is per pull-request group, not per commit: a new `pull_request` run cancels any run of the same
+  workflow for the same pull request still in progress. Usually that is a run for a commit that is no longer the head,
+  which nobody merges, so ADR-0511's objection to `concurrency` (a cancelled required check shows as failed on the
+  commit) does not matter. Two runs for the same head can also overlap (a re-run, or a `reopened` event during a run,
+  since no workflow narrows the default `opened`, `synchronize` and `reopened` types); the newer one cancels the
+  older, and the newer run's result is the one the check reports.
 * `push`, `merge_group`, `schedule`, `workflow_dispatch` and `workflow_call` runs are never cancelled or held back, with one
   exception: `pages.yml` groups by `github.ref` and cancels only runs that are not on `main`, so it keeps its own group scheme
   and is not covered by "every non-pull-request run has its own group".

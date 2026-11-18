@@ -439,7 +439,7 @@ jobs:
             # ships a default repo). The vmaction image exports none, so bare
             # `pkg_add clang` fails with "no pkg found for 'clang'" and the
             # build step then aborts with "missing command: clang". Point pkg_add
-            # at the packages the host downloaded first (netbsd-packages, in the
+            # at the packages the host downloaded (netbsd-packages, in the
             # synced checkout), then at the CDN and the origin if either is
             # unavailable (either endpoint can intermittently reject the CI VM).
             # The host's packages are for one release and architecture: use them
@@ -449,13 +449,24 @@ jobs:
             local_packages=""
             if [ "$(uname -r | sed 's/_.*//')" = "$NETBSD_RELEASE" ] && [ "$(uname -m)" = "$NETBSD_ARCH" ]; then
               for base in "${GITHUB_WORKSPACE:-$PWD}" "$PWD"; do
-                if [ -d "$base/netbsd-packages" ]; then local_packages="$base/netbsd-packages;"; break; fi
+                if [ -d "$base/netbsd-packages" ]; then local_packages="$base/netbsd-packages"; break; fi
               done
             fi
             echo "NetBSD local package directory: ${local_packages:-none (installing from the mirrors)}"
+            # pkg_add searches every PKG_PATH entry and keeps the best match, so a
+            # local directory listed before a mirror still costs a mirror lookup
+            # per package. Try the local directory alone first; the mirrors are
+            # needed only when it cannot satisfy the whole set (a missed package
+            # or a cache restored for another lockfile).
             install_packages() {
+              if [ -n "$local_packages" ]; then
+                if PKG_PATH="$local_packages" /usr/sbin/pkg_add -U "$@"; then
+                  return 0
+                fi
+                echo "NetBSD local packages did not satisfy the set; trying the mirrors"
+              fi
               for mirror in cdn.netbsd.org ftp.netbsd.org; do
-                export PKG_PATH="${local_packages}https://${mirror}/${package_path}"
+                export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"
                 for attempt in 1 2 3; do
                   if /usr/sbin/pkg_add -U "$@"; then
                     return 0

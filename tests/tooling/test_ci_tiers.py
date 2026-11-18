@@ -74,13 +74,27 @@ def has_trigger(text: str, trigger: str) -> bool:
     return re.search(rf"(?m)^  {trigger}:", triggers(text)) is not None
 
 
+def without_comments(text: str) -> str:
+    """The text with every YAML `#` comment removed, so a comment can never satisfy a match."""
+    return re.sub(r"(?m)(?:^|[ \t])#.*$", "", text)
+
+
 def pull_request_admits_main(text: str) -> bool:
-    """The pull_request trigger has no `branches:` filter, or one that lists `main`."""
-    match = re.search(r"^  pull_request:[ \t]*\n((?:    .*\n|\s*\n)*)", triggers(text), flags=re.MULTILINE)
+    """The pull_request trigger has no `branches:` filter, or one whose complete value lists exactly `main`."""
+    match = re.search(r"^  pull_request:[ \t]*\n((?:    .*\n|\s*\n)*)", without_comments(triggers(text)), flags=re.MULTILINE)
     if match is None:
         return False
     body = match.group(1)
-    return "branches" not in body or re.search(r"(?m)^\s*(?:branches:.*|- )['\"\[]?main\b", body) is not None
+    filter_match = re.search(r"(?m)^    branches:[ \t]*(.*)$", body)
+    if filter_match is None:
+        return True
+    inline = filter_match.group(1).strip()
+    if inline:
+        listed = [item.strip().strip("'\"") for item in inline.strip("[]").split(",")]
+    else:
+        block = re.match(r"((?:      - .*\n?|\s*\n)*)", body[filter_match.end() + 1 :])
+        listed = [line.strip()[2:].strip().strip("'\"") for line in (block.group(1) if block else "").splitlines() if line.strip()]
+    return "main" in listed
 
 
 def jobs(text: str) -> dict[str, str]:
@@ -131,20 +145,28 @@ def rendered_names(label: str, job: str) -> list[str]:
     return names
 
 
+def producers_in(workflow: str, text: str, name: str) -> list[tuple[str, str]]:
+    """One (workflow, job id) entry per check called exactly `name` that the workflow's jobs report for a pull request.
+
+    A matrix job yields one entry per rendered leg, so two legs that render the same required name count twice.
+    """
+    found = []
+    for job_id, job in jobs(text).items():
+        label = job_name(job_id, job)
+        if label == name:
+            found.append((workflow, job_id))
+        elif "${{ matrix." in label and NOT_A_PULL_REQUEST not in job_if(job):
+            # A matrix leg reports its rendered name, which must be the check's own name, and only when the job is
+            # not skipped: a job-level `if` that is false reports one check under the unexpanded template.
+            found.extend((workflow, job_id) for rendered in rendered_names(label, job) if rendered == name)
+    return found
+
+
 def check_producers(name: str) -> list[tuple[str, str]]:
     """The (workflow, job id) pairs that report a check called exactly `name` for a pull request."""
     found = []
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
-        text = workflow.read_text(encoding="utf-8")
-        for job_id, job in jobs(text).items():
-            label = job_name(job_id, job)
-            if label == name:
-                found.append((workflow.name, job_id))
-            elif "${{ matrix." in label and name in rendered_names(label, job):
-                # A matrix leg reports its rendered name, which must be the check's own name, and only when the job is
-                # not skipped: a job-level `if` that is false reports one check under the unexpanded template.
-                if NOT_A_PULL_REQUEST not in job_if(job):
-                    found.append((workflow.name, job_id))
+        found.extend(producers_in(workflow.name, workflow.read_text(encoding="utf-8"), name))
     return found
 
 
@@ -210,6 +232,75 @@ class EveryRequiredCheckReportsForAPullRequestAndTheMergeQueue(unittest.TestCase
                         self.assertNotRegex(job, r"(?m)^    strategy:")
 
 
+class TheCheckHelpersRejectWhatTheyShouldNot(unittest.TestCase):
+    @staticmethod
+    def trigger_text(pull_request_body: str) -> str:
+        return "on:\n  pull_request:\n" + pull_request_body + "  merge_group:\njobs:\n"
+
+    @staticmethod
+    def matrix_job(*labels: str, condition: str = "") -> str:
+        legs = "".join(f"          - label: {label}\n" for label in labels)
+        guard = f"    if: {condition}\n" if condition else ""
+        return (
+            "  build:\n    name: ${{ matrix.label }}\n" + guard + "    strategy:\n      matrix:\n        include:\n" + legs
+        )
+
+    def test_given_a_branches_filter_when_read_then_only_the_complete_value_main_admits_main(self) -> None:
+        cases = {
+            "no filter": ("    types: [opened]\n", True),
+            "inline list": ("    branches: [main]\n", True),
+            "block list": ("    branches:\n      - main\n", True),
+            "list with others": ("    branches: [release, main]\n", True),
+            "main-experimental inline": ("    branches: [main-experimental]\n", False),
+            "main-experimental block": ("    branches:\n      - main-experimental\n", False),
+            "main in a comment": ("    branches: [release] # main\n", False),
+        }
+        for label, (body, admits) in cases.items():
+            with self.subTest(case=label):
+                # GIVEN a pull_request trigger with this branches filter.
+                text = self.trigger_text(body)
+
+                # WHEN the trigger is asked whether a pull request to main runs it.
+                result = pull_request_admits_main(text)
+
+                # THEN only a filter that lists main itself, or none, admits it.
+                self.assertEqual(result, admits)
+
+    def test_given_two_matrix_legs_rendering_one_required_name_when_read_then_the_name_has_two_producers(self) -> None:
+        # GIVEN a matrix job whose two legs both render the check name `suite`.
+        text = "\njobs:\n" + self.matrix_job("suite", "suite")
+
+        # WHEN the producers of `suite` are collected.
+        found = producers_in("w.yml", text, "suite")
+
+        # THEN each leg is a producer, so the uniqueness check fails.
+        self.assertEqual(len(found), 2)
+
+    def test_given_one_matrix_leg_rendering_a_required_name_when_read_then_the_name_has_one_producer(self) -> None:
+        # GIVEN a matrix job with one leg called `suite` and one called `other`.
+        text = "\njobs:\n" + self.matrix_job("suite", "other")
+
+        # WHEN the producers of `suite` are collected.
+        found = producers_in("w.yml", text, "suite")
+
+        # THEN exactly one job reports it.
+        self.assertEqual(found, [("w.yml", "build")])
+
+    def test_given_a_pull_request_skipped_matrix_when_an_aggregate_has_the_name_then_only_the_aggregate_reports_it(self) -> None:
+        # GIVEN a matrix job skipped for pull requests and a plain aggregate job that carries the required name.
+        text = (
+            "\njobs:\n"
+            + self.matrix_job("suite", condition="github.event_name != 'pull_request'")
+            + "  aggregate:\n    name: suite\n    runs-on: x\n"
+        )
+
+        # WHEN the producers of `suite` are collected.
+        found = producers_in("w.yml", text, "suite")
+
+        # THEN the aggregate alone reports it.
+        self.assertEqual(found, [("w.yml", "aggregate")])
+
+
 class TheAnalysisStepsFailLoudly(unittest.TestCase):
     @staticmethod
     def step(workflow: str, name: str) -> str:
@@ -225,6 +316,37 @@ class TheAnalysisStepsFailLoudly(unittest.TestCase):
         # THEN it runs under bash, whose pipefail makes a failed build or test fail the step.
         self.assertIn("| tee tsan-ci-log.txt", step)
         self.assertRegex(step, r"(?m)^        shell: bash$")
+
+    def test_given_the_clang_tidy_step_when_read_then_it_checks_changed_lines_and_a_failed_diff_fails_it(self) -> None:
+        # GIVEN the step that runs clang-tidy on what a change touched.
+        step = self.step("static-analysis.yml", "Run clang-tidy on changed lines")
+        active = "\n".join(line for line in step.splitlines() if not line.strip().startswith("#"))
+
+        # WHEN its shell, base commit and commands are read.
+        # THEN it runs under bash (pipefail) and compares with the pull request's or the merge queue's base commit.
+        self.assertRegex(step, r"(?m)^        shell: bash$")
+        self.assertRegex(
+            step,
+            r"(?m)^          BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.merge_group\.base_sha \}\}$",
+        )
+        # AND the zero-context diff is a two-dot diff of the trees (a one-commit-deep checkout has no merge base) piped
+        # into clang-tidy-diff, which filters diagnostics to the changed lines.
+        self.assertIn("git diff -U0 --diff-filter=d FETCH_HEAD HEAD -- src tests | \\", active)
+        self.assertIn('python3 "${clang_tidy_diff}" -p1 -path build', active)
+        self.assertNotIn("FETCH_HEAD...HEAD", active)
+        # AND nothing turns a failure into success.
+        self.assertNotIn("|| true", active)
+
+    def test_given_the_tests_clang_tidy_config_when_read_then_only_the_catch2_tripped_check_is_added_off(self) -> None:
+        # GIVEN both clang-tidy configurations.
+        root = (REPO_ROOT / ".clang-tidy").read_text(encoding="utf-8")
+        tests = (REPO_ROOT / "tests" / ".clang-tidy").read_text(encoding="utf-8")
+
+        # WHEN their check lists are compared.
+        # THEN every Catch2 SCENARIO's static dummyFunction is not flagged in tests, and src keeps the check.
+        self.assertIn("  -misc-use-anonymous-namespace,", tests)
+        self.assertNotIn("misc-use-anonymous-namespace", root)
+        self.assertIn("  misc-*,", root)
 
 
 class OnlyPullRequestRunsShareAConcurrencyGroup(unittest.TestCase):

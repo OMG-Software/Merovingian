@@ -124,6 +124,23 @@ def matrix_size(job: str) -> int:
     return size
 
 
+def skips_pull_request(condition: str | None) -> bool:
+    """True when `condition` is a conjunction (`&&` only) that includes exactly the known pull_request exclusion.
+
+    The condition may be wrapped as `${{ ... }}` and may start with `!cancelled()` or `always()`. A `||` anywhere
+    lets another branch of the disjunction run the job for a pull request, so it never excludes it.
+    """
+    if not condition:
+        return False
+    text = condition.strip()
+    wrapped = re.fullmatch(r"\$\{\{(.*)\}\}", text, flags=re.DOTALL)
+    if wrapped is not None:
+        text = wrapped.group(1).strip()
+    if "||" in text:
+        return False
+    return NOT_A_PULL_REQUEST in [part.strip() for part in text.split("&&")]
+
+
 def jobs_that_start_at_once() -> dict[str, int]:
     started: dict[str, int] = {}
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
@@ -134,10 +151,33 @@ def jobs_that_start_at_once() -> dict[str, int]:
             if needs(job):
                 continue
             # A job whose own condition skips the pull_request event never takes a runner for it.
-            if NOT_A_PULL_REQUEST in (job_if(job) or ""):
+            if skips_pull_request(job_if(job)):
                 continue
             started[f"{workflow.name}:{job_id}"] = matrix_size(job)
     return started
+
+
+class ThePullRequestExclusionIsRecognisedOnlyWhenExact(unittest.TestCase):
+    def test_given_a_condition_when_it_is_read_then_only_an_and_chain_with_the_exclusion_skips_the_pull_request(self) -> None:
+        cases = {
+            "bare": ("github.event_name != 'pull_request'", True),
+            "wrapped": ("${{ github.event_name != 'pull_request' }}", True),
+            "cancelled and exclusion": ("${{ !cancelled() && github.event_name != 'pull_request' }}", True),
+            "always and exclusion": ("always() && github.event_name != 'pull_request'", True),
+            "exclusion and needs": ("${{ !cancelled() && github.event_name != 'pull_request' && needs.a.result == 'success' }}", True),
+            "disjunction": ("${{ github.event_name != 'pull_request' || github.ref == 'refs/heads/main' }}", False),
+            "disjunction after and": ("${{ !cancelled() && (github.event_name != 'pull_request' || always()) }}", False),
+            "no exclusion": ("${{ !cancelled() }}", False),
+            "no condition": (None, False),
+        }
+        for label, (condition, excluded) in cases.items():
+            with self.subTest(case=label):
+                # GIVEN a job condition.
+                # WHEN it is asked whether it skips the pull_request event.
+                result = skips_pull_request(condition)
+
+                # THEN only a pure `&&` chain naming the exclusion does.
+                self.assertEqual(result, excluded)
 
 
 class TheAnalysesTakeRunnersFirst(unittest.TestCase):

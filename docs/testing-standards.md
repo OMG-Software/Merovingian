@@ -420,8 +420,8 @@ beside them.
 ## CI job order
 
 GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request. A pull
-request push starts few jobs: `ci.yml` runs only `ubuntu-build-and-test` and `freebsd-build-and-test` there, every
-other `ci.yml` job and every `packages.yml` job is skipped (a skipped job reports success), and the merge queue
+request push starts few jobs: of `ci.yml`'s build-and-test jobs only `ubuntu-build-and-test` and
+`freebsd-build-and-test` run there, after their `queue-after-analyses` gate, every other `ci.yml` job and every `packages.yml` job is skipped (a skipped job reports success), and the merge queue
 (`merge_group`), pushes to `main`, `ci.yml`'s weekly schedule (`packages.yml` has none) and `workflow_dispatch` run the full matrix
 ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). A new push to a
 pull request cancels that pull request's superseded runs

@@ -37,9 +37,13 @@ warning-as-error still applies to project code rather than inline C headers
 from the dependency checkout. C++ sources include a project-owned adapter rather
 than `yyjson.h` directly.
 
-CI runs clang-tidy on changed C++ translation units with parallel per-file log
-groups and timeouts. Headers are analyzed transitively through the Meson compile
-database instead of being invoked as standalone clang-tidy inputs.
+CI runs clang-tidy through `clang-tidy-diff` on the lines a change adds or edits
+in C++ translation units under `src/` and `tests/`, compared with the pull
+request's or merge queue's base commit, with a per-file timeout; a diagnostic on
+an unchanged line does not fail it
+([ADR-0847](adr/0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)).
+Headers are not run as standalone clang-tidy inputs. To check one file locally,
+run `clang-tidy -p build <file>`.
 The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
 OpenSSL is the selected TLS provider and is intentionally resolved through the

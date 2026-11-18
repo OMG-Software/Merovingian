@@ -10,6 +10,9 @@ from pathlib import Path
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 JOBS = (("ci.yml", "netbsd-build-and-test"), ("packages.yml", "netbsd-pkg"))
 CACHE_PIN = re.compile(r"uses: actions/cache/(restore|save)@[0-9a-f]{40} # v\d+\.\d+\.\d+")
+FETCH_COMMAND = re.compile(r"^python3 scripts/fetch-netbsd-packages\.py(?: |$)")
+LOCAL_ONLY = 'PKG_PATH="$local_packages" /usr/sbin/pkg_add -U'
+MIRROR_EXPORT = 'export PKG_PATH="${local_packages:+$local_packages;}https://${mirror}/${package_path}"'
 
 
 def job_text(workflow: str, job: str) -> str:
@@ -19,15 +22,52 @@ def job_text(workflow: str, job: str) -> str:
     return match.group(1)
 
 
+def active_commands(step: str) -> list[str]:
+    """The step's shell commands with comment lines dropped and backslash continuations joined."""
+    lines = [line.strip() for line in step.splitlines() if line.strip() and not line.strip().startswith("#")]
+    commands: list[str] = []
+    pending = ""
+    for line in lines:
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+        else:
+            commands.append(pending + line)
+            pending = ""
+    return commands
+
+
+def fetch_invocations(step: str) -> list[str]:
+    """The active commands of the step that run the fetch script."""
+    return [command for command in active_commands(step) if FETCH_COMMAND.match(command)]
+
+
+def is_resolve(step: str) -> bool:
+    return any("--resolve-only" in command.split() for command in fetch_invocations(step))
+
+
+def is_download(step: str) -> bool:
+    return any("--resolve-only" not in command.split() for command in fetch_invocations(step))
+
+
+def active_text(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+
+
 class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
     def test_each_job_fetches_on_the_host_before_the_vm_starts(self) -> None:
         for workflow, job in JOBS:
             text = job_text(workflow, job)
             with self.subTest(job=job):
-                # GIVEN the job's text. THEN the fetch (resolve, then download) precedes the VM step.
-                self.assertEqual(text.count("scripts/fetch-netbsd-packages.py"), 2)
+                # GIVEN the job's text.
+                steps = re.split(r"\n      - ", text)
+
+                # WHEN its active fetch commands are read.
+                invocations = [command for step in steps for command in fetch_invocations(step)]
+
+                # THEN the fetch (resolve, then download) precedes the VM step.
+                self.assertEqual(len(invocations), 2)
+                self.assertEqual(["--resolve-only" in c.split() for c in invocations], [True, False])
                 self.assertLess(text.index("scripts/fetch-netbsd-packages.py"), text.index("uses: vmactions/netbsd-vm@"))
-                self.assertIn("--resolve-only", text)
                 # AND the package list is passed to the script and the VM from one definition.
                 self.assertEqual(text.count("NETBSD_PACKAGES="), 1)
                 self.assertIn("envs: 'NETBSD_RELEASE NETBSD_ARCH NETBSD_PACKAGES'", text)
@@ -36,15 +76,14 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
     def test_each_job_runs_its_steps_in_order_resolve_restore_download_save_vm(self) -> None:
         for workflow, job in JOBS:
             steps = re.split(r"\n      - ", job_text(workflow, job))
-            fetches = [index for index, step in enumerate(steps) if "scripts/fetch-netbsd-packages.py" in step]
 
             def only(label: str, matches: list[int]) -> int:
                 self.assertEqual(len(matches), 1, f"{workflow} {job}: expected one {label} step, found {matches}")
                 return matches[0]
 
-            resolve = only("resolve", [i for i in fetches if "--resolve-only" in steps[i]])
+            resolve = only("resolve", [i for i, step in enumerate(steps) if is_resolve(step)])
             restore = only("cache restore", [i for i, s in enumerate(steps) if "actions/cache/restore@" in s])
-            download = only("download", [i for i in fetches if "--resolve-only" not in steps[i]])
+            download = only("download", [i for i, step in enumerate(steps) if is_download(step)])
             save = only("cache save", [i for i, s in enumerate(steps) if "actions/cache/save@" in s])
             vm = only("VM", [i for i, s in enumerate(steps) if "uses: vmactions/netbsd-vm@" in s])
             with self.subTest(job=job):
@@ -55,6 +94,33 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
                 self.assertLess(restore, download)
                 self.assertLess(download, save)
                 self.assertLess(save, vm)
+
+    def test_a_download_command_that_is_commented_out_is_not_a_download_step(self) -> None:
+        # GIVEN a step whose download command is commented out and replaced by `true`, and one that mentions the
+        # script only in a comment.
+        replaced = (
+            "name: Download and verify the NetBSD packages\n"
+            "        run: |\n"
+            "          # python3 scripts/fetch-netbsd-packages.py --release \"$NETBSD_RELEASE\" $NETBSD_PACKAGES\n"
+            "          true"
+        )
+        mention = "name: Resolve\n        run: |\n          # then scripts/fetch-netbsd-packages.py --resolve-only runs\n          true"
+        live = (
+            "name: Download\n        run: |\n"
+            "          python3 scripts/fetch-netbsd-packages.py --release \"$R\" \\\n"
+            "            --output-dir netbsd-packages $NETBSD_PACKAGES"
+        )
+        resolving = "name: R\n        run: |\n          python3 scripts/fetch-netbsd-packages.py --resolve-only $P"
+
+        # WHEN each is classified by its active commands.
+        # THEN only an active invocation counts, and `--resolve-only` decides which kind it is.
+        self.assertFalse(is_download(replaced))
+        self.assertFalse(is_resolve(replaced))
+        self.assertFalse(is_resolve(mention))
+        self.assertTrue(is_download(live))
+        self.assertFalse(is_resolve(live))
+        self.assertTrue(is_resolve(resolving))
+        self.assertFalse(is_download(resolving))
 
     def test_cache_actions_are_pinned_and_keyed_on_the_lockfile(self) -> None:
         for workflow, job in JOBS:
@@ -72,15 +138,28 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
                     "if: github.ref == 'refs/heads/main' && steps.netbsd-cache.outputs.cache-hit != 'true'", text
                 )
 
-    def test_the_vm_reads_the_local_directory_first_and_keeps_the_mirrors(self) -> None:
+    def test_the_vm_tries_the_local_directory_alone_first_and_keeps_the_mirrors(self) -> None:
         for workflow, job in JOBS:
-            text = job_text(workflow, job)
+            text = active_text(job_text(workflow, job))
             with self.subTest(job=job):
-                self.assertIn('export PKG_PATH="${local_packages}https://${mirror}/${package_path}"', text)
-                self.assertIn('local_packages="$base/netbsd-packages;"', text)
+                # GIVEN the job's active shell lines, comments removed.
+                # WHEN the guest install is read.
+                local = text.index(LOCAL_ONLY + ' "$@"')
+                mirror = text.index(MIRROR_EXPORT)
+
+                # THEN the local directory alone is tried before any mirror joins PKG_PATH, and the mirrors follow it
+                # with the local directory still ahead of them.
+                self.assertLess(local, mirror)
+                self.assertIn('local_packages="$base/netbsd-packages"', text)
                 self.assertIn('= "$NETBSD_RELEASE" ]', text)
                 self.assertIn("cdn.netbsd.org ftp.netbsd.org", text)
                 self.assertIn("rm -rf netbsd-packages", text)
+                # AND gdb, where the job installs it, takes the same local-first order.
+                if "/usr/sbin/pkg_add -U gdb" in text:
+                    gdb_local = text.index(LOCAL_ONLY + " gdb")
+                    gdb_mirror = text.index(MIRROR_EXPORT, gdb_local)
+                    self.assertLess(gdb_local, gdb_mirror)
+                    self.assertLess(gdb_local, text.index("/usr/sbin/pkg_add -U gdb && break"))
 
     def test_the_script_is_https_only_and_never_shell_interpolated(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "fetch-netbsd-packages.py").read_text(encoding="utf-8")

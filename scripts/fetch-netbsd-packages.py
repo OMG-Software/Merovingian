@@ -14,11 +14,11 @@ the network.
 Trust: HTTPS only. Requests go to the configured mirrors; a redirect from a mirror to another host
 is followed when the target is HTTPS, as pkg_add itself does, and a redirect to anything but HTTPS is
 refused. Integrity rests on three checks, made on every run for every file, whether just downloaded
-or restored from the CI cache: FILE_SIZE from pkg_summary (required for every selected package),
-a full read of the compressed stream (gzip, xz or bzip2), which checks its integrity trailer, and
-FILE_CKSUM when the repository publishes one. NetBSD 11.0 publishes no FILE_CKSUM, so nothing
-authenticates an archive beyond what pkg_add had before. A file that fails is deleted and downloaded
-again (from the next mirror when it failed on download); a second failure fails the run.
+(verified once, inside the download) or restored from the CI cache: FILE_SIZE from pkg_summary
+(required for the required closure; an optional-only package without one is dropped), a full read
+of the compressed stream (gzip, xz or bzip2), which checks its integrity trailer, and FILE_CKSUM
+when the repository publishes one. NetBSD 11.0 publishes no FILE_CKSUM, so nothing authenticates an archive beyond what pkg_add had before. A file that fails is deleted and downloaded
+again (from the next mirror when it failed on download); a file no mirror serves verified fails the run.
 
 Optional packages (--optional) are best-effort: the required closure is downloaded first and any
 failure there fails the run; a failure in the packages only the optional ones need is a warning.
@@ -106,8 +106,9 @@ def expand_braces(pattern: str) -> list[str]:
     return result
 
 
-_MODIFIERS = {"alpha": -3, "beta": -2, "pre": -1, "rc": -1, "pl": 0, "patch": 0}
-_TOKEN = re.compile(r"[0-9]+|alpha|beta|pre|rc|pl|patch|[a-zA-Z]|[._]")
+# pkg_install's dewey.c knows exactly these modifiers; "patch" is the letters p, a, t, c, h.
+_MODIFIERS = {"alpha": -3, "beta": -2, "pre": -1, "rc": -1, "pl": 0}
+_TOKEN = re.compile(r"[0-9]+|alpha|beta|pre|rc|pl|[a-zA-Z]|[._]")
 
 
 def _version_parts(version: str) -> tuple[list[int], int]:
@@ -372,6 +373,26 @@ def with_retries(action, description: str, attempts: int, delay: float):  # noqa
     raise FetchError(f"{description}: giving up: {last}")
 
 
+def safe_packages(packages: list[Package]) -> list[Package]:
+    """Drops the packages whose FILE_NAME is not a plain .tgz name: a hostile or damaged summary line
+    must not become a path."""
+    return [p for p in packages if SAFE_FILE.match(p.file_name)]
+
+
+def usable_summary(text: str, required: tuple[str, ...] | list[str]) -> list[Package]:
+    """Parses `text` and returns its safe packages, or raises when the summary cannot serve this run:
+    a required package is absent, or a package in the required closure has no valid FILE_SIZE."""
+    packages = safe_packages(parse_summary(text))
+    absent = [r for r in required if best_match(r, packages) is None]
+    if absent:
+        raise FetchError(f"no package matches required {', '.join(absent)}")
+    closure, _ = resolve_closure(list(required), [], packages)
+    unsized = [p.file_name for p in closure if p.file_size is None]
+    if unsized:
+        raise FetchError(f"pkg_summary gives no valid FILE_SIZE for required: {' '.join(unsized)}")
+    return packages
+
+
 def fetch_summary(
     bases: list[str],
     summary_file: Path | None,
@@ -379,12 +400,17 @@ def fetch_summary(
     timeout: float,
     required: tuple[str, ...] | list[str] = (),
 ) -> list[Package]:
-    """The parsed pkg_summary of the first mirror and format that downloads, decompresses and resolves
-    every `required` package pattern; one that does not is recorded and the next candidate is tried."""
+    """The parsed pkg_summary of the first source that serves the `required` closure: an existing
+    `summary_file`, else the first mirror and format that downloads, decompresses, parses and resolves it.
+    A candidate that does not is recorded and the next is tried; only a usable download is written."""
+    errors: list[str] = []
     if summary_file is not None and summary_file.is_file():
         # Written by an earlier run of this script in the same job: decompressed pkg_summary text.
-        return parse_summary(summary_file.read_text(encoding="utf-8", errors="replace"))
-    errors: list[str] = []
+        try:
+            return usable_summary(summary_file.read_text(encoding="utf-8", errors="replace"), required)
+        except (FetchError, OSError, ValueError) as error:
+            print(f"  {summary_file}: ignored, not usable: {error}", file=sys.stderr)
+            errors.append(f"{summary_file}: {error}")
     for base in bases:
         for name, decompress in SUMMARY_NAMES:
             buffer = io.BytesIO()
@@ -397,24 +423,16 @@ def fetch_summary(
             try:
                 with_retries(attempt, base + name, attempts, 3)
                 text = _decode(decompress(buffer.getvalue()))
+                packages = usable_summary(text, required)
             except (FetchError, OSError, EOFError, lzma.LZMAError, zlib.error, ValueError) as error:
                 errors.append(f"{base}{name}: {error}")
-                continue
-            parsed = parse_summary(text)
-            try:
-                absent = [r for r in required if best_match(r, parsed) is None]
-            except FetchError as error:
-                errors.append(f"{base}{name}: {error}")
-                continue
-            if absent:
-                errors.append(f"{base}{name}: no package matches required {', '.join(absent)}")
                 continue
             if summary_file is not None:
                 summary_file.parent.mkdir(parents=True, exist_ok=True)
                 temporary = summary_file.with_name(summary_file.name + ".tmp")
                 temporary.write_text(text, encoding="utf-8", newline="\n")
                 os.replace(temporary, summary_file)
-            return parsed
+            return packages
     raise FetchError("cannot fetch pkg_summary: " + "; ".join(errors))
 
 
@@ -478,16 +496,9 @@ def _ensure_package(output: Path, package: Package, bases: list[str], attempts: 
             return False
         print(f"  {package.file_name}: cached copy rejected ({reason}); downloading again", file=sys.stderr)
         target.unlink()
-    for second_try in (False, True):
-        download_package(bases, package, target, attempts, timeout)
-        reason = verify_file(target, package)
-        if reason is None:
-            return True
-        target.unlink(missing_ok=True)
-        if second_try:
-            raise FetchError(f"{package.file_name} failed verification twice: {reason}")
-        print(f"  {package.file_name}: downloaded copy rejected ({reason}); downloading again", file=sys.stderr)
-    raise AssertionError("unreachable")
+    # download_package verifies the file before it moves it into place, so a fresh download is not read again.
+    download_package(bases, package, target, attempts, timeout)
+    return True
 
 
 def sync_directory(
@@ -575,15 +586,19 @@ def run(argv: list[str]) -> int:
     bases = [f"https://{m}/pub/pkgsrc/packages/NetBSD/{args.arch}/{args.release}/All/" for m in mirrors]
 
     packages = fetch_summary(bases, args.summary_file, args.attempts, args.timeout, args.packages)
-    for package in packages:
-        if not SAFE_FILE.match(package.file_name):
-            # A hostile or damaged summary line must not become a path.
-            packages = [p for p in packages if SAFE_FILE.match(p.file_name)]
-            break
+    packages = safe_packages(packages)
     required_closure, _ = resolve_closure(args.packages, [], packages)
     closure, unresolved = resolve_closure(args.packages, args.optional, packages)
     required_names = {p.pkgname for p in required_closure}
     optional_only = frozenset(p.file_name for p in closure if p.pkgname not in required_names)
+    dropped = [p for p in closure if p.file_size is None and p.file_name in optional_only]
+    for package in dropped:
+        print(
+            f"warning: optional package {package.file_name} dropped: pkg_summary gives no valid FILE_SIZE",
+            file=sys.stderr,
+        )
+    closure = [p for p in closure if p not in dropped]
+    optional_only = frozenset(p.file_name for p in closure if p.file_name in optional_only)
     known_size = sum(p.file_size or 0 for p in closure)
     print(f"summary: {len(packages)} packages in {args.arch}/{args.release}")
     print(f"resolved: {len(closure)} packages, {human(known_size)} to download when nothing is cached")
@@ -604,6 +619,13 @@ def run(argv: list[str]) -> int:
     downloaded, reused, pruned = sync_directory(
         args.output_dir, closure, bases, args.attempts, args.timeout, optional_only
     )
+    failed = [p for p in closure if p.file_name in optional_only and not (args.output_dir / p.file_name).exists()]
+    if failed:
+        # The CI cache save step keys on the lockfile's hash at save time: save what the directory holds.
+        closure = [p for p in closure if p not in failed]
+        args.lockfile.write_text(lockfile_text(closure), encoding="utf-8", newline="\n")
+        missing = " ".join(p.file_name for p in failed)
+        print(f"lockfile rewritten without the optional packages that did not download: {missing}")
     print(f"done: {len(closure)} resolved, {downloaded} downloaded, {reused} reused from cache, {pruned} stale files removed")
     return 0
 

@@ -84,6 +84,8 @@ def repository_files() -> list[str]:
 def scan_step_of(workflow: str) -> str:
     """The step that uses the SonarQube scan action, found by its `uses:` and not by its name."""
     steps = workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[1].split("\n      - ")
+    # A step's first key follows its `- ` marker, so `uses:` is not indented there; indent that first line like the rest.
+    steps = ["        " + step for step in steps]
     scans = [step for step in steps if re.search(r"(?m)^        uses: SonarSource/sonarqube-scan-action@", step)]
     assert len(scans) == 1, "expected exactly one SonarQube scan step"
     return scans[0]
@@ -95,6 +97,39 @@ def step_env(step: str) -> dict[str, str]:
     assert match, "the step has no env"
     pairs = (line.split(":", 1) for line in match.group(1).splitlines() if line.strip())
     return {key.strip(): value.strip() for key, value in pairs}
+
+
+class ScanStepLookupTest(unittest.TestCase):
+    @staticmethod
+    def workflow(first_key: str, other_keys: str) -> str:
+        return (
+            "name: x\njobs:\n  scan:\n    steps:\n      - name: other\n        run: true\n"
+            f"      - {first_key}\n{other_keys}"
+        )
+
+    def test_given_uses_as_the_first_key_when_the_step_is_looked_up_then_it_is_found(self) -> None:
+        # GIVEN a workflow whose scan step starts with `- uses:`.
+        text = self.workflow(
+            "uses: SonarSource/sonarqube-scan-action@abc", "        env:\n          SONAR_TOKEN: t\n"
+        )
+
+        # WHEN the scan step is looked up.
+        step = scan_step_of(text)
+
+        # THEN it is that step, with its env readable.
+        self.assertEqual(step_env(step), {"SONAR_TOKEN": "t"})
+
+    def test_given_uses_as_a_later_key_when_the_step_is_looked_up_then_it_is_found(self) -> None:
+        # GIVEN a workflow whose scan step names itself first and has an indented `uses:`.
+        text = self.workflow(
+            "name: Scan", "        uses: SonarSource/sonarqube-scan-action@abc\n        env:\n          SONAR_TOKEN: t\n"
+        )
+
+        # WHEN the scan step is looked up.
+        step = scan_step_of(text)
+
+        # THEN it is that step.
+        self.assertEqual(step_env(step), {"SONAR_TOKEN": "t"})
 
 
 class SonarCloudExclusionsTest(unittest.TestCase):
@@ -169,8 +204,17 @@ class SonarCloudCiScanTest(unittest.TestCase):
             self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$", f"{action} runs before the scan and is not pinned to a commit")
 
     def test_given_the_workflow_when_read_then_it_scans_full_history_with_least_privilege(self) -> None:
+        # GIVEN the coverage workflow.
+        # WHEN its checkout depth and permissions are read.
+        coverage_job, codecov_job = self.workflow.split("\n  codecov:\n", 1)
+
+        # THEN it fetches full history, grants nothing at workflow level, and only the scanning job may read pull
+        # requests; the Codecov job reads contents alone.
         self.assertIn("fetch-depth: 0", self.workflow)
-        self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read\n  pull-requests: read\n\n")
+        self.assertRegex(self.workflow, r"(?m)^permissions: \{\}$")
+        self.assertRegex(coverage_job, r"(?m)^    permissions:\n      contents: read\n      pull-requests: read\n")
+        self.assertRegex(codecov_job, r"(?m)^    permissions:\n      contents: read\n(?!      )")
+        self.assertNotIn("pull-requests", codecov_job)
 
     def test_given_the_workflow_when_read_then_the_token_is_in_the_scan_step_alone(self) -> None:
         # GIVEN the job runs beside third-party actions (Codecov downloads its CLI at run time).

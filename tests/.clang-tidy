@@ -1,3 +1,5 @@
+# misc-use-anonymous-namespace is off here only: every Catch2 SCENARIO expands to a static function
+# (dummyFunctionN) that the check flags, so any new scenario would fail clang-tidy (ADR-0847).
 Checks: >
   -*,
   bugprone-*,
@@ -9,6 +11,7 @@ Checks: >
   clang-analyzer-*,
   misc-*,
   -misc-include-cleaner,
+  -misc-use-anonymous-namespace,
   portability-*
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^tests/.*'
