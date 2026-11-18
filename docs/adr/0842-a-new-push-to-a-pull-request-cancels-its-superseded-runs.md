@@ -27,7 +27,7 @@ concurrency:
 ```
 
 The prefix is a literal, not `github.workflow`: `packages.yml` is also called by `release.yml`, where `github.workflow` is the
-caller's name. `tests/tooling/test_ci_run_scope.py` enforces the shape.
+caller's name. `tests/tooling/test_ci_tiers.py` enforces the shape.
 
 Rejected:
 

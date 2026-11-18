@@ -211,7 +211,7 @@ class CiWorkflowTests(unittest.TestCase):
                         # fallback with the same resolvers.
                         self.assertIn("apt-get update --error-on=any", install)
                         self.assertIn(f"printf '{nameservers.group(1)}' > /etc/resolv.conf", install)
-        self.assertGreaterEqual(checked, 13)
+        self.assertGreaterEqual(checked, 12)
 
     def _run_apt_update(self, failures: int, resolv_is_link: bool) -> tuple[subprocess.CompletedProcess[str], Path]:
         # A fake apt-get fails its first `failures` calls and logs the resolver each call saw;

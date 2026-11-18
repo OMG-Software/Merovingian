@@ -20,7 +20,7 @@ that was 731 of 1,936 runner-minutes, 38 %, on an account with 20 runners.
 ## Decision Outcome
 
 Chosen: drop them, and add `workflow_dispatch`. `push` now lists only `main`, `master` and, for `packages.yml`,
-`alpha-release`. `tests/tooling/test_ci_run_scope.py` fails on a `push` trigger that lists an agent prefix.
+`alpha-release`. `tests/tooling/test_ci_tiers.py` fails on a `push` trigger that lists an agent prefix.
 
 Rejected:
 

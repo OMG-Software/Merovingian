@@ -21,8 +21,9 @@ concurrency:
 jobs:
 
   # ADR-0580, ADR-0743: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
-  # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
-  # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
+  # once fit in the account's 20 runners and coverage (with the Sonar scan) and CodeQL get one straight away. The jobs
+  # that wait use `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as
+  # passed.
   queue-after-analyses:
     name: Queue after Sonar and CodeQL
     runs-on: ubuntu-latest

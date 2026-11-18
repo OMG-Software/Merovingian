@@ -38,7 +38,7 @@ and the merge queue merges only a commit on which every required check ran. `rep
 `pull_request` trigger to `merge_group`.
 
 `packages.yml` keeps its `pull_request` trigger although all its jobs skip there: a workflow that never starts leaves its
-required checks waiting forever, and the pull request could never merge. `tests/tooling/test_ci_run_scope.py` lists the
+required checks waiting forever, and the pull request could never merge. `tests/tooling/test_ci_tiers.py` lists the
 ruleset's required checks and fails if one stops reporting for either event; keep that list and the ruleset in step.
 
 The merge queue must be turned on in the "Protect main" ruleset. Until it is, a pull request merges after the core gate alone,

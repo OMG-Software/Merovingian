@@ -198,8 +198,8 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertNotIn("--compile-only", self.workflow)
         # GCC: only GCC's gcov labels the throw edges that
         # --exclude-throw-branches drops (ADR-0217).
-        self.assertIn("CC: gcc-14", self.workflow)
-        self.assertIn("CXX: g++-14", self.workflow)
+        self.assertIn("CC: ccache gcc-14", self.workflow)
+        self.assertIn("CXX: ccache g++-14", self.workflow)
 
     def test_given_the_workflow_when_read_then_gcovr_writes_the_report_the_scan_reads(self) -> None:
         report = sonar_property("sonar.coverageReportPaths")

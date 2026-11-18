@@ -24,15 +24,17 @@ Those are the Linux build and test jobs, the sanitizers, fuzz and coverage. The 
 `save: ${{ github.ref == 'refs/heads/main' }}`, so only a run on `main` writes the cache, and pull request and merge-queue runs
 restore `main`'s.
 
-ccache is kept out of `codeql.yml` (CodeQL must see every compile to extract it), `static-analysis.yml`, `packages.yml`,
-`reproducible-build.yml` and `release.yml`: a released or verified artifact is built from source with no cached objects.
-`tests/tooling/test_ci_run_scope.py` fails on a job that restores a ccache without wrapping both compilers or that saves off
-`main`, and on ccache in any of those workflows.
+ccache is not added to `codeql.yml` (CodeQL must see every compile to extract it), `static-analysis.yml` or
+`reproducible-build.yml`, whose purpose is to compile from source. `packages.yml` and `release.yml` keep the ccache steps they
+already had, unchanged; whether those package builds should use a cache is a separate decision.
+`tests/tooling/test_ci_tiers.py` fails on a job of `ci.yml`, `coverage.yml`, `sanitizers.yml` or `fuzz.yml` that restores a
+ccache without wrapping both compilers or that saves off `main`, and on ccache in any of the three workflows above.
 
 Rejected:
 
-* **Changing `build-linux.sh`.** Developer and package builds that call it would start using ccache silently, including the
-  ones above that must not.
+* **Changing `build-linux.sh` to add ccache itself.** Developer, CodeQL and package builds that call it would start using
+  ccache silently, including the ones above that must not. The script only learned to accept a launcher in `CC`: it checks
+  that the first word is on `PATH`.
 * **`create-symlink`.** It wraps whichever compiler is found by name in `PATH`, and the container jobs (Fedora, AlmaLinux,
   openSUSE) keep their links in different places; an explicit `CC` is the same everywhere and visible in the job.
 

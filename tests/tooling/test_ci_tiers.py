@@ -53,13 +53,9 @@ REQUIRED_CHECKS = (
 CI_JOBS_ON_A_PULL_REQUEST = {"queue-after-analyses", "ubuntu-build-and-test", "freebsd-build-and-test"}
 NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
 
-# TEMPORARY: coverage.yml and sonarcloud.yml are changed on another branch, which adds their `merge_group` trigger.
-# Remove this allowance when that branch has merged.
-WITHOUT_MERGE_GROUP_UNTIL_THE_COVERAGE_BRANCH_MERGES = {"coverage.yml", "sonarcloud.yml"}
-
 # Workflows that run the compiler and whose ccache must work; the others (CodeQL must see every compile, the
 # analyses and the reproducible build must not reuse objects) have no ccache.
-CCACHE_WORKFLOWS = ("ci.yml", "sanitizers.yml", "fuzz.yml")
+CCACHE_WORKFLOWS = ("ci.yml", "sanitizers.yml", "fuzz.yml", "coverage.yml")
 NO_CCACHE_WORKFLOWS = ("codeql.yml", "static-analysis.yml", "reproducible-build.yml")
 
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*$", re.MULTILINE)
@@ -129,8 +125,6 @@ class TheMergeQueueRunsWhatAPullRequestSkips(unittest.TestCase):
             text = workflow.read_text(encoding="utf-8")
             if not has_trigger(text, "pull_request"):
                 continue
-            if workflow.name in WITHOUT_MERGE_GROUP_UNTIL_THE_COVERAGE_BRANCH_MERGES:
-                continue
             with self.subTest(workflow=workflow.name):
                 self.assertTrue(has_trigger(text, "merge_group"), "a required check never reports in the merge queue")
 
@@ -173,8 +167,7 @@ class EveryRequiredCheckReportsForAPullRequestAndTheMergeQueue(unittest.TestCase
                 with self.subTest(check=name, workflow=workflow):
                     text = text_of(workflow)
                     self.assertTrue(has_trigger(text, "pull_request"), "never reports for a pull request")
-                    if workflow not in WITHOUT_MERGE_GROUP_UNTIL_THE_COVERAGE_BRANCH_MERGES:
-                        self.assertTrue(has_trigger(text, "merge_group"), "never reports in the merge queue")
+                    self.assertTrue(has_trigger(text, "merge_group"), "never reports in the merge queue")
 
     def test_given_a_required_check_when_a_pull_request_skips_its_job_then_the_job_is_not_a_matrix_job(self) -> None:
         # A matrix job that a job-level `if` skips reports one check under its unexpanded name, which matches

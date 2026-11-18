@@ -34,13 +34,11 @@ jobs:
       # GCC, not clang like the other jobs: only GCC's gcov labels the
       # unwinding edge of a call that may throw, which --exclude-throw-branches
       # below relies on. llvm-cov gcov does not, so with clang the flag
-      # excludes nothing (ADR-0217). Written without a `ccache ` prefix:
-      # scripts/build-linux.sh checks that the compiler is one command
-      # (`command -v "$CC"`), which a prefixed value fails. The ccache step below
-      # puts ccache's compiler links first on PATH, so gcc-14 and g++-14 resolve
-      # to them.
-      CC: gcc-14
-      CXX: g++-14
+      # excludes nothing (ADR-0217). Prefixed with ccache because Meson adds it
+      # only when it picks the compiler itself, and build-linux.sh passes CC and
+      # CXX explicitly (ADR-0843).
+      CC: ccache gcc-14
+      CXX: ccache g++-14
       # A live PostgreSQL so the [postgresql] scenarios run here and the
       # PostgreSQL store is measured; without it they skip and every line of
       # PostgresqlStore.cpp reads as uncovered. Same database and roles as
@@ -119,16 +117,6 @@ jobs:
           restore-keys: ccache-coverage-
           max-size: 1G
           save: ${{ github.ref == 'refs/heads/main' }}
-
-      # ccache only helps if gcc-14 and g++-14 resolve to it. Say so when they do not,
-      # rather than leave a build that is silently as slow as before.
-      - name: Check that the compiler runs through ccache
-        run: |
-          for compiler in gcc-14 g++-14; do
-            if [ "$(readlink -f "$(command -v "$compiler")")" != "$(readlink -f "$(command -v ccache)")" ]; then
-              echo "::warning::$compiler does not resolve to ccache; this build is not cached"
-            fi
-          done
 
       - name: Provision migration and runtime roles
         env:

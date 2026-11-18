@@ -50,8 +50,8 @@ class CoverageWorkflowTests(unittest.TestCase):
         # AND the job builds with GCC and reads its data with the matching gcov:
         # llvm-cov gcov does not label exception edges, so under clang the flag
         # above silently excludes nothing.
-        self.assertRegex(workflow, r"(?m)^[ \t]+CC: gcc-14[ \t]*$")
-        self.assertRegex(workflow, r"(?m)^[ \t]+CXX: g\+\+-14[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+CC: ccache gcc-14[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+CXX: ccache g\+\+-14[ \t]*$")
         self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-executable gcov-14[ \t]*\\[ \t]*$")
         self.assertNotIn("llvm-cov gcov\" \\", workflow)
 
@@ -173,9 +173,10 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("save: ${{ github.ref == 'refs/heads/main' }}", workflow)
         # AND the cache step precedes the build.
         self.assertLess(workflow.index("ccache-action@"), workflow.index("run: sh scripts/build-linux.sh"))
-        # AND the compiler stays one command, which build-linux.sh checks with `command -v`; the action's PATH
-        # links make gcc-14 and g++-14 run through ccache.
-        self.assertNotRegex(workflow, r"(?m)^[ \t]+CC: ccache")
+        # AND both compilers run through ccache: Meson adds it only when it picks the compiler itself, and
+        # build-linux.sh passes CC and CXX explicitly (ADR-0843).
+        self.assertRegex(workflow, r"(?m)^[ \t]+CC: ccache gcc-14[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+CXX: ccache g\+\+-14[ \t]*$")
 
 
 if __name__ == "__main__":

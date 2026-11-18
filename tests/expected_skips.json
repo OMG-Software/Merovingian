@@ -197,10 +197,6 @@
       "landlock",
       "non-root-linux"
     ],
-    "sonarcloud": [
-      "landlock",
-      "non-root-linux"
-    ],
     "asan-ubsan": [
       "landlock",
       "asan",
