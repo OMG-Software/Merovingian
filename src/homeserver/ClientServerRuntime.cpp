@@ -86,9 +86,11 @@
 #include "merovingian/homeserver/ClientDeviceSessions.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntimeInternal.hpp"
 #include "merovingian/homeserver/ClientServerStartOptions.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/DelayedEvents.hpp"
 #include "merovingian/homeserver/EmailPush.hpp"
 #include "merovingian/homeserver/FetchRelationsRequest.hpp"
 #include "merovingian/homeserver/FetchThreadsRequest.hpp"
@@ -3491,6 +3493,16 @@ namespace
                         return std::string{unmatched};
                     }
                 }
+                else if (action == "delayed_event")
+                {
+                    // S1 (MSC4140, ADR-0823): PUT /rooms/{roomId}/delayed_event/{eventType}/{txnId}.
+                    out =
+                        replace_two_tail_segments(normalized_room + "/delayed_event/", tail, "{eventType}", "{txnId}");
+                    if (out.empty())
+                    {
+                        return std::string{unmatched};
+                    }
+                }
                 else if (action == "event")
                 {
                     if (!has_one_segment(tail))
@@ -3709,6 +3721,63 @@ namespace
                     rest.substr(rooms_part.size(), rest.size() - rooms_part.size() - summary_suffix.size())))
             {
                 return std::string{nheko_summary_prefix} + "rooms/{roomIdOrAlias}/summary";
+            }
+            return std::string{unmatched};
+        }
+
+        // Delayed events (MSC4140, ADR-0823): the identifier of a delayed event, and for S2 the room, event type and
+        // transaction ID, are variable, so each template is its own bucket (ADR-0092). The management action stays
+        // literal: any other last segment is unmatched, so it is answered 404 M_UNRECOGNIZED before authentication.
+        auto const delayed_events_template = [&](std::string_view prefix, std::string_view rest) -> std::string {
+            auto const first_end = rest.find('/');
+            if (!has_one_segment(rest.substr(0U, first_end)))
+            {
+                return std::string{unmatched};
+            }
+            if (first_end == std::string_view::npos)
+            {
+                return std::string{prefix} + "delayed_events/{delayId}";
+            }
+            auto const action = rest.substr(first_end + 1U);
+            if (action == "send" || action == "cancel" || action == "restart")
+            {
+                return std::string{prefix} + "delayed_events/{delayId}/" + std::string{action};
+            }
+            return std::string{unmatched};
+        };
+        auto constexpr delayed_stable_prefix = std::string_view{"/_matrix/client/v1/delayed_events/"};
+        if (starts_with(out, delayed_stable_prefix))
+        {
+            return delayed_events_template("/_matrix/client/v1/",
+                                           std::string_view{out}.substr(delayed_stable_prefix.size()));
+        }
+        auto constexpr delayed_unstable_root = std::string_view{"/_matrix/client/unstable/org.matrix.msc4140/"};
+        if (starts_with(out, delayed_unstable_root))
+        {
+            auto const rest = std::string_view{out}.substr(delayed_unstable_root.size());
+            auto constexpr rooms_part = std::string_view{"rooms/"};
+            auto constexpr events_part = std::string_view{"delayed_events/"};
+            if (starts_with(rest, events_part))
+            {
+                return delayed_events_template(delayed_unstable_root, rest.substr(events_part.size()));
+            }
+            if (starts_with(rest, rooms_part))
+            {
+                // rooms/{roomId}/delayed_event/{eventType}/{txnId}
+                auto const after_rooms = rest.substr(rooms_part.size());
+                auto const room_end = after_rooms.find('/');
+                auto constexpr marker = std::string_view{"/delayed_event/"};
+                if (room_end != std::string_view::npos && room_end != 0U &&
+                    starts_with(after_rooms.substr(room_end), marker))
+                {
+                    auto const normalized = replace_two_tail_segments(
+                        std::string{delayed_unstable_root} + "rooms/{roomId}/delayed_event/",
+                        after_rooms.substr(room_end + marker.size()), "{eventType}", "{txnId}");
+                    if (!normalized.empty())
+                    {
+                        return normalized;
+                    }
+                }
             }
             return std::string{unmatched};
         }
@@ -12351,6 +12420,391 @@ namespace
         return json_serialize(json_obj(std::move(members)));
     }
 
+    // ---- Delayed events (MSC4140, ADR-0823 to ADR-0826): the routes only parse a request and call DelayedEvents.cpp.
+
+    inline constexpr auto delay_query_parameter = std::string_view{"org.matrix.msc4140.delay"};
+
+    // What a request's `org.matrix.msc4140.delay` query parameter says. `present` is true for a request that carries
+    // the parameter at all, with any value: such a request is a delayed one and never falls through to an immediate
+    // send. `delay_ms` is empty when the parameter is repeated, empty, or not a whole decimal number of at least 1
+    // that fits 64 bits.
+    struct DelayQuery final
+    {
+        bool present{false};
+        std::optional<std::uint64_t> delay_ms{};
+    };
+
+    // Reads the parameter, with the name percent-decoded as well as the value so that an encoded spelling of it cannot
+    // slip past into an immediate send. Looks at the first two occurrences only.
+    [[nodiscard]] auto delay_query_of(std::string_view target) -> DelayQuery
+    {
+        auto values = std::vector<std::string>{};
+        auto const query_pos = target.find('?');
+        if (query_pos != std::string_view::npos)
+        {
+            auto query = target.substr(query_pos + 1U);
+            while (!query.empty() && values.size() < 2U)
+            {
+                auto const amp = query.find('&');
+                auto const pair = query.substr(0U, amp);
+                auto const equals = pair.find('=');
+                if (core::percent_decode(pair.substr(0U, equals)) == delay_query_parameter)
+                {
+                    values.push_back(core::percent_decode(equals == std::string_view::npos ? std::string_view{}
+                                                                                           : pair.substr(equals + 1U)));
+                }
+                if (amp == std::string_view::npos)
+                {
+                    break;
+                }
+                query.remove_prefix(amp + 1U);
+            }
+        }
+        if (values.empty())
+        {
+            return {};
+        }
+        auto result = DelayQuery{.present = true, .delay_ms = std::nullopt};
+        if (values.size() != 1U || values.front().empty() || !std::ranges::all_of(values.front(), [](char c) {
+                return c >= '0' && c <= '9';
+            }))
+        {
+            return result;
+        }
+        auto parsed = std::uint64_t{0};
+        auto const text = std::string_view{values.front()};
+        auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+        if (error == std::errc{} && end == text.data() + text.size() && parsed >= 1U)
+        {
+            result.delay_ms = parsed;
+        }
+        return result;
+    }
+
+    // The 403 a disabled server answers, taken from the service so the text is written once; nullopt when delayed
+    // events are on. A disabled server answers it before any body or parameter error.
+    [[nodiscard]] auto delayed_events_disabled_refusal(ClientServerRuntime& rt) -> std::optional<OperationResult>
+    {
+        if (rt.limits.delayed_events_enabled)
+        {
+            return std::nullopt;
+        }
+        return schedule_delayed_event(rt, DelayedEventScheduleRequest{});
+    }
+
+    // What a successful delayed-event operation answers: `{"delay_id": value}`, the service's JSON body as it is, or
+    // `{}`.
+    enum class DelayedEventSuccess : std::uint8_t
+    {
+        delay_id,
+        body,
+        empty,
+    };
+
+    // The one mapping from a delayed-event `OperationResult` to the response, used by every delayed-event route. A
+    // failure goes through `room_operation_response` and `error_code_for`, the functions the ordinary `/send` answer
+    // goes through (a failure with no status is 403, an empty errcode is the status's usual one), so a failed `send`
+    // action answers what `PUT /send` would have. Never writes an errcode of its own.
+    [[nodiscard]] auto delayed_event_answer(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                            OperationResult const& result, DelayedEventSuccess success)
+        -> DispatchResult
+    {
+        if (result.ok)
+        {
+            switch (success)
+            {
+            case DelayedEventSuccess::delay_id:
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("delay_id", json_str(result.value))})));
+            case DelayedEventSuccess::body:
+                return dispatch_resp(req, rt, 200U, result.value);
+            case DelayedEventSuccess::empty:
+                return dispatch_resp(req, rt, 200U, "{}");
+            }
+        }
+        auto const failure = room_operation_response(result);
+        return dispatch_err(req, rt, failure.status, error_code_for(failure), failure.body, result.retry_after_ms);
+    }
+
+    // Schedules `request` for the request's user and device, and answers it. Caller holds runtime.mutex.
+    [[nodiscard]] auto schedule_delayed_event_for_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                          std::string const& user, DelayedEventScheduleRequest request)
+        -> DispatchResult
+    {
+        request.user_id = user;
+        request.device_id = authenticated_request_device_id(rt, req.access_token);
+        request.via_appservice = appservice::decode_masquerade_token(req.access_token).has_value();
+        auto const result = schedule_delayed_event(rt, request);
+        return delayed_event_answer(req, rt, result, DelayedEventSuccess::delay_id);
+    }
+
+    // L1 and L2: a `/send` or `/state` request that carries `org.matrix.msc4140.delay` (ADR-0823). Answers nothing for
+    // a request without the parameter. With it, the request is always a delayed one: whatever is wrong with it, it is
+    // never sent now.
+    [[nodiscard]] auto delayed_query_form(ClientServerRuntime& rt, LocalHttpRequest const& req, std::string const& user,
+                                          std::string_view room_id, std::string_view event_type,
+                                          std::string_view txn_id, std::optional<std::string> state_key)
+        -> std::optional<DispatchResult>
+    {
+        auto const delay = delay_query_of(req.target);
+        if (!delay.present)
+        {
+            return std::nullopt;
+        }
+        if (auto const refusal = delayed_events_disabled_refusal(rt); refusal.has_value())
+        {
+            return delayed_event_answer(req, rt, *refusal, DelayedEventSuccess::delay_id);
+        }
+        if (!delay.delay_ms.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "org.matrix.msc4140.delay must be given once, as a whole number of milliseconds of at "
+                                "least 1");
+        }
+        auto request = DelayedEventScheduleRequest{};
+        request.room_id = std::string{room_id};
+        request.event_type = std::string{event_type};
+        request.txn_id = std::string{txn_id};
+        request.state_key = std::move(state_key);
+        request.content_json = req.body;
+        request.delay_ms = *delay.delay_ms;
+        request.stable_errcode = false;
+        return schedule_delayed_event_for_request(rt, req, user, std::move(request));
+    }
+
+    // A request that carries `org.matrix.msc4140.delay` is never sent at once by any route (ADR-0823). PUT /send and
+    // PUT /state schedule it; every other route that sends a room event from the caller's body (POST .../send, PUT
+    // .../redact/...) refuses it here, before anything is sent and whether or not delayed events are enabled. Uses
+    // `delay_query_of`, the one reader of the parameter.
+    [[nodiscard]] auto delay_parameter_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (!delay_query_of(req.target).present)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                            "delayed events are scheduled with PUT /send, PUT /state or the delayed_event endpoint");
+    }
+
+    // The members of S1 and S2's body.
+    struct DelayedScheduleBody final
+    {
+        std::uint64_t delay_ms{0U};
+        std::string content_json{};
+        std::optional<std::string> state_key{};
+    };
+
+    // `delay_ms` (a JSON integer of at least 1) and `content` (a JSON object) are required; `state_key`, when present,
+    // must be a string. Other members are ignored. nullopt is 400 M_BAD_JSON.
+    [[nodiscard]] auto parse_delayed_schedule_body(std::string_view body) -> std::optional<DelayedScheduleBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* delay = integer_member(*object, "delay_ms");
+        auto const* content = object_member(*object, "content");
+        if (delay == nullptr || *delay < 1 || content == nullptr ||
+            std::get_if<canonicaljson::Object>(&content->storage()) == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto parsed = DelayedScheduleBody{};
+        parsed.delay_ms = static_cast<std::uint64_t>(*delay);
+        parsed.content_json = json_serialize(*content);
+        if (auto const* state_key = object_member(*object, "state_key"); state_key != nullptr)
+        {
+            auto const* text = std::get_if<std::string>(&state_key->storage());
+            if (text == nullptr)
+            {
+                return std::nullopt;
+            }
+            parsed.state_key = *text;
+        }
+        return parsed;
+    }
+
+    // The parts of S1 (`/_matrix/client/v3/rooms/{roomId}/delayed_event/{eventType}/{txnId}`) and S2 (the same under
+    // `/_matrix/client/unstable/org.matrix.msc4140/`).
+    struct DelayedSchedulePath final
+    {
+        std::string room_id{};
+        std::string event_type{};
+        std::string txn_id{};
+        bool stable{false};
+    };
+
+    [[nodiscard]] auto delayed_schedule_path(std::string_view request_path) -> std::optional<DelayedSchedulePath>
+    {
+        auto constexpr stable_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr unstable_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.msc4140/rooms/"};
+        auto const stable = starts_with(request_path, stable_prefix);
+        if (!stable && !starts_with(request_path, unstable_prefix))
+        {
+            return std::nullopt;
+        }
+        auto rest = request_path.substr(stable ? stable_prefix.size() : unstable_prefix.size());
+        auto segments = std::array<std::string_view, 4>{};
+        for (auto index = std::size_t{0U}; index < segments.size(); ++index)
+        {
+            auto const slash = rest.find('/');
+            auto const last = index + 1U == segments.size();
+            if ((slash == std::string_view::npos) != last || slash == 0U || rest.empty())
+            {
+                return std::nullopt;
+            }
+            segments[index] = rest.substr(0U, slash);
+            if (!last)
+            {
+                rest.remove_prefix(slash + 1U);
+            }
+        }
+        if (segments[1] != "delayed_event" || segments[2].empty() || segments[3].empty())
+        {
+            return std::nullopt;
+        }
+        return DelayedSchedulePath{core::percent_decode_path_component(segments[0]),
+                                   core::percent_decode_path_component(segments[2]),
+                                   core::percent_decode_path_component(segments[3]), stable};
+    }
+
+    // S1 and S2. Order: the feature switch, then the body, then the service.
+    [[nodiscard]] auto handle_delayed_event_schedule(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                     std::string const& user, DelayedSchedulePath const& path)
+        -> DispatchResult
+    {
+        if (auto const refusal = delayed_events_disabled_refusal(rt); refusal.has_value())
+        {
+            return delayed_event_answer(req, rt, *refusal, DelayedEventSuccess::delay_id);
+        }
+        auto const body = parse_delayed_schedule_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "the body must be an object with an integer delay_ms of at least 1, an object content "
+                                "and, optionally, a string state_key");
+        }
+        auto request = DelayedEventScheduleRequest{};
+        request.room_id = path.room_id;
+        request.event_type = path.event_type;
+        request.txn_id = path.txn_id;
+        request.state_key = body->state_key;
+        request.content_json = body->content_json;
+        request.delay_ms = body->delay_ms;
+        request.stable_errcode = path.stable;
+        return schedule_delayed_event_for_request(rt, req, user, std::move(request));
+    }
+
+    // The parts of the management and lookup paths: `.../delayed_events/{delayId}` and `.../{delayId}/{action}`, on
+    // `/_matrix/client/v1/` (stable) or `/_matrix/client/unstable/org.matrix.msc4140/`.
+    struct DelayedManagePath final
+    {
+        std::string delay_id{};
+        std::optional<DelayedEventAction> action{};
+        bool stable{false};
+    };
+
+    [[nodiscard]] auto delayed_manage_path(std::string_view request_path) -> std::optional<DelayedManagePath>
+    {
+        auto constexpr stable_prefix = std::string_view{"/_matrix/client/v1/delayed_events/"};
+        auto constexpr unstable_prefix =
+            std::string_view{"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/"};
+        auto const stable = starts_with(request_path, stable_prefix);
+        if (!stable && !starts_with(request_path, unstable_prefix))
+        {
+            return std::nullopt;
+        }
+        auto const rest = request_path.substr(stable ? stable_prefix.size() : unstable_prefix.size());
+        auto const slash = rest.find('/');
+        auto const delay_id = rest.substr(0U, slash);
+        if (delay_id.empty())
+        {
+            return std::nullopt;
+        }
+        auto path = DelayedManagePath{core::percent_decode_path_component(delay_id), std::nullopt, stable};
+        if (slash == std::string_view::npos)
+        {
+            return path;
+        }
+        auto const action = rest.substr(slash + 1U);
+        if (action == "send")
+        {
+            path.action = DelayedEventAction::send;
+        }
+        else if (action == "cancel")
+        {
+            path.action = DelayedEventAction::cancel;
+        }
+        else if (action == "restart")
+        {
+            path.action = DelayedEventAction::restart;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        return path;
+    }
+
+    // M1, M2, M3, G1 and G2. nullopt for a method the path does not serve (M3 has no stable form), which the caller
+    // leaves to the dispatcher's 405. M1 and M2 ignore the body.
+    [[nodiscard]] auto handle_delayed_event_management(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                       std::string const& user, DelayedManagePath const& path)
+        -> std::optional<DispatchResult>
+    {
+        if (req.method == "GET" && !path.action.has_value())
+        {
+            return delayed_event_answer(req, rt, delayed_event_lookup(rt, user, path.delay_id),
+                                        DelayedEventSuccess::body);
+        }
+        if (req.method != "POST")
+        {
+            return std::nullopt;
+        }
+        if (path.action.has_value())
+        {
+            return delayed_event_answer(req, rt, manage_delayed_event(rt, user, path.delay_id, *path.action),
+                                        DelayedEventSuccess::empty);
+        }
+        if (path.stable)
+        {
+            return std::nullopt;
+        }
+        // M3: the action is in the body.
+        auto const object = parsed_json_object(req.body);
+        if (!object.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the request body must be a JSON object");
+        }
+        auto const* member = object_member(*object, "action");
+        if (member == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "action is required");
+        }
+        auto const* text = std::get_if<std::string>(&member->storage());
+        auto action = std::optional<DelayedEventAction>{};
+        if (text != nullptr && *text == "send")
+        {
+            action = DelayedEventAction::send;
+        }
+        else if (text != nullptr && *text == "cancel")
+        {
+            action = DelayedEventAction::cancel;
+        }
+        else if (text != nullptr && *text == "restart")
+        {
+            action = DelayedEventAction::restart;
+        }
+        if (!action.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "action must be send, cancel or restart");
+        }
+        return delayed_event_answer(req, rt, manage_delayed_event(rt, user, path.delay_id, *action),
+                                    DelayedEventSuccess::empty);
+    }
+
     // A refused upload, create or reserved upload as the client sees it. The
     // media service names the spec's errcode where one applies; the internal
     // statuses for a disallowed file type (415) and an exhausted quota (507)
@@ -14759,6 +15213,27 @@ namespace
 
 } // namespace
 
+auto event_txn_part_is_too_long(std::string_view part) noexcept -> bool
+{
+    return client_txn_part_is_too_long(part);
+}
+
+auto rate_limit_route_template(std::string_view target) -> std::string
+{
+    return normalized_target(target);
+}
+
+auto route_event_body(std::string_view event_type, std::string_view content, std::optional<std::string> state_key)
+    -> std::optional<std::string>
+{
+    return event_body_from_content(event_type, content, std::move(state_key));
+}
+
+auto errcode_for_refusal_status(std::uint16_t status) -> std::string_view
+{
+    return error_code_for_status(status);
+}
+
 auto remember_signed_in_device(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id,
                                std::string_view display_name, SignedInDevice kind) -> void
 {
@@ -15001,6 +15476,10 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
     rt.limits.sliding_sync_connections_per_device = client_api.sliding_sync_connections_per_device;
+    rt.limits.delayed_events_enabled = config.server().delayed_events.enabled;
+    rt.limits.max_delayed_event_delay_ms = config.server().delayed_events.max_delay_ms;
+    rt.limits.max_scheduled_delayed_events_per_user = config.server().delayed_events.max_scheduled_per_user;
+    rt.limits.max_finalised_delayed_events_per_user = config.server().delayed_events.max_finalised_per_user;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
@@ -15363,12 +15842,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req, rt, 200U,
             json_serialize(json_obj({
                 json_member("versions", json_arr(std::move(versions))),
-                json_member("unstable_features", json_obj({
-                                                     json_member("org.matrix.msc4186", json_bool(true)),
-                                                     json_member("org.matrix.msc4143", json_bool(true)),
-                                                     json_member("org.matrix.msc4143.stable", json_bool(true)),
-                                                     json_member("org.matrix.simplified_msc3575", json_bool(true)),
-                                                 })),
+                json_member("unstable_features",
+                            json_obj({
+                                json_member("org.matrix.msc4186", json_bool(true)),
+                                json_member("org.matrix.msc4143", json_bool(true)),
+                                json_member("org.matrix.msc4143.stable", json_bool(true)),
+                                // MSC4140 (ADR-0823): both flags say whether scheduling is on.
+                                json_member("org.matrix.msc4140", json_bool(rt.limits.delayed_events_enabled)),
+                                json_member("org.matrix.msc4140.stable", json_bool(rt.limits.delayed_events_enabled)),
+                                json_member("org.matrix.simplified_msc3575", json_bool(true)),
+                            })),
             })));
     }
 
@@ -18789,6 +19272,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                json_member("available", json_obj(std::move(available_versions))),
                                            })),
         };
+        // MSC4140 (ADR-0823, ADR-0826): the longest delay and the most scheduled events a user may hold; zeros when
+        // scheduling is off. Both the stable and the unstable name are served.
+        {
+            auto const enabled = rt.limits.delayed_events_enabled;
+            auto const max_delay = enabled ? static_cast<std::int64_t>(rt.limits.max_delayed_event_delay_ms) : 0;
+            auto const max_scheduled =
+                enabled ? static_cast<std::int64_t>(rt.limits.max_scheduled_delayed_events_per_user) : 0;
+            for (auto const* name : {"m.delayed_events", "org.matrix.msc4140.delayed_events"})
+            {
+                capabilities.push_back(json_member(name, json_obj({
+                                                             json_member("max_delay_ms", json_int(max_delay)),
+                                                             json_member("max_scheduled", json_int(max_scheduled)),
+                                                         })));
+            }
+        }
         // Spec (m.account_moderation, v1.18): whether the caller can lock and suspend accounts, "omitted
         // altogether if `suspend` and `lock` would be `false`". Both endpoints need a server admin, so
         // the two flags are always equal.
@@ -19672,6 +20170,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              })));
     }
 
+    // Delayed events (MSC4140, ADR-0823): S1 and S2 schedule, M1 to M3 manage and G1 and G2 look up. The listing
+    // `GET .../delayed_events` is MSC4486 and no route (`normalized_target` leaves it unmatched). Placed before the
+    // room routes, whose `/send/` and `/state/` markers must never be offered S1's path. A method a path does not
+    // serve (M3 under `/v1`, a GET of S1) is left to the dispatcher's 405.
+    if (req.method == "PUT")
+    {
+        if (auto const path = delayed_schedule_path(request_path); path.has_value())
+        {
+            return handle_delayed_event_schedule(rt, req, *user, *path);
+        }
+    }
+    if (req.method == "GET" || req.method == "POST")
+    {
+        if (auto const path = delayed_manage_path(request_path); path.has_value())
+        {
+            if (auto answer = handle_delayed_event_management(rt, req, *user, *path); answer.has_value())
+            {
+                return std::move(*answer);
+            }
+        }
+    }
+
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched)
     {
@@ -20529,6 +21049,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // ../../docs/matrix-v1.19-spec/client-server-api.md#redactions
             if (auto const redact = room_redact_path_parts(req.target); redact.has_value())
             {
+                if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
@@ -20605,6 +21129,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
+                // L1 (MSC4140, ADR-0823): the delayed branch comes before the idempotency lookup, `?ts=` and
+                // everything that could send, and a request that carries the parameter never falls through.
+                if (auto delayed =
+                        delayed_query_form(rt, req, *user, path->room_id, path->event_type, path->txn_id, std::nullopt);
+                    delayed.has_value())
+                {
+                    return std::move(*delayed);
+                }
                 auto const massaged = massaged_timestamp(req);
                 if (!massaged.valid)
                 {
@@ -20614,11 +21146,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // A room event's type is under the size limits, answered as they all are, 413 M_TOO_LARGE.
                 if (client_txn_part_is_too_long(path->event_type))
                 {
-                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "the event type is at most 255 bytes");
+                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", event_type_too_long_reason);
                 }
                 if (client_txn_part_is_too_long(path->txn_id))
                 {
-                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", txn_id_too_long_reason);
                 }
                 // CS API §10.5.1: idempotent send — replay the original response to the same device (F-52,
                 // ADR-0380): a transaction ID is scoped to a device, so another device's is another request.
@@ -20687,6 +21219,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
+                // L2 (MSC4140, ADR-0823): as L1, for every form of the state path (a state key, an empty one, none).
+                if (auto delayed =
+                        delayed_query_form(rt, req, *user, path->room_id, path->event_type, {}, path->state_key);
+                    delayed.has_value())
+                {
+                    return std::move(*delayed);
+                }
                 auto const massaged = massaged_timestamp(req);
                 if (!massaged.valid)
                 {
@@ -20759,6 +21298,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (req.method == "POST" && suffix.size() > send_s.size() &&
             suffix.substr(suffix.size() - send_s.size()) == send_s)
         {
+            if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+            {
+                return std::move(*refused);
+            }
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - send_s.size()));
             log_diagnostic("room.send_event.internal", {
                                                            {"actor",   *user,   false},

@@ -26,6 +26,7 @@
 #include "merovingian/crypto/TokenHmacKey.hpp"
 #include "merovingian/crypto/TokenHmacKeys.hpp"
 #include "merovingian/crypto/TokenKey.hpp"
+#include "merovingian/database/DelayedEventStore.hpp"
 #include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
@@ -2580,6 +2581,17 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     if (!delete_pushers_of_user(runtime, user_id, std::nullopt))
     {
         log_diagnostic("account.deactivated.pusher_removal_failed",
+                       {
+                           {"user_id", std::string{user_id}, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    // Every delayed event of the account, scheduled and finalised, goes too (MSC4140, ADR-0824): a deactivated
+    // account sends nothing. A failure is logged and deactivation goes on, because the send-time account check of
+    // the delayed-events job refuses a deactivated sender (ADR-0825).
+    if (!database::delete_delayed_events_of_user(runtime.database.persistent_store, user_id))
+    {
+        log_diagnostic("account.deactivated.delayed_events_removal_failed",
                        {
                            {"user_id", std::string{user_id}, false}
         },

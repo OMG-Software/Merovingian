@@ -118,6 +118,13 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Delayed events: the switch and the limits are copied into the client-server runtime's limits at start-up
+    // (ADR-0826); SIGHUP does not push new values.
+    if (starts_with(key, "server.delayed_events."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // Presence: main and the federation worker copy `presence.enabled` at start-up (the worker
     // reads its own config file once), and SIGHUP does not push a new value to either.
     if (starts_with(key, "presence."))

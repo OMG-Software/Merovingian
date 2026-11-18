@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MigrationStep.hpp"
@@ -755,12 +756,55 @@ namespace
         return step == SQLITE_DONE;
     }
 
+    // Migration 003 (ADR-0824): delayed events. A row whose status text is not one of the four, or that
+    // duplicates a delay ID, a transaction key or a sent event ID, or whose numbers
+    // or booleans are not exactly what the store writes, is skipped and counted, never repaired.
+    // Skipped for a profile that does not include the table, as PostgreSQL does: the federation worker never
+    // reads a scheduled event's content, and a skipped load counts no row.
+    [[nodiscard]] auto load_delayed_event_rows(sqlite3& connection, PersistentStore& store, TableLoadProfile profile)
+        -> bool
+    {
+        if (!table_load_profile_includes("delayed_events", profile))
+        {
+            return true;
+        }
+        return load_rows(connection,
+                         "SELECT delay_id, user_id, device_id, room_id, event_type, is_state, state_key, content_json, "
+                         "txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, event_id, "
+                         "error_json FROM delayed_events ORDER BY delay_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto columns = std::array<std::string, delayed_event_row_columns>{};
+                             for (auto index = std::size_t{0U}; index < columns.size(); ++index)
+                             {
+                                 columns[index] = column_text(row, static_cast<int>(index));
+                             }
+                             // Strict: a row that is not read exactly is skipped, left in the file and counted.
+                             auto parsed = parse_delayed_event_row(columns);
+                             if (!parsed.has_value())
+                             {
+                                 ++store.delayed_event_rows_skipped_at_load;
+                                 return;
+                             }
+                             if (!store.delayed_events.insert(std::move(*parsed)))
+                             {
+                                 ++store.delayed_event_rows_skipped_at_load;
+                             }
+                         });
+    }
+
     // Events go to `hydrated_events` rather than `store.events`, for the caller to index in one pass
     // (ADR-0215): the SELECT has no ORDER BY, so adding them one at a time could shift the
     // stream-order index for every row.
-    auto load_persistent_rows(sqlite3& connection, PersistentStore& store,
+    auto load_persistent_rows(sqlite3& connection, PersistentStore& store, TableLoadProfile profile,
                               std::vector<PersistentEvent>& hydrated_events) -> bool
     {
+        // Migration 003 (ADR-0824): delayed events, loaded by the helper above as a statement of its own. The table
+        // depends on no other table and none depends on it, so it need not be a link of the chain below. A failed
+        // SELECT fails the whole load, as a failed link does.
+        if (!load_delayed_event_rows(connection, store, profile))
+        {
+            return false;
+        }
         // Tables load in dependency order and the chain short-circuits: the first failed SELECT
         // fails the whole load, so a partially read store is never served.
         return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
@@ -1732,7 +1776,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         });
     }
     auto hydrated_events = std::vector<PersistentEvent>{};
-    if (!load_persistent_rows(sqlite, store, hydrated_events))
+    if (!load_persistent_rows(sqlite, store, profile, hydrated_events))
     {
         log_diagnostic("store.rejected",
                        {

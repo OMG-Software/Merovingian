@@ -27,6 +27,9 @@ This is the largest and most complex module — read this file carefully before 
 | `AppserviceDelivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, OAuth 2.0 session rows whose device holds no live access or refresh token (judged again in the hold that deletes them, ADR-0808), and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `DelayedEvents.cpp` | Delayed events (MSC4140, ADR-0823 to ADR-0826): `schedule_delayed_event`, `manage_delayed_event` (send, cancel, restart), `delayed_event_lookup`, the clock `delayed_event_now_ms` (and its seam `test_delayed_event_clock_ms`), `wake_delayed_events`, `send_due_delayed_events`, and `run_delayed_events_job`, the body of the `delayed-events` `PeriodicJob` in `main.cpp`. The caller holds `runtime.mutex` for all but the job body, which takes it for one send a run |
+| `ClientServerRuntime.cpp` (delayed events) | The MSC4140 routes (ADR-0823): S1 and S2 `PUT .../delayed_event/...`, the `org.matrix.msc4140.delay` branch of `PUT /send` and `/state`, M1 to M3 `POST .../delayed_events/{delayId}[/{action}]` and G1 and G2 `GET .../delayed_events/{delayId}`, with the `/versions` flags and `/capabilities` entries. See "Delayed events" below |
+| `ClientServerRuntimeInternal.hpp` | Call-throughs from `ClientServerRuntime.cpp`'s anonymous namespace that `DelayedEvents.cpp` shares with the `/send` and `/state` routes: `rate_limit_route_template` (`normalized_target`), `route_event_body` (`event_body_from_content`), `event_txn_part_is_too_long`, `errcode_for_refusal_status`, and the two reasons the `/send` route gives for a too-long type or transaction ID. Not public API |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
 | `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response` / `oauth_empty_response`: every OAuth JSON (or empty) answer, with `no-store` (ADR-0781) |
 | `OAuthTokenEndpoint.cpp` | `POST /_merovingian/oauth2/token` (`handle_oauth_token`): the authorization code grant, the refresh grant (ADR-0791 to ADR-0793) and the device code grant (ADR-0804) |
@@ -1199,6 +1202,82 @@ event type, before anything is created. Membership alone is not enough. Alias `P
 `LocalRoom` has no list of events. Read a room's events, and take an event ID, from `PersistentStore::events` or the
 room's forward extremities (`last_known_event_id` in `ClientServerRuntime.cpp` is the model). A redacted event is served
 from the table's redacted JSON; do not add a second copy.
+
+## Delayed events (ADR-0823 to ADR-0826)
+
+`DelayedEvents.cpp` schedules, manages, looks up and sends an event a user asked to have sent later; the routes (the
+next layer) only parse a request and call it. Invariants a change must keep:
+
+- **The mark is owned by `SendMark` (RAII).** It is cleared on every path, an exception included. The job's send is
+  caught whole (a job item has no dispatch backstop, and an unrecorded attempt would be repeated every few seconds): it
+  is recorded `failed` 500 `M_UNKNOWN`. The `send` action does not catch: the exception reaches the backstop (500) and
+  the row stays scheduled.
+- **One sender at a time, marked.** A send takes `runtime.mutex` for one event, marks the row as being sent
+  (`DelayedEventTable::mark_being_sent`, memory only) before `send_event_as_resolved_user`, and finalising clears the
+  mark. A marked row is offered by nobody: restart, cancel and send answer 409 "being sent". The job sends AT MOST ONE event
+  a run, in one hold, and returns `delayed_events_pace` (5 ms) when another is already due, so the lock is free between
+  sends as in the profile propagation job (ADR-0353); it never returns 0, and it checks its `StopFlag` before the send. `PeriodicJob` counts its sleep from the body's
+  return, so `main.cpp` runs `run_delayed_events_job`, which takes the time the run took (mostly waiting for the lock)
+  off the wait with `delayed_events_wait_after`; never put `send_due_delayed_events` straight in the job.
+  A record the store refuses, or that throws (`delayed_event.finalise_commit_failed`, `outcome` `exception`, the type
+  only), leaves the row marked, so it is never sent again by that process (the next start sends it once more); never
+  clear the mark to retry.
+- **Never early.** The job sends only a row whose `delayed_event_due_ms` is at or before the `now_ms` it was given,
+  re-read under the lock it sends under. "Now" is `delayed_event_now_ms` (production and handlers) or the job's
+  parameter (tests); never read the clock anywhere else, and never sleep in a test.
+- **Authorised when sent.** The send is the ordinary `send_event_as_user`, so the room's auth rules judge the event
+  against the state NOW, after the account check (unknown or deactivated 403 `M_USER_DEACTIVATED`, locked 401
+  `M_USER_LOCKED`, suspended 403 `M_USER_SUSPENDED`) and the send-time rate limit (`RateLimitEngine::check` with an empty
+  address bucket, and the user bucket and policy target an ordinary PUT of that event would have). Any failure of
+  the job's send is recorded `failed` with the standard error object and is never retried. A failed `send` action
+  returns the send's own result and leaves the row scheduled, timer unchanged. Never add a copy of a send-path check;
+  call the shared function.
+- **No `origin_server_ts` and no `client_txn_ids` row** for a delayed event: it is stamped when it is sent and carries
+  no `unsigned.transaction_id`. `unsigned.delay_id` (and the unstable name) is added by `ViewerEventUnsigned` for the
+  scheduling user only, by one `find_sent_by_event_id`.
+- **Every path that deactivates an account deletes its rows** (`delete_delayed_events_of_user`, in
+  `deactivate_user_account`, a failure logged and not fatal). Logout and device deletion do not. A new path that closes
+  an account does it too.
+- **Lookup is by `find_owned` only**, and an unknown, another user's, empty or over-long ID is the one 404 `M_NOT_FOUND`
+  "Delayed event not found.", byte for byte.
+- **Logging** is under `delayed_events` (`delayed_event.scheduled`, `.restarted`, `.cancelled`, `.sent`, `.failed`,
+  `.finalise_commit_failed`, and `.prune_failed`, a warning with no row fields) with `delay_id`, `user_id`, `room_id`,
+  `event_type`, and `event_id`, `status`, `errcode`, and for an exception in the job's send `type` (never `what()`),
+  where they apply. NEVER log `content_json` or a state key (a call-membership state key holds a device ID).
+- `send_event_as_user`'s room and membership refusal is `room_send_refusal`, and its power refusal
+  `event_authorization_refusal`, both shared with the schedule-time check; change them, not a copy.
+
+The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call the service. Rules a change must keep:
+
+- **The delayed branch of `/send` and `/state` comes first and never falls through.** A `PUT .../send/{eventType}/{txnId}`
+  or `PUT .../state/{eventType}[/{stateKey}]` that carries `org.matrix.msc4140.delay` (`delay_query_of`: the name is
+  percent-decoded too) is answered by `delayed_query_form` before the idempotency lookup, `?ts=` and anything that could
+  send. A repeated, empty or non-digit value, `0`, or one over 64 bits is `400 M_INVALID_PARAM`; a disabled server is
+  `403 M_FORBIDDEN` first. No error of such a request may reach the ordinary send.
+- **Every other route that sends a room event from the caller's body** (`POST .../send`, `PUT .../redact/...`) answers a
+  request carrying the parameter `400 M_INVALID_PARAM` through `delay_parameter_refusal`, before anything is sent and
+  whether or not the feature is on; a new such route calls it too.
+- **The dedicated routes (S1, S2) are matched before the room routes**, whose `/send/` and `/state/` markers would
+  otherwise find them inside the path. Disabled is answered before any body error (`delayed_events_disabled_refusal`
+  calls the service with an empty request, so the text is written once); then `parse_delayed_schedule_body`.
+- **One helper maps every answer**: `delayed_event_answer`. Success is the route's body; a failure goes through
+  `room_operation_response` (the function the local router's `/send` answer uses, exported in `LocalHttpRouter.hpp`)
+  and `error_code_for`, with `retry_after_ms` through `dispatch_err`. A route never writes an errcode of its own, so a
+  failed `send` action answers what `PUT /send` would have.
+- **The 404 for an unknown or another user's ID is the service's, byte for byte, on every management and lookup
+  route** (M1, M2, M3, G1, G2). A route answers it with nothing added: no header, no body member.
+- **M1 and M2 ignore the body.** An empty body, `{}` and unknown members pass; a body that is not JSON is the
+  dispatcher's `M_NOT_JSON` before the route (the gate skips an empty or all-whitespace body). M3 (unstable only) needs a
+  JSON object with a string `action`. `POST /v1/delayed_events/{id}` is no route: 405 `M_UNRECOGNIZED` after
+  authentication, like any served path with another method. The listing `GET .../delayed_events` is unmatched: 404.
+- **Templates**: `normalized_target` gives S1 and S2 `.../rooms/{roomId}/delayed_event/{eventType}/{txnId}` and each
+  prefix `.../delayed_events/{delayId}` and `.../{delayId}/{send|cancel|restart}`; the action stays literal, so any
+  other last segment is unmatched (404 before authentication). Each template has a row in the HTTP-3 scenario "gives
+  every implemented dynamic client route its own coalesced bucket", and the built-in limits in
+  `default_client_rate_limit_config` (ADR-0826) are keyed on them; a built-in per-user key also needs its
+  `client_rate_limits.per_user.` line in `tests/complement/merovingian.conf.template`.
+- `/versions` flags and `/capabilities` entries read `rt.limits.delayed_events_enabled`,
+  `max_delayed_event_delay_ms` and `max_scheduled_delayed_events_per_user`; disabled is false and zeros.
 
 ## Typing expiry (R13, ADR-0199)
 

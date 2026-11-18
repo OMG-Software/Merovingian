@@ -7,13 +7,19 @@
 // MEROVINGIAN_TEST_POSTGRESQL_URI is not set; a skip is not a pass.
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/BoundValue.hpp>
+#include <merovingian/database/DelayedEventOutcomeResult.hpp>
+#include <merovingian/database/DelayedEventStatus.hpp>
+#include <merovingian/database/DelayedEventStore.hpp>
 #include <merovingian/database/OAuthClientStoreResult.hpp>
 #include <merovingian/database/OAuthStore.hpp>
 #include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/PostgresqlStore.hpp>
+#include <merovingian/database/PreparedStatement.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -1676,6 +1682,257 @@ SCENARIO("PostgreSQL OAuth clients and sessions survive a reopen and a session g
                 auto again = reopen(uri);
                 REQUIRE(db::find_oauth_client(again.store, touched_id) == nullptr);
                 REQUIRE(db::find_oauth_client(again.store, client_id) != nullptr);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A scheduled message row with the ID "d-<id>-<suffix>" for `user`. Every row of the reopen scenario below starts as
+// this row, and a case that cares about another column sets it on the row returned.
+[[nodiscard]] auto delayed_event_row(std::string const& suffix, std::string const& room_id, std::string const& id,
+                                     std::string const& user) -> db::PersistentDelayedEvent
+{
+    auto row = db::PersistentDelayedEvent{};
+    row.delay_id = "d-" + id + "-" + suffix;
+    row.user_id = user;
+    row.device_id = "DEVICE";
+    row.room_id = room_id;
+    row.event_type = "m.room.message";
+    row.content_json = R"({"body":"two words \"quoted\""})";
+    row.delay_ms = 60'000U;
+    row.delayed_since_ms = 1'000U;
+    return row;
+}
+
+// Writes one row of each status through the store functions: a scheduled state event and a scheduled message with a
+// transaction ID for `alice`, a sent and a cancelled row for `alice`, and a failed row for `bob`. The state event takes
+// the largest delay and a large `delayed_since_ms`, so the numbers are proved to come back as the same values, and its
+// state key and appservice flag fill the columns that a message leaves empty.
+auto store_delayed_events_of_every_status(db::PersistentStore& store, std::string const& suffix,
+                                          std::string const& alice, std::string const& bob,
+                                          std::string const& room_id) -> void
+{
+    auto state = delayed_event_row(suffix, room_id, "state", alice);
+    state.is_state = true;
+    state.state_key = alice;
+    state.via_appservice = true;
+    state.delay_ms = db::max_delayed_event_delay_ms;
+    state.delayed_since_ms = 123'456'789U;
+    auto message = delayed_event_row(suffix, room_id, "message", alice);
+    message.txn_id = "txn-" + suffix;
+    REQUIRE(db::store_delayed_event(store, state));
+    REQUIRE(db::store_delayed_event(store, message));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "sent", alice)));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "cancelled", alice)));
+    REQUIRE(db::store_delayed_event(store, delayed_event_row(suffix, room_id, "failed", bob)));
+    REQUIRE(db::record_delayed_event_outcome(store, "d-sent-" + suffix, db::DelayedEventStatus::sent, 2000U,
+                                             "$sent-" + suffix, {}, 10U) == db::DelayedEventOutcomeResult::recorded);
+    REQUIRE(db::cancel_delayed_event(store, "d-cancelled-" + suffix, 2001U, 10U));
+    REQUIRE(db::record_delayed_event_outcome(store, "d-failed-" + suffix, db::DelayedEventStatus::failed, 2002U, {},
+                                             R"({"errcode":"M_FORBIDDEN","error":"nope"})",
+                                             10U) == db::DelayedEventOutcomeResult::recorded);
+}
+
+} // namespace
+
+// A delayed event must survive a restart, or a call's scheduled leave is lost (ADR-0824). This is the PostgreSQL twin
+// of the SQLite reopen scenario in `test_delayed_event_store.cpp`: PostgreSQL has its own loader, and its own text
+// columns and bound parameters, so the same round trip must be proved on it. One row of each status is written through
+// the store functions, the store is closed and opened again, and every column and index is read back. It needs a
+// database, so it is skipped, not failed, when `MEROVINGIAN_TEST_POSTGRESQL_URI` is not set.
+SCENARIO("PostgreSQL delayed events of every status survive a reopen with every column and index",
+         "[database][postgresql][integration][pg-behaviour][delayed-events]")
+{
+    GIVEN("a scheduled state event, a sent row, a cancelled row and a failed row of two users")
+    {
+        // This scenario needs a live PostgreSQL server. With no URI configured it ends here with a message. That is one
+        // passing assertion and no test of the store, so only a run that sets the URI, as the PostgreSQL CI job does,
+        // proves anything about the loader.
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = reopen(uri);
+        // The database is shared by every test and every run, so each ID carries a suffix that no other run uses. A row
+        // of another test can then never collide with these, and the counts below are the counts of these users alone.
+        auto const suffix = unique_suffix();
+        auto const alice = "@delayed-a-" + suffix + ":example.org";
+        auto const bob = "@delayed-b-" + suffix + ":example.org";
+        auto const room_id = "!delayed-" + suffix + ":example.org";
+        // The rows are written by a helper so that this scenario reads as what it proves: the write, the reopen, then
+        // every column and index read back.
+        store_delayed_events_of_every_status(opened.store, suffix, alice, bob, room_id);
+
+        // The first store is discarded before the second is opened, so every value below was read from the database and
+        // none from the memory that wrote it.
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = reopen(uri);
+            auto const& table = reopened.store.delayed_events;
+            auto const* held_state = table.find("d-state-" + suffix);
+            auto const* held_message = table.find("d-message-" + suffix);
+
+            THEN("every column is back and the indexes answer")
+            {
+                REQUIRE(held_state != nullptr);
+                REQUIRE(held_state->user_id == alice);
+                REQUIRE(held_state->device_id == "DEVICE");
+                REQUIRE(held_state->room_id == room_id);
+                REQUIRE(held_state->event_type == "m.room.message");
+                REQUIRE(held_state->is_state);
+                REQUIRE(held_state->state_key == alice);
+                REQUIRE(held_state->content_json == R"({"body":"two words \"quoted\""})");
+                REQUIRE(held_state->txn_id.empty());
+                REQUIRE(held_state->via_appservice);
+                REQUIRE(held_state->delay_ms == db::max_delayed_event_delay_ms);
+                REQUIRE(held_state->delayed_since_ms == 123'456'789U);
+                REQUIRE(held_state->status == db::DelayedEventStatus::scheduled);
+                REQUIRE(held_state->finalised_at_ms == 0U);
+                REQUIRE(held_message != nullptr);
+                REQUIRE_FALSE(held_message->is_state);
+                REQUIRE_FALSE(held_message->via_appservice);
+                REQUIRE(table.find("d-sent-" + suffix)->status == db::DelayedEventStatus::sent);
+                REQUIRE(table.find("d-sent-" + suffix)->event_id == "$sent-" + suffix);
+                REQUIRE(table.find("d-sent-" + suffix)->finalised_at_ms == 2000U);
+                REQUIRE(table.find("d-cancelled-" + suffix)->status == db::DelayedEventStatus::cancelled);
+                REQUIRE(table.find("d-failed-" + suffix)->status == db::DelayedEventStatus::failed);
+                REQUIRE(table.find("d-failed-" + suffix)->error_json == R"({"errcode":"M_FORBIDDEN","error":"nope"})");
+                REQUIRE(table.find_owned(bob, "d-failed-" + suffix) != nullptr);
+                REQUIRE(table.find_owned(alice, "d-failed-" + suffix) == nullptr);
+                REQUIRE(table.scheduled_count(alice) == 2U);
+                REQUIRE(table.finalised_count(alice) == 2U);
+                REQUIRE(table.finalised_count(bob) == 1U);
+                REQUIRE(table.earliest_due_ms_of_user(alice) == std::optional<std::uint64_t>{61'000U});
+                REQUIRE(table.find_by_transaction(alice, "DEVICE", room_id, "m.room.message", "txn-" + suffix) ==
+                        held_message);
+                REQUIRE(table.find_sent_by_event_id("$sent-" + suffix) == table.find("d-sent-" + suffix));
+            }
+
+            // A third open proves the DELETE reached the database, not just the mirror in `reopened`.
+            AND_THEN("deleting both users' rows removes them from the database as well")
+            {
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, alice));
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, bob));
+                auto again = reopen(uri);
+                REQUIRE(again.store.delayed_events.find("d-state-" + suffix) == nullptr);
+                REQUIRE(again.store.delayed_events.find("d-failed-" + suffix) == nullptr);
+                REQUIRE(again.store.delayed_events.scheduled_count(alice) == 0U);
+            }
+        }
+    }
+}
+
+// The loader reads a row strictly and skips one it cannot read exactly, never repairing it or guessing, because a delay
+// read as 0 would make a scheduled row due at once, which is sending early (ADR-0824). The damaged rows cannot be
+// written through the store functions, which refuse them, so they are inserted with raw SQL, as a damaged or foreign
+// database would hold them. Each case damages one column of an otherwise valid row, so the skipped count names the
+// case. The valid row proves the loader keeps going after a skip.
+SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactly and counts them",
+         "[database][postgresql][integration][pg-behaviour][delayed-events]")
+{
+    GIVEN("a valid scheduled row and rows with a damaged number or boolean, written with bound parameters")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const suffix = unique_suffix();
+        auto const user = "@strict-" + suffix + ":example.org";
+        // The shared database may already hold skipped rows from other tests, so the count is judged as a difference
+        // from what an open reports before these rows exist.
+        auto const baseline = reopen(uri).store.delayed_event_rows_skipped_at_load;
+
+        struct Damaged final
+        {
+            std::string_view name;
+            std::size_t column;
+            std::string_view value;
+        };
+        auto const cases = std::vector<Damaged>{
+            // Column 10 is `delay_ms`, column 11 is `delayed_since_ms` and column 5 is `is_state`. A number must be 1
+            // or more ASCII digits that fit 64 bits, a scheduled row's delay must be 1 to the 31 day maximum
+            // (2,678,400,000 ms), and a boolean must be exactly `true` or `false`.
+            {"not a number",          10U, "abc"                  },
+            {"empty",                 10U, ""                     },
+            {"negative",              10U, "-5"                   },
+            {"zero",                  10U, "0"                    },
+            {"over the maximum",      10U, "2678400001"           },
+            {"21 digits",             10U, "123456789012345678901"},
+            {"since not a number",    11U, "abc"                  },
+            {"a boolean holding yes", 5U,  "yes"                  },
+        };
+        auto const insert_raw = [&](std::string const& delay_id, std::size_t damaged_column,
+                                    std::string_view damaged_value) {
+            auto columns = std::vector<std::string>{delay_id,
+                                                    user,
+                                                    "DEVICE",
+                                                    "!strict-" + suffix + ":example.org",
+                                                    "m.room.message",
+                                                    "false",
+                                                    "",
+                                                    "{}",
+                                                    "",
+                                                    "false",
+                                                    "60000",
+                                                    "1000",
+                                                    "scheduled",
+                                                    "0",
+                                                    "",
+                                                    ""};
+            if (damaged_column < columns.size())
+            {
+                columns[damaged_column] = std::string{damaged_value};
+            }
+            auto statement = db::PreparedStatement{
+                "insert_raw_delayed_event",
+                "INSERT INTO delayed_events (delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
+                "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, "
+                "event_id, error_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
+                "$16)",
+                {}};
+            for (auto const& column : columns)
+            {
+                statement.parameters.push_back(db::BoundValue{column, false});
+            }
+            // Each row is committed through its own short-lived store, which is dropped at the end of the lambda, so
+            // the store under test has not seen any of them.
+            auto opened = reopen(uri);
+            return db::commit_persistent_transaction(opened.store, {statement});
+        };
+        // A column index past the end damages nothing, so this inserts the one valid row.
+        REQUIRE(insert_raw("d-strict-good-" + suffix, 99U, {}));
+        for (auto const& damaged : cases)
+        {
+            REQUIRE(insert_raw("d-strict-" + std::string{damaged.name} + "-" + suffix, damaged.column, damaged.value));
+        }
+
+        WHEN("the store is opened")
+        {
+            auto reopened = reopen(uri);
+
+            THEN("only the valid row is loaded and each damaged row is counted as skipped")
+            {
+                CHECK(reopened.store.delayed_events.find("d-strict-good-" + suffix) != nullptr);
+                CHECK(reopened.store.delayed_events.scheduled_count(user) == 1U);
+                CHECK(reopened.store.delayed_event_rows_skipped_at_load == baseline + cases.size());
+            }
+
+            // A skipped row is in the database and not in memory, and deactivation must still remove it (ADR-0824). The
+            // skipped count falling back to the baseline on the next open shows the DELETE reached the skipped rows.
+            AND_THEN("deleting the user's rows removes the skipped rows from the database as well")
+            {
+                REQUIRE(db::delete_delayed_events_of_user(reopened.store, user));
+                auto again = reopen(uri);
+                CHECK(again.store.delayed_event_rows_skipped_at_load == baseline);
+                CHECK(again.store.delayed_events.scheduled_count(user) == 0U);
             }
         }
     }

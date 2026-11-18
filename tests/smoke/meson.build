@@ -600,3 +600,25 @@ test(
     + '" | grep -q "current_version=0 target_version=2 steps=2"',
   ],
 )
+
+# Migration 003 (1.1.2): a plan from v2 takes the checked-in 003 file alone, and a plan from an empty database takes
+# all three (ADR-0778).
+test(
+  'db-migrate-plans-v2-to-v3-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 2 3 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=2 target_version=3 steps=1"',
+  ],
+)
+
+test(
+  'db-migrate-plans-empty-to-v3-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 0 3 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=0 target_version=3 steps=3"',
+  ],
+)

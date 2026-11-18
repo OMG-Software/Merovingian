@@ -587,6 +587,24 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.rtc.livekit.service_url");
     }
 
+    // Delayed events: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
+    if (current.server().delayed_events.enabled != next.server().delayed_events.enabled)
+    {
+        add_change(plan, "server.delayed_events.enabled");
+    }
+    if (current.server().delayed_events.max_delay_ms != next.server().delayed_events.max_delay_ms)
+    {
+        add_change(plan, "server.delayed_events.max_delay_ms");
+    }
+    if (current.server().delayed_events.max_scheduled_per_user != next.server().delayed_events.max_scheduled_per_user)
+    {
+        add_change(plan, "server.delayed_events.max_scheduled_per_user");
+    }
+    if (current.server().delayed_events.max_finalised_per_user != next.server().delayed_events.max_finalised_per_user)
+    {
+        add_change(plan, "server.delayed_events.max_finalised_per_user");
+    }
+
     // The OAuth 2.0 API: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
     if (current.server().oauth.enabled != next.server().oauth.enabled)
     {

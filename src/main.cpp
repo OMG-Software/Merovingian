@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/DeferredPduRetryJob.hpp"
+#include "merovingian/homeserver/DelayedEvents.hpp"
 #include "merovingian/homeserver/EmailPushJob.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
@@ -81,7 +82,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"1.1.1"};
+constexpr auto version = std::string_view{"1.1.2"};
 
 struct BootstrapConfigResult final
 {
@@ -931,6 +932,25 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sends the delayed events (MSC4140, ADR-0825) that have fallen due: at most one send per run, in its own hold of
+    // the runtime lock, and a run that left another event due waits `delayed_events_pace` (5 ms) with the lock free,
+    // as the profile propagation job does (ADR-0353). It also ages out finalised rows. Otherwise it sleeps until the
+    // earliest deadline (60 s at most, less the time the run took) and is woken when an earlier one is scheduled.
+    // It only ever touches `runtime`, which outlives this function. Declared after the pools so it is stopped and
+    // joined before them.
+    auto delayed_events_job = merovingian::homeserver::PeriodicJob{
+        "delayed-events", [&runtime](merovingian::homeserver::StopFlag const& stop) {
+            return merovingian::homeserver::run_delayed_events_job(runtime, stop);
+        }};
+    if (!delayed_events_job.start())
+    {
+        LOG_CRITICAL("Delayed events thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Sends a profile change to the rooms its request left (F-11, ADR-0353), taking the runtime lock
     // per room. It only ever touches `runtime`, which outlives this function. Declared after the
     // pools so it is stopped and joined before them.
@@ -1037,6 +1057,9 @@ struct ListenerBinding final
         runtime.homeserver.profile_propagation_wake = [&profile_propagation_job]() {
             profile_propagation_job.wake();
         };
+        runtime.homeserver.delayed_events_wake = [&delayed_events_job]() {
+            delayed_events_job.wake();
+        };
     }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
@@ -1109,8 +1132,12 @@ struct ListenerBinding final
         auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;
         runtime.homeserver.profile_propagation_wake = nullptr;
+        runtime.homeserver.delayed_events_wake = nullptr;
     }
     typing_expiry_job.stop();
+    // The wake hook is cleared above; a send in progress ends first (it makes no network call). Events still
+    // scheduled stay in the database and are sent by the next start (ADR-0825).
+    delayed_events_job.stop();
     // Rooms still queued are left for the user's next profile change (ADR-0353). One room's send ends
     // first; it makes no network call.
     profile_propagation_job.stop();
@@ -1229,6 +1256,14 @@ struct ListenerBinding final
 
     LOG_INFO("Listeners active; awaiting traffic. Send SIGINT or SIGTERM to stop.");
     auto runtime = std::move(runtime_result.runtime);
+    // Once per start-up: delayed-event rows hydration refused to read exactly are left in the database and never
+    // sent (ADR-0825). The count only; never a row's content, state key or any other column.
+    if (auto const skipped = runtime.homeserver.database.persistent_store.delayed_event_rows_skipped_at_load;
+        skipped != 0U)
+    {
+        LOG_WARNING("delayed_events.rows_skipped_at_load: " + std::to_string(skipped) +
+                    " delayed event rows were not read and stay in the database");
+    }
     // Wire federation callbacks and start the outbound dispatch worker now that
     // the runtime is in its final stable location (no further moves). Doing this
     // eagerly means thread-creation failure surfaces at startup with a clear log

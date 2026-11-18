@@ -3337,3 +3337,29 @@ is an absolute `https` URL with a host, no userinfo, query or fragment, no white
 every body is built with the JSON serializer, never by concatenating the URL into a string; and the server never
 fetches the URL, so it adds no outbound request and no SSRF path. Residual risk: an operator who points it at a service
 they do not control hands that service the OpenID tokens clients send it.
+
+### Delayed events (1.1.2, ADR-0823 to ADR-0826)
+
+New surface: nine routes (schedule, restart, cancel, send and look up, on the v1.20, `org.matrix.msc4140` and query
+forms), which need an access token; a table, `delayed_events`, of client-supplied event content held before it is
+sent; a background thread in the main process, the `delayed-events` job, that sends events with no request, a stored,
+deferred, server-initiated action; and four configuration keys, `server.delayed_events.*`. Threats and mitigations:
+(a) acting after losing the right to (left the room, power level lowered, account suspended, locked or deactivated): the
+event is authorised against the room state at send time through the ordinary send path, the job re-checks the account,
+and deactivation deletes the user's rows in the database always, so a skipped row does not outlive its account; the loader skips a row it cannot read (non-decimal numbers, unknown status or boolean text, a delay outside 1 to the maximum, a duplicate sent event ID) and never guesses, so a tampered or corrupt row cannot make an event go out early; (b) reading or driving another user's delayed event: the ID is 128 random bits,
+an identifier and never a credential, every use is authenticated, the lookup is by (user, ID), and an unknown and a
+foreign ID get an identical `404 M_NOT_FOUND`; (c) exhausting storage or memory: a per-user cap on scheduled events
+(the new one is refused, nothing is evicted), the 65,536-byte content limit, bounded retention of finalised rows
+(`max_finalised_per_user` and 7 days) and `max_delay_ms`; (d) exhausting the runtime lock or the room with a burst of
+due events: each run sends at most one due event, in its own lock hold, and while more are due it paces 5 ms with the lock free, so a backlog cannot starve requests; the scheduling and management rate limits and a per-user
+send-time rate limit; (e) write load from restarts: each restart is one small write, bounded by the per-user management
+rate limit; (f) an event sent early or twice: never early by construction, since the deadline is compared under the lock
+at send time, and at least once by decision, so a crash between the send and its record sends it once more after
+restart; (g) a request that carries the delay parameter being sent at once: the delayed branch is taken first and never
+falls through, including when the feature is disabled, and the other routes that send from the caller's body refuse the parameter with `400 M_INVALID_PARAM`, so no route sends at once a request that asked for a delay; (h) an application service: it manages a delayed event only by
+masquerading as a user in its namespace, as on every other route; (i) confidentiality: the content of a not-yet-sent or
+cancelled event is in the database and in memory for up to the retention period, and neither it nor the state key is
+ever logged; (j) the federation worker: it never reads the table and sends nothing. Residual risk: a duplicate event
+after a crash in the window between the send and its record, or when a `send` request throws after the event was stored (it has no catch, the event stays scheduled and can be sent again later); a wall clock stepped forwards brings deadlines forward by
+the step; a suspended account's delayed events fail rather than send, so the server does not end a suspended
+participant's call membership; the feature is on by default.

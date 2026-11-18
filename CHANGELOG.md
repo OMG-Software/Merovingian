@@ -3,6 +3,37 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.2
+
+## Features
+
+* Delayed events (MSC4140): schedule, restart, cancel, send and look up one, on the v1.20 paths, the
+  `org.matrix.msc4140` paths and `?org.matrix.msc4140.delay=` on `/send` and `/state` (ADR-0823).
+* `/versions` and `/capabilities` advertise delayed events (`org.matrix.msc4140`, `m.delayed_events`)
+  (ADR-0823).
+* A due delayed event is sent by the server as its user through the ordinary send path: authorised when sent,
+  never early, kept across a restart (ADR-0825).
+* Migration 003 adds the `delayed_events` table; finalised events are kept per user up to a bound and 7 days
+  (ADR-0824).
+* `server.delayed_events.enabled`, `max_delay_ms`, `max_scheduled_per_user` and `max_finalised_per_user`, with
+  built-in per-user rate limits (ADR-0826).
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* None.
+
+## Release notes
+
+Delayed events for MatrixRTC, on top of 1.1.1. 1.1.2 migrates the database: on first start it applies migration 003,
+which adds one empty table and changes no existing one. A 1.1.1 or older server refuses the migrated database, so
+back it up before upgrading if you may need to go back. The feature is on by default; setting
+`server.delayed_events.enabled = false` and restarting stops new scheduling, while events already scheduled are still
+sent and can still be managed. Operators running Element Call keep `max_delay_ms` at 3600000 or more.
+
 # Version 1.1.1
 
 ## Features

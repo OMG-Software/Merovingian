@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/DelayedEventRowText.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
@@ -1416,6 +1417,35 @@ namespace
                 if (row.size() >= 5U)
                 {
                     std::ignore = store.oauth.insert_session({row[0], row[1], row[2], row[3], parse_u64(row[4])});
+                }
+            }
+        }
+
+        // Migration 003 (ADR-0824): delayed events, main only (the federation worker sends no events). A row whose
+        // status text is not one of the four, that duplicates a delay ID, a transaction key or a sent event ID, or
+        // whose numbers or booleans are not exactly what the store writes, is skipped and counted, never repaired.
+        if (table_load_profile_includes("delayed_events", profile))
+        {
+            auto delayed = query_rows(connection, "postgresql_load_delayed_events",
+                                      "SELECT delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
+                                      "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, "
+                                      "finalised_at_ms, event_id, error_json FROM delayed_events ORDER BY delay_id");
+            if (!delayed.ok)
+            {
+                return false;
+            }
+            for (auto const& row : delayed.rows)
+            {
+                // Strict: a row that is not read exactly is skipped, left in the database and counted.
+                auto parsed = parse_delayed_event_row(row);
+                if (!parsed.has_value())
+                {
+                    ++store.delayed_event_rows_skipped_at_load;
+                    continue;
+                }
+                if (!store.delayed_events.insert(std::move(*parsed)))
+                {
+                    ++store.delayed_event_rows_skipped_at_load;
                 }
             }
         }

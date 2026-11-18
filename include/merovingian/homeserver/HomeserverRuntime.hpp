@@ -236,6 +236,9 @@ struct HomeserverRuntime final
     // clock that stands still, as two requests inside one millisecond see it,
     // or one stepped back. Always empty in production.
     std::optional<std::int64_t> test_frozen_event_clock_ms{};
+    // Test-only: when set, `delayed_event_now_ms` returns this (Unix ms) instead of the system clock, so a test moves
+    // the delayed events' clock (schedule, restart, due time) without sleeping. Always empty in production.
+    std::optional<std::uint64_t> test_delayed_event_clock_ms{};
     // Test-only: called by POST /rooms/{roomId}/upgrade once the replacement room exists and before the
     // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
     // request would (C21). Always empty in production.
@@ -283,6 +286,12 @@ struct HomeserverRuntime final
     // on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
     // before the thread is stopped.
     std::function<void()> typing_expiry_wake{};
+    // Wakes the "delayed-events" job (ADR-0825) so a deadline earlier than the job's current sleep is not missed. Set
+    // by the process entry point once that thread exists; null in tests, which call send_due_delayed_events
+    // directly. Called through wake_delayed_events with runtime.mutex held, so it must not block or wait for
+    // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
+    // before the thread is stopped.
+    std::function<void()> delayed_events_wake{};
     // Users whose profile change has rooms left to reach, with the index in database.rooms to
     // resume from (F-11, ADR-0353). No token and no event body: the job sends as the user and reads
     // the profile when it sends. In memory only: a restart leaves those rooms for the next profile

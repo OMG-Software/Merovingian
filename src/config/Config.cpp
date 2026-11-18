@@ -1036,6 +1036,17 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                 {std::string{key}, "must be a positive byte size no greater than " + std::to_string(maximum)});
         }
     };
+    validate_count("server.delayed_events.max_scheduled_per_user",
+                   config.server().delayed_events.max_scheduled_per_user, max_delayed_events_per_user);
+    validate_count("server.delayed_events.max_finalised_per_user",
+                   config.server().delayed_events.max_finalised_per_user, max_delayed_events_per_user);
+    if (config.server().delayed_events.max_delay_ms < min_delayed_event_delay_ms ||
+        config.server().delayed_events.max_delay_ms > max_delayed_event_delay_ms)
+    {
+        findings.push_back({"server.delayed_events.max_delay_ms",
+                            "must be between " + std::to_string(min_delayed_event_delay_ms) + " and " +
+                                std::to_string(max_delayed_event_delay_ms) + " milliseconds"});
+    }
     validate_count("server.client_api.max_sync_rooms", config.server().client_api.max_sync_rooms, 10000U);
     validate_count("server.client_api.max_sync_events_per_room", config.server().client_api.max_sync_events_per_room,
                    1000U);

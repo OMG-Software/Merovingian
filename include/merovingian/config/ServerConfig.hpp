@@ -4,6 +4,7 @@
 
 #include "merovingian/config/ClientApiConfig.hpp"
 #include "merovingian/config/CorsConfig.hpp"
+#include "merovingian/config/DelayedEventsConfig.hpp"
 #include "merovingian/config/EmailConfig.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/config/IdentityServerConfig.hpp"
@@ -40,6 +41,8 @@ struct ServerConfig final
     TurnServerConfig turn{};
     // MatrixRTC transport discovery (MSC4143). Empty by default: no transport is advertised (see RtcConfig).
     RtcConfig rtc{};
+    // Delayed events (MSC4140): on by default, with a maximum delay and per-user caps (see DelayedEventsConfig).
+    DelayedEventsConfig delayed_events{};
     // The built-in OAuth 2.0 API. Off by default (see OAuthConfig).
     OAuthConfig oauth{};
     // Identity Service API client config for 3PID invites/bind/unbind/

@@ -20,6 +20,7 @@ homeserver_sources = files(
   'DefaultPushRuleset.cpp',
   'DeferredPduRetry.cpp',
   'DeferredPduRetryJob.cpp',
+  'DelayedEvents.cpp',
   'EmailPush.cpp',
   'EmailPushJob.cpp',
   'PasswordReset.cpp',

@@ -993,6 +993,35 @@ namespace
         {
             server.rtc.livekit_service_url = std::string{value};
         }
+        // Delayed events (ADR-0826). validate() judges the ranges.
+        else if (key == "server.delayed_events.enabled")
+        {
+            if (!parse_bool_value(value, server.delayed_events.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.delayed_events.max_delay_ms")
+        {
+            if (!parse_u64_value(value, server.delayed_events.max_delay_ms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer millisecond value");
+            }
+        }
+        else if (key == "server.delayed_events.max_scheduled_per_user")
+        {
+            if (!parse_u32_value(value, server.delayed_events.max_scheduled_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
+            }
+        }
+        else if (key == "server.delayed_events.max_finalised_per_user")
+        {
+            if (!parse_u32_value(value, server.delayed_events.max_finalised_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
+            }
+        }
         else if (key == "server.turn.username")
         {
             server.turn.username = std::string{value};

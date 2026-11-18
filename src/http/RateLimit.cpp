@@ -40,6 +40,13 @@ namespace
         {
             return RateLimitPolicy{240U, 60U};
         }
+        // ADR-0826: a client polls and restarts a delayed event on a timer, so the management and lookup paths
+        // take a higher per-address cap than the generic tier.
+        if (starts_with(target, "/_matrix/client/v1/delayed_events/") ||
+            starts_with(target, "/_matrix/client/unstable/org.matrix.msc4140/delayed_events/"))
+        {
+            return RateLimitPolicy{3000U, 60U};
+        }
         return std::nullopt;
     }
 
@@ -192,6 +199,9 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                              {"/_matrix/client/v3/search", {20U, 60U}},
                              {"/_matrix/client/v1/media/thumbnail/", {240U, 60U}},
                              {"/_matrix/media/v3/thumbnail/", {240U, 60U}},
+                             // ADR-0826: management and lookup of a delayed event, both prefixes.
+                {"/_matrix/client/v1/delayed_events/", {3000U, 60U}},
+                             {"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/", {3000U, 60U}},
                              },
         .builtin_per_user =
             {
@@ -210,6 +220,12 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                 // report is a durable audit row, so each user is held to it (per user, normalised route).
                 {"/_matrix/client/v3/users/{userId}/report", {20U, 60U}},
                              {"/_matrix/client/v3/rooms/{roomId}/report/{eventId}", {20U, 60U}},
+                             // ADR-0826: a user restarts a delayed event about every 5 seconds per call, so 120 a
+                // minute is generous for management and lookup; scheduling is one request per call join.
+                {"/_matrix/client/v1/delayed_events/", {120U, 60U}},
+                             {"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/", {120U, 60U}},
+                             {"/_matrix/client/v3/rooms/{roomId}/delayed_event/", {60U, 60U}},
+                             {"/_matrix/client/unstable/org.matrix.msc4140/rooms/{roomId}/delayed_event/", {60U, 60U}},
                              },
         .default_per_ip = {600U, 60U},
     };

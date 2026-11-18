@@ -1833,6 +1833,41 @@ media-fetch-pool task.
   (CWE-359, ADR-0219).
   Source: `src/email/AGENTS.md`.
 
+## Delayed events
+
+- **A delayed event is authorised, and its account re-checked, when it is sent, never trusted from when it was
+  scheduled.** The job and the `send` action apply the account gate (deactivated, locked, suspended), the per-user rate
+  limit and the room authorisation of the ordinary send path at the moment of sending.
+  Why: the user may have left the room, lost power, been suspended or deactivated since the event was scheduled, and a
+  stored decision would let them act after losing the right to (CWE-285).
+  Source: `src/homeserver/AGENTS.md`; ADR-0825.
+
+- **A delay ID is an identifier, never a credential, and an unknown ID and another user's ID get an identical
+  answer.** Every use is authenticated and the lookup is by (user, ID); both cases answer `404 M_NOT_FOUND` with the
+  same body, byte for byte.
+  Why: a different answer for a foreign ID would tell a caller which IDs exist, and accepting the ID alone would let
+  whoever learns it drive another user's event (CWE-639).
+  Source: `src/homeserver/AGENTS.md`; ADR-0823.
+
+- **A request that carries `org.matrix.msc4140.delay` is never sent at once by any route.** The delayed branch is taken
+  before anything is sent, also when the feature is disabled; a route that does not honour the parameter refuses it with
+  `400 M_INVALID_PARAM`, and the name is percent-decoded before it is compared. A new route that sends an event from the
+  caller's body must refuse it the same way.
+  Why: a request that asked for a delay and was sent at once is an event the user did not mean to send yet, and an
+  encoded spelling must not slip past the check.
+  Source: `src/homeserver/AGENTS.md`; ADR-0823.
+
+- **Event content and state keys of delayed events are never logged.**
+  Why: a call membership's state key holds a device ID and the content is whatever the client supplied.
+  Source: `src/homeserver/AGENTS.md`; ADR-0825.
+
+- **A stored delayed-event row the loader cannot read is skipped, never repaired and never guessed.** The numeric
+  columns must be decimal digits, the status and booleans exactly the stored texts, a scheduled row's delay in range and
+  a sent row's event ID unclaimed; the number skipped is logged once. A new column gets its check in both loaders.
+  Why: a number read as 0 would make a scheduled row due at once, which is sending early, and a tampered row must not
+  decide when an event goes out.
+  Source: `src/database/AGENTS.md`; ADR-0824.
+
 ## Trust and safety
 
 - **Never hard-code moderation decisions — all rules come from config or an
@@ -2008,9 +2043,9 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
 | `src/oauth/AGENTS.md` | OAuth 2.0 API |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync |
+| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync; Delayed events |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
-| `src/database/AGENTS.md` | OAuth 2.0 API; Database |
+| `src/database/AGENTS.md` | OAuth 2.0 API; Database; Delayed events |
 | `migrations/AGENTS.md` | Database |
 | `src/config/AGENTS.md` | Secrets and logging |
 | `src/observability/AGENTS.md` | Secrets and logging |

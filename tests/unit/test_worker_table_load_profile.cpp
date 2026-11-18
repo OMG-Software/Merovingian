@@ -202,6 +202,9 @@ namespace
         // token checks run in main; the worker serves no client API.
         "oauth_clients",
         "oauth_sessions",
+        // ADR-0824: delayed events (migration 003). Main only: the federation worker sends no events and holds no
+        // signing key, so it never reads a scheduled event.
+        "delayed_events",
         // Vestigial: declared in src/database/Schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside
@@ -274,6 +277,7 @@ SCENARIO("The federation_worker load profile excludes every table outside the al
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("account_threepids", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("oauth_clients", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("oauth_sessions", profile));
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("delayed_events", profile));
         }
         AND_THEN("an arbitrary non-allowlisted table is excluded, proving this is a fail-closed allowlist "
                  "rather than a denylist")
