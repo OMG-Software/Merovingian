@@ -53,8 +53,10 @@ trap 'rm -rf "$work"' EXIT
 list() {
     output=$1
     shift
-    if ! "$binary" --list-test-names-only "$@" >"$work/raw" 2>"$work/error"; then
-        printf '%s\n' "$binary --list-test-names-only $* failed:" >&2
+    # Catch2 3 prints one name per line for --list-tests at quiet verbosity; it
+    # has no --list-test-names-only, which Catch2 2 had.
+    if ! "$binary" --list-tests --verbosity quiet "$@" >"$work/raw" 2>"$work/error"; then
+        printf '%s\n' "$binary --list-tests --verbosity quiet $* failed:" >&2
         cat "$work/error" >&2
         exit 2
     fi

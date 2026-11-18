@@ -42,7 +42,10 @@ while arguments:
         count = int(arguments.pop(0))
     elif argument == "--shard-index":
         index = int(arguments.pop(0))
-    elif argument != "--list-test-names-only":
+    elif argument == "--verbosity":
+        if arguments.pop(0) != "quiet":
+            sys.exit("the fake lists names only at quiet verbosity, as Catch2 3 does")
+    elif argument != "--list-tests":
         filter_spec = argument
 if (here / "BROKEN").exists():
     import os
