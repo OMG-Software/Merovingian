@@ -279,12 +279,13 @@ the `package.sha256` the results record, and its `/usr/bin/merovingian-server` t
 
 ## Rolling latest packages
 
-Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
-That workflow rebuilds packages for all supported platforms, replaces the
-rolling `latest` GitHub prerelease, and uploads fresh package checksums. Its jobs are skipped on a pull request
-push and build in the merge queue and by hand, so a package that cannot build is caught before the
-merge. A failed check that the ruleset does not require, such as `NetBSD package`, does not block the merge; it blocks
-staging, signing and publishing `latest` ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)):
+Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml). That workflow rebuilds packages for all
+supported platforms, replaces the rolling `latest` GitHub prerelease, and uploads fresh package checksums. Its jobs are
+skipped on a pull request push and build in the merge queue and by hand, so a package that cannot build is caught before
+the merge, once the merge queue is turned on in the "Protect main" ruleset. Until the owner turns it on, a pull request
+merges after the core gate alone and the packages first build on the push to `main`. A failed check that the ruleset
+does not require, such as `NetBSD package`, does not block the merge; it blocks staging, signing and publishing `latest`
+([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)):
 
 | Artifact | Job |
 |---|---|
@@ -382,7 +383,11 @@ without deleting anything when the two have diverged, `main` no longer holds the
 published commit, the newer tag has no release, or anything about the release or
 its tag cannot be read. It looks the tag up on its own, because `gh release
 create` would reuse a tag left behind by a deleted release; such a tag is
-compared like any other and removed before the new release is created.
+compared like any other. The tag is the record of what is published, so the
+step never deletes it: it deletes the old release, moves the tag to its own
+commit (or makes it, on a first publish), then creates the release on that
+tag. If any of those steps fails, the tag still names the newest commit
+published or being published, and an older run stops at it.
 
 A publish that a later one cancelled while it waited can leave `latest` behind
 `main`'s newest build; re-run that run's `publish-latest`, or let the next push

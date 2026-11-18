@@ -32,25 +32,34 @@ ends the job successfully, but only while `main` still holds the published commi
 fails once a reset of `main` has removed it or when the tag is left without a release (nothing would ever publish
 again); anything else (`diverged`, an empty answer, a failed call) fails the job without deleting anything. The tag is
 looked up on its own, not through the release: `gh release create` reuses an existing tag whatever `--target` says, so a
-tag left behind by a deleted release is compared like any other and, once this run is shown to be the same commit or
-newer, deleted before the release is created. A release whose tag is gone fails the job, as does any answer about the
-release other than "found" or a 404.
+tag left behind by a deleted release is compared like any other. The tag is the watermark of what is published and is
+never deleted: the step deletes the old release, keeping its tag, then moves the tag to this run's commit with the git
+refs API (or makes it, on a first publish), then creates the release on it with `--verify-tag`. Deleting the tag with
+the release instead would let a failed creation erase it: an older queued run would then find neither and publish as if
+`latest` had never existed, moving it backwards. With the tag kept, that run stops at the `behind` path, which fails a
+tag that has no release. A release whose tag is gone fails the job, as does any answer about the release other than
+"found" or a 404.
 
 Rejected:
 
 * **A workflow-level group that cancels older runs.** It would cancel the package builds, which are the checks every push
   to `main` reports, and a tag's run (`release.yml` calls this workflow) would share the group. GitHub also does not
   promise that runs enter a group in push order, so the group alone cannot tell which run is newer.
+* **`queue: max` on the job's group.** It would keep a newer commit's publish waiting instead of cancelled, but GitHub
+  documents it only for a workflow-level group; see Consequences.
 * **Run numbers or times.** A re-run of an older run gets a later time, and run order is not commit order; only the
   commit graph says which build is newer.
 
 ## Consequences
 
-* A group holds at most one pending job: one that arrives while another waits cancels the waiting one, and GitHub does
-  not promise that jobs arrive in push order. A slow build of an older commit can therefore cancel a newer commit's
-  waiting publish and then publish itself. `latest` never goes backwards (the older build is still newer than what it
-  replaces), but it can lag behind `main` until the next push, or until a maintainer re-runs the cancelled
-  `publish-latest`, which then sees itself `ahead` and publishes. No setting queues more than one pending job.
+* With the default `queue: single`, a group holds at most one pending job: one that arrives while another waits cancels
+  the waiting one, and GitHub does not promise that jobs arrive in push order. A slow build of an older commit can
+  therefore cancel a newer commit's waiting publish and then publish itself. `latest` never goes backwards (the older
+  build is still newer than what it replaces), but it can lag behind `main` until the next push, or until a maintainer
+  re-runs the cancelled `publish-latest`, which then sees itself `ahead` and publishes. GitHub's `queue: max` keeps up
+  to 100 pending entries instead, which would remove the lag; it is not used because GitHub documents it only on a
+  workflow-level group, and an unsupported key on this job-level group would fail `packages.yml` on every push to
+  `main`. The ancestry check keeps either setting safe, so adopting it needs only a run that shows the job accepts it.
 * A force-push to `main` that rewrites the published commit, or a reset of `main` behind it, makes every later publish
   fail until a maintainer recovers: wait for any `publish-latest` in progress, delete `latest` (with
   `gh release delete latest --cleanup-tag` when the release exists, or the tag's ref alone when only the tag is left),

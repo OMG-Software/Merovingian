@@ -84,8 +84,13 @@ def write_fake_gh(path: Path) -> None:
         "#!/bin/sh\n"
         'printf \'%s\\n\' "$*" >> "$GH_LOG"\n'
         'case "$1 $2" in\n'
-        '  "release delete"|"release create") exit 0 ;;\n'
-        '  "api -X") [ "$3 $4" = "DELETE repos/owner/repo/git/refs/tags/latest" ] || exit 98 ;;\n'
+        '  "release delete") exit 0 ;;\n'
+        '  "release create") [ "$FAKE_CREATE" != FAIL ] || exit 1 ;;\n'
+        '  "api -X")\n'
+        '    case "$3 $4" in\n'
+        '      "PATCH repos/owner/repo/git/refs/tags/latest"|"POST repos/owner/repo/git/refs") ;;\n'
+        "      *) exit 98 ;;\n"
+        "    esac ;;\n"
         '  "api repos/"*/releases/tags/latest)\n'
         '    case "$FAKE_RELEASE" in\n'
         "      1) echo 42 ;;\n"
@@ -231,20 +236,20 @@ class PackagesWorkflowTests(unittest.TestCase):
         published = "a" * 40
         # Each case: whether main holds this run's commit, release ("1" exists, "0" a 404, "ERR" another
         # failure), tag ("1", "0" or "FAIL"), the commit the tag names ("FAIL" a failed call), its comparison with
-        # this run and with main, then the exit status and what the step may do: publish, delete the release,
-        # delete a leftover tag.
+        # this run and with main, then the exit status and what the step may do: publish, delete the release, and
+        # move the tag to this run's commit or make it. The tag is never deleted.
         cases = (
-            ("nothing published yet", "ahead", "0", "0", "", "", "", 0, "publish"),
-            ("this run is newer", "ahead", "1", "1", published, "ahead", "", 0, "publish delete-release"),
-            ("this run is main's tip", "identical", "1", "1", published, "ahead", "", 0, "publish delete-release"),
-            ("a re-run of the same commit", "ahead", "1", "1", published, "identical", "", 0, "publish delete-release"),
+            ("nothing published yet", "ahead", "0", "0", "", "", "", 0, "publish make-tag"),
+            ("this run is newer", "ahead", "1", "1", published, "ahead", "", 0, "publish delete-release move-tag"),
+            ("this run is main's tip", "identical", "1", "1", published, "ahead", "", 0, "publish delete-release move-tag"),
+            ("a re-run of the same commit", "ahead", "1", "1", published, "identical", "", 0, "publish delete-release move-tag"),
             ("this run is older, main holds the newer", "ahead", "1", "1", published, "behind", "ahead", 0, ""),
             ("this run is older, main is at the newer", "ahead", "1", "1", published, "behind", "identical", 0, ""),
             ("main was reset behind the published commit", "ahead", "1", "1", published, "behind", "behind", 1, ""),
             ("histories diverged", "ahead", "1", "1", published, "diverged", "", 1, ""),
             ("published commit unreadable", "ahead", "1", "1", "", "ahead", "", 1, ""),
             ("published commit lookup fails", "ahead", "1", "1", "FAIL", "ahead", "", 1, ""),
-            ("a leftover tag, this run newer", "ahead", "0", "1", published, "ahead", "", 0, "publish delete-tag"),
+            ("a leftover tag, this run newer", "ahead", "0", "1", published, "ahead", "", 0, "publish move-tag"),
             ("a leftover tag, this run older", "ahead", "0", "1", published, "behind", "ahead", 1, ""),
             ("a release without its tag", "ahead", "1", "0", "", "", "", 1, ""),
             ("release lookup fails", "ahead", "ERR", "0", "", "", "", 1, ""),
@@ -253,7 +258,11 @@ class PackagesWorkflowTests(unittest.TestCase):
             ("this run's history was discarded", "diverged", "1", "1", published, "ahead", "", 1, ""),
             ("this run's history was discarded, nothing published", "diverged", "0", "0", "", "", "", 1, ""),
             ("main's answer about this run is unreadable", "", "1", "1", published, "ahead", "", 1, ""),
+            # The release is gone and the tag already moved when creating the new one fails: the job fails, and the
+            # tag left at this run's commit is what stops an older run (the leftover-tag case above).
+            ("the new release cannot be created", "ahead", "1", "1", published, "ahead", "", 1, "publish delete-release move-tag"),
         )
+        create_fails = {"the new release cannot be created"}
         for name, build_on_main, release, tag, commit, status, on_main, want_exit, want in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
@@ -271,6 +280,7 @@ class PackagesWorkflowTests(unittest.TestCase):
                     "FAKE_STATUS": status,
                     "FAKE_ON_MAIN": on_main,
                     "FAKE_BUILD_ON_MAIN": build_on_main,
+                    "FAKE_CREATE": "FAIL" if name in create_fails else "",
                 }
 
                 # WHEN the step runs.
@@ -288,11 +298,22 @@ class PackagesWorkflowTests(unittest.TestCase):
                 if created:
                     done.add("publish")
                     self.assertIn(f"--target {this_commit}", created[0])
-                if any(call.startswith("release delete latest") for call in calls):
+                    self.assertIn("--verify-tag", created[0])
+                deleted = [call for call in calls if call.startswith("release delete latest")]
+                if deleted:
                     done.add("delete-release")
-                if "api -X DELETE repos/owner/repo/git/refs/tags/latest" in calls:
-                    done.add("delete-tag")
+                    self.assertNotIn("--cleanup-tag", deleted[0])
+                moved = f"api -X PATCH repos/owner/repo/git/refs/tags/latest -f sha={this_commit} -F force=true --silent"
+                made = f"api -X POST repos/owner/repo/git/refs -f ref=refs/tags/latest -f sha={this_commit} --silent"
+                if moved in calls:
+                    done.add("move-tag")
+                if made in calls:
+                    done.add("make-tag")
+                self.assertFalse([call for call in calls if call.startswith("api -X DELETE")], calls)
                 self.assertEqual(done, set(want.split()), calls)
+                # The release goes first, then the tag moves, then the release is created on it.
+                order = [call for call in calls if call in (moved, made) or call in deleted or call in created]
+                self.assertEqual(order, deleted + [call for call in calls if call in (moved, made)] + created, calls)
                 # The first call is the check that main holds this run's commit.
                 self.assertEqual(calls[:1], [f"api repos/owner/repo/compare/{this_commit}...main --jq .status"])
                 if build_on_main in ("ahead", "identical") and tag == "1" and commit not in ("", "FAIL"):

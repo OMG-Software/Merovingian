@@ -69,10 +69,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   so a child that made only allowed calls no longer fails the `tsan` job at random (ADR-0852).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
   publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
+* Publishing `latest` moves its tag instead of deleting it, so a failed publish can no longer let an older queued build
+  replace a newer one (ADR-0850).
 * The scenarios that race a request against a password hash pause the hash until the other request is made, so a slow
   runner can no longer make them fail, or pass without testing the race (ADR-0851).
 * The test-only local router runs inbound federation without `runtime.mutex`, as the server does, so its PDU sink no
   longer refuses every transaction's PDUs for a held lock (ADR-0848).
+* The directory, profile, device keys, user devices and one-time-key claim federation providers take `runtime.mutex`
+  themselves, as the other store readers do, so main never reads its store unlocked through them (ADR-0711).
 
 ## Release notes
 

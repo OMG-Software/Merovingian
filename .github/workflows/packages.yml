@@ -1152,18 +1152,28 @@ jobs:
             echo "::error::the latest release has no tag, so the commit it was built from is unknown"
             exit 1
           fi
+          # The tag is the record of what is published, so it is moved, never
+          # deleted: the release goes first and keeps its tag, then the tag
+          # moves to this run's commit (or is made, on a first publish), then
+          # the release is created on it. A failure at any step leaves the tag
+          # at the newest commit published or being published, so an older
+          # queued run stops at the checks above instead of finding nothing
+          # and publishing as if latest had never existed.
           if [ "${release}" = true ]; then
             gh release delete latest \
               --repo "${REPOSITORY}" \
-              --yes \
-              --cleanup-tag
-          elif [ "${tags}" != 0 ]; then
-            # A tag left without its release, already shown to be this run's
-            # commit or older: remove it, or the new release would reuse it.
-            gh api -X DELETE "repos/${REPOSITORY}/git/refs/tags/latest"
+              --yes
+          fi
+          if [ "${tags}" != 0 ]; then
+            gh api -X PATCH "repos/${REPOSITORY}/git/refs/tags/latest" \
+              -f sha="${GITHUB_SHA}" -F force=true --silent
+          else
+            gh api -X POST "repos/${REPOSITORY}/git/refs" \
+              -f ref=refs/tags/latest -f sha="${GITHUB_SHA}" --silent
           fi
           gh release create latest \
             --repo "${REPOSITORY}" \
+            --verify-tag \
             --target "${GITHUB_SHA}" \
             --prerelease \
             --title "Latest ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
