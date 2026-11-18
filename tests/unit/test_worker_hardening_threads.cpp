@@ -170,6 +170,30 @@ auto report(int fd, std::string const& text) -> void
            decision.reason;
 }
 
+// ThreadSanitizer runs a background thread of its own, and starts it again in a
+// forked child, so a child's task count includes a thread no production process
+// has. The scenarios that count tasks skip under it; the other jobs run them.
+#if defined(__SANITIZE_THREAD__)
+constexpr bool tsan_build = true;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+constexpr bool tsan_build = true;
+#else
+constexpr bool tsan_build = false;
+#endif
+#else
+constexpr bool tsan_build = false;
+#endif
+
+// Marks a scenario that counts a child's tasks skipped under ThreadSanitizer.
+auto skip_task_count_under_tsan() -> void
+{
+    if (tsan_build)
+    {
+        SKIP("ThreadSanitizer adds its own background thread to the child's task count");
+    }
+}
+
 // Marks the scenario skipped (never passed) when the child reported SKIP.
 auto skip_if_reported(std::string const& report_text) -> void
 {
@@ -184,6 +208,7 @@ auto skip_if_reported(std::string const& report_text) -> void
 SCENARIO("Worker seccomp hardening confines a thread that existed before it was applied",
          "[platform][seccomp][iso1][tsync][worker_hardening][linux]")
 {
+    skip_task_count_under_tsan();
     GIVEN("a process that has already logged and already has a second thread, as the logger's writers once were")
     {
         WHEN("the worker hardening sequence is applied and the earlier thread then tries to execve")
@@ -246,6 +271,7 @@ SCENARIO("Worker seccomp hardening confines a thread that existed before it was 
 SCENARIO("Logging before hardening starts no thread, so Landlock and seccomp cover every logger thread",
          "[platform][seccomp][landlock][iso1][worker_hardening][linux]")
 {
+    skip_task_count_under_tsan();
     GIVEN("a directory the worker may read and a master key file outside it")
     {
         auto const base = merovingian::tests::unique_temporary_path("merovingian-iso1-hardening-test", "");

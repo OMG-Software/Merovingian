@@ -722,3 +722,5 @@
 * [0845 - The integration binary runs as four Catch2 shards with one fixed seed](0845-the-integration-binary-runs-as-four-catch2-shards-with-one-fixed-seed.md)
 * [0846 - One coverage build feeds the Sonar scan, and Codecov uploads from its own job](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)
 * [0847 - clang-tidy gates only the lines a change adds or edits](0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)
+* [0848 - PDU ingestion refuses a caller that holds the runtime mutex](0848-pdu-ingestion-refuses-a-caller-that-holds-the-runtime-mutex.md)
+* [0849 - SRV lookups on glibc own their resolver state and serialise its setup](0849-srv-lookups-on-glibc-own-their-resolver-state-and-serialise-its-setup.md)

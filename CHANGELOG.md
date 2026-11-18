@@ -53,6 +53,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   moves to the next mirror on a bad file; the guest tries the cached packages alone before any mirror (ADR-0844).
 * A failed Codecov upload fails the `codecov` job instead of the required `coverage` check; its report is kept 30 days
   so the job can be re-run alone (ADR-0846). `coverage.yml` grants its permissions per job, none to the workflow.
+* PDU ingestion refuses a caller that holds the runtime lock: it would take the room's lock in the reverse order and
+  could deadlock against an ingest of the same room (ADR-0848).
+* SRV lookups on glibc each own their resolver state, set up and torn down under a lock that ThreadSanitizer can see;
+  the query itself stays unlocked (ADR-0849).
+* Tests no longer read what a mock server's thread recorded before joining it, count concurrent discovery calls
+  atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
+* The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
+  TSan's own interceptor and background thread make what they check unobservable.
 
 ## Release notes
 

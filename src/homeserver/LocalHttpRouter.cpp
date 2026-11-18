@@ -6084,6 +6084,16 @@ auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
+    // ADR-0848: ingestion takes the room stripe and then runtime.mutex, and with the stripe held it releases
+    // runtime.mutex and takes it again (the missing-history fetch, the commit of an event that writes no shared row).
+    // A caller holding runtime.mutex would take the stripe under it, the reverse order: against an ingest of the same
+    // room waiting to take runtime.mutex back, each thread waits for the other's lock. Refused rather than repaired by
+    // releasing the caller's lock here, which would invalidate whatever the caller read under it.
+    if (runtime.mutex.held_by_current_thread())
+    {
+        LOG_ERROR("PDU ingestion refused: the caller holds runtime.mutex; event_id=" + envelope.event_id);
+        return {federation::PduIngestionStatus::internal_error, "PDU ingestion called with runtime.mutex held"};
+    }
     auto result = federation::PduIngestionResult{};
     try
     {

@@ -828,19 +828,26 @@ namespace
 
 namespace
 {
-// AddressSanitizer intercepts mlock and munlock and locks nothing, and a zero
+// AddressSanitizer and ThreadSanitizer both intercept mlock and munlock (the
+// interceptors are sanitizer_common's) and lock nothing, and a zero
 // RLIMIT_MEMLOCK then never makes a lock fail. Kernel lock state is not
-// observable under it, so the scenarios that inspect it are skipped there.
+// observable under either, so the scenarios that inspect it are skipped there.
+// The name is the one the skip message carries, which tests/expected_skips.json
+// matches per job; it is empty when no sanitizer intercepts mlock.
 #if defined(__SANITIZE_ADDRESS__)
-constexpr auto address_sanitizer_active = true;
+constexpr auto mlock_intercepted_by = std::string_view{"AddressSanitizer"};
+#elif defined(__SANITIZE_THREAD__)
+constexpr auto mlock_intercepted_by = std::string_view{"ThreadSanitizer"};
 #elif defined(__has_feature)
 #if __has_feature(address_sanitizer)
-constexpr auto address_sanitizer_active = true;
+constexpr auto mlock_intercepted_by = std::string_view{"AddressSanitizer"};
+#elif __has_feature(thread_sanitizer)
+constexpr auto mlock_intercepted_by = std::string_view{"ThreadSanitizer"};
 #else
-constexpr auto address_sanitizer_active = false;
+constexpr auto mlock_intercepted_by = std::string_view{};
 #endif
 #else
-constexpr auto address_sanitizer_active = false;
+constexpr auto mlock_intercepted_by = std::string_view{};
 #endif
 
 [[nodiscard]] auto mapping_is_locked([[maybe_unused]] void const* address) -> bool
@@ -871,9 +878,9 @@ constexpr auto address_sanitizer_active = false;
 
 SCENARIO("Live secret allocations remain independently locked", "[core][crypto][cry4]")
 {
-    if (address_sanitizer_active)
+    if (!mlock_intercepted_by.empty())
     {
-        SKIP("AddressSanitizer's mlock locks nothing, so kernel lock state is not observable");
+        SKIP(mlock_intercepted_by << "'s mlock locks nothing, so kernel lock state is not observable");
     }
     GIVEN("two live small secret allocations")
     {
@@ -898,9 +905,9 @@ SCENARIO("Live secret allocations remain independently locked", "[core][crypto][
 
 SCENARIO("Derived keys and their copies occupy locked allocations", "[crypto][cry4]")
 {
-    if (address_sanitizer_active)
+    if (!mlock_intercepted_by.empty())
     {
-        SKIP("AddressSanitizer's mlock locks nothing, so kernel lock state is not observable");
+        SKIP(mlock_intercepted_by << "'s mlock locks nothing, so kernel lock state is not observable");
     }
     GIVEN("master material for all key purposes")
     {
@@ -938,9 +945,9 @@ SCENARIO("Derived keys and their copies occupy locked allocations", "[crypto][cr
 #if defined(__linux__)
 SCENARIO("Signing box cache fails closed when its key copy cannot be locked", "[crypto][cry4-cache]")
 {
-    if (address_sanitizer_active)
+    if (!mlock_intercepted_by.empty())
     {
-        SKIP("AddressSanitizer's mlock never fails, so a locked-memory limit cannot be exercised");
+        SKIP(mlock_intercepted_by << "'s mlock never fails, so a locked-memory limit cannot be exercised");
     }
     GIVEN("a secure master file with a warmed signing-box cache")
     {

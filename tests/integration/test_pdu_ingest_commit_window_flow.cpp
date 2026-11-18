@@ -32,6 +32,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>
@@ -292,6 +293,94 @@ SCENARIO("A local state write cannot land inside a federated state event's commi
                 REQUIRE(restarted_row == memory_row);
             }
         }
+        std::filesystem::remove(path);
+    }
+}
+
+// ADR-0848: ingestion takes a room stripe and then runtime.mutex, and releases and re-takes runtime.mutex with the
+// stripe held. A caller that already holds runtime.mutex would take the stripe under it, the reverse order, and can
+// deadlock against an ingest of the same room; ThreadSanitizer reported that inversion from a test that did so.
+SCENARIO("PDU ingestion refuses a caller that holds runtime.mutex", "[integration][pdu_ingestion][lock_order]")
+{
+    GIVEN("a room where a remote member may join")
+    {
+        auto const path = (std::filesystem::temp_directory_path() /
+                           ("merovingian-ingest-lock-order-" +
+                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3"))
+                              .string();
+        auto started = std::optional<merovingian::homeserver::ClientServerStartResult>{};
+        started.emplace(merovingian::homeserver::start_client_server(commit_window_config(path)));
+        REQUIRE(started->started);
+        auto& runtime = started->runtime;
+        auto& homeserver = runtime.homeserver;
+        merovingian::homeserver::wire_federation_callbacks(homeserver);
+        auto& store = homeserver.database.persistent_store;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("owner", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@owner:example.org"},"password":"CorrectHorse7!","device_id":"OWNER"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = *string_member(parse_object(login.response.body), "access_token");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","room_version":"12"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = *string_member(parse_object(create.response.body), "room_id");
+
+        auto const alice = std::string{"@alice:remote.example.org"};
+        auto const power_levels =
+            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
+        auto const join_rules =
+            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.join_rules", "");
+        auto const tips = merovingian::database::find_forward_extremities(store, room_id);
+        auto join_content = merovingian::canonicaljson::Object{};
+        join_content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const join_id = std::string{"$lock-order-alice-join"};
+        auto const join = make_envelope(room_id, join_id, "m.room.member", alice, alice, std::move(join_content), tips,
+                                        {power_levels, join_rules}, max_depth(store, tips) + 1U, now_ms());
+
+        WHEN("the PDU is ingested by a thread that holds runtime.mutex")
+        {
+            auto const refused = [&] {
+                auto const lock = merovingian::homeserver::RuntimeLock{homeserver.mutex};
+                return merovingian::homeserver::ingest_pdu_event(homeserver, join);
+            }();
+            auto const is_stored = [&] {
+                auto const lock = merovingian::homeserver::RuntimeLock{homeserver.mutex};
+                return store.events.find(join_id) != store.events.end();
+            };
+            auto const stored_after_refusal = is_stored();
+
+            THEN("it is refused and nothing is stored")
+            {
+                REQUIRE(refused.status == merovingian::federation::PduIngestionStatus::internal_error);
+                REQUIRE_FALSE(stored_after_refusal);
+            }
+
+            AND_WHEN("the same PDU is ingested with runtime.mutex released")
+            {
+                auto const accepted = merovingian::homeserver::ingest_pdu_event(homeserver, join);
+                auto const stored_after_acceptance = is_stored();
+
+                THEN("it is accepted")
+                {
+                    CAPTURE(accepted.reason);
+                    REQUIRE(accepted.status == merovingian::federation::PduIngestionStatus::accepted);
+                    REQUIRE(stored_after_acceptance);
+                }
+            }
+        }
+        started.reset();
         std::filesystem::remove(path);
     }
 }
