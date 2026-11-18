@@ -32,7 +32,9 @@
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LiveKitTokenService.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -455,6 +457,10 @@ namespace
         {
             return R"({"type":"membership_template_ingest_result","found":true,"reason":"{\"errcode\":\"M_UNKNOWN\",\"error\":\"main at per-channel in-flight cap\"}","error_status":503})";
         }
+        if (type == "livekit_token_ingest")
+        {
+            return R"({"type":"livekit_token_ingest_result","status":503,"response_body":"{\"errcode\":\"M_UNKNOWN\",\"error\":\"main at per-channel in-flight cap\"}"})";
+        }
         return R"({"type":"error","status":503,"reason":"main at per-channel in-flight cap"})";
     }
 
@@ -615,6 +621,17 @@ namespace
     auto serialize_device_keys_query_ingest_result(std::string_view response_body) -> std::string
     {
         auto body = std::string{R"({"type":"device_keys_query_ingest_result","response_body":)"};
+        body += json_str(response_body);
+        body += '}';
+        return body;
+    }
+
+    // `status` and `response_body` are the HTTP answer the worker gives the requesting server as it stands.
+    auto serialize_livekit_token_ingest_result(std::uint16_t status, std::string_view response_body) -> std::string
+    {
+        auto body = std::string{R"({"type":"livekit_token_ingest_result","status":)"};
+        body += std::to_string(status);
+        body += R"(,"response_body":)";
         body += json_str(response_body);
         body += '}';
         return body;
@@ -1304,6 +1321,37 @@ auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::st
     return serialize_device_keys_query_ingest_result(response_body);
 }
 
+auto handle_livekit_token_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                         ipc::IpcChannel& receiving_channel) -> std::string
+{
+    // The token is signed with the LiveKit secret, which no worker holds, so the worker relays the verified request
+    // and main decides it (ADR-0831). Admitted only for the origin main verified AND the one permit main gave the
+    // request (GHSA-3p5v-vrg8-f545, ADR-0595); main judges nothing the frame says beyond that.
+    auto const request_body = json_get_str(request_json, "request_body");
+    auto const origin = json_get_str(request_json, "origin");
+    auto const parent_request_id = ipc::ipc_json_get_u64(request_json, "parent_request_id");
+    auto const digest = federation::worker_relay_digest(federation::WorkerRelayKind::livekit_token, request_body);
+    auto result = OperationResult{};
+    {
+        auto guard = RuntimeLock{runtime.mutex};
+        if (origin.empty() || !receiving_channel.matches_pending_origin(parent_request_id, origin) ||
+            !worker_relay_admitted(receiving_channel, request_json, digest, "livekit_token_ingest"))
+        {
+            return serialize_livekit_token_ingest_result(
+                403U, matrix_error("M_FORBIDDEN", "the token request is not one this server forwarded"));
+        }
+        result = issue_federation_livekit_token(runtime, origin, request_body);
+    }
+    if (result.ok)
+    {
+        return serialize_livekit_token_ingest_result(result.status, result.value);
+    }
+    auto const errcode = result.errcode.empty() ? std::string_view{"M_UNKNOWN"} : std::string_view{result.errcode};
+    return serialize_livekit_token_ingest_result(
+        result.status, result.retry_after_ms > 0U ? matrix_error(errcode, result.reason, result.retry_after_ms)
+                                                  : matrix_error(errcode, result.reason));
+}
+
 auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
                                          ipc::IpcChannel& receiving_channel) -> std::string
 {
@@ -1620,6 +1668,16 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
                             ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json, *ch));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "livekit_token_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_livekit_token_ingest_request(runtime_, json, *ch));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));

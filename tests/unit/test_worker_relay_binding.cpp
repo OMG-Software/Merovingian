@@ -83,6 +83,44 @@ SCENARIO("a verified request yields the one relay permit its route can cause", "
     }
 }
 
+SCENARIO("a verified LiveKit token request yields one permit over its body, on either POST path",
+         "[unit][ghsa-3p5v][relay-binding][livekit]")
+{
+    REQUIRE(sodium_init() >= 0);
+
+    GIVEN("a token request body")
+    {
+        auto const body = std::string{R"({"room_id":"!r:hs.example","slot_id":"s","member":{"id":"m"}})"};
+
+        WHEN("the permits are computed for the stable and the unstable path, and for routes that are not one")
+        {
+            auto const stable =
+                verified_request_relay_digests("POST", "/_matrix/federation/v1/rtc/livekit/get_token", body);
+            auto const unstable = verified_request_relay_digests(
+                "POST", "/_matrix/federation/unstable/io.element.msc4195/rtc/livekit/get_token", body);
+            auto const get =
+                verified_request_relay_digests("GET", "/_matrix/federation/v1/rtc/livekit/get_token", body);
+            auto const other = verified_request_relay_digests("POST", "/_matrix/federation/v1/rtc/livekit/other", body);
+
+            THEN("each POST path has one livekit_token permit over the body, and a GET or another path has none")
+            {
+                auto const expected = std::vector<std::string>{digest_of(WorkerRelayKind::livekit_token, body)};
+                CHECK(stable == expected);
+                CHECK(unstable == expected);
+                CHECK(get.empty());
+                CHECK(other.empty());
+            }
+
+            THEN("the permit is not one of another kind over the same body")
+            {
+                REQUIRE(stable.size() == 1U);
+                CHECK(stable.front() != digest_of(WorkerRelayKind::device_keys_query, body));
+                CHECK(stable.front() != digest_of(WorkerRelayKind::otk_claim, body));
+            }
+        }
+    }
+}
+
 SCENARIO("a relay digest depends on the relay's kind and its whole argument", "[unit][ghsa-3p5v][relay-binding]")
 {
     REQUIRE(sodium_init() >= 0);

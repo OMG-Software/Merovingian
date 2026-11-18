@@ -8,6 +8,7 @@ sync_sources = files(
   'ReadMarkers.cpp',
   'ReceiptContentBuilder.cpp',
   'ReceiptVisibility.cpp',
+  'ResolvedState.cpp',
   'RoomAccess.cpp',
   'RoomReadAccess.cpp',
   'StateGroupLookup.cpp',

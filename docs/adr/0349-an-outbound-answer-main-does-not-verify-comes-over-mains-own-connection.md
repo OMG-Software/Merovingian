@@ -65,6 +65,7 @@ signed material.
 | `federation.backfill.state_ids_failed` | the IDs name the state a later event is judged against | no (the PDUs they lead to are verified, the choice of IDs is not) | direct |
 | `timestamp_to_event.ask` | the event ID and timestamp decide which event is offered | no (the event is verified, the choice is not) | direct |
 | `space_hierarchy.fetch` | room summaries shown to the client | no | direct |
+| `livekit.relay` | relays a LiveKit token and SFU URL from the server the client named; a 403/400 is relayed | no | direct |
 | `room.join.remote.make_join_failed` | keeps the template's `prev_events`, `auth_events`, `depth`, content | no | direct |
 | `room.join.remote.send_join_failed` | state and auth chain, and the status | per event only | direct |
 | `room.leave.remote.make_leave_failed` | template; a 403/404 ends an invite locally | no | direct |

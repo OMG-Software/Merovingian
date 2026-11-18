@@ -98,6 +98,8 @@
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LegacyAuthPolicy.hpp"
+#include "merovingian/homeserver/LiveKitDelegations.hpp"
+#include "merovingian/homeserver/LiveKitTokenService.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -180,6 +182,7 @@
 #include "merovingian/sync/PreparedRoomEventFilter.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
 #include "merovingian/sync/ReceiptVisibility.hpp"
+#include "merovingian/sync/ResolvedState.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
 #include "merovingian/sync/RoomListResult.hpp"
@@ -866,6 +869,18 @@ namespace
             canonicaljson::Object{
                                   canonicaljson::make_member("type", canonicaljson::Value{std::string{"livekit"}}),
                                   canonicaljson::make_member("livekit_service_url", canonicaljson::Value{service_url}),
+                                  }
+        };
+    }
+
+    // The MatrixRTC transport entry for this server's own SFU (MSC4195; ADR-0829): `type` and `url`, nothing else.
+    [[nodiscard]] auto livekit_sfu_transport_json(std::string const& type, std::string const& sfu_url)
+        -> canonicaljson::Value
+    {
+        return canonicaljson::Value{
+            canonicaljson::Object{
+                                  canonicaljson::make_member("type", canonicaljson::Value{type}),
+                                  canonicaljson::make_member("url", canonicaljson::Value{sfu_url}),
                                   }
         };
     }
@@ -4187,6 +4202,11 @@ namespace
             "/_matrix/client/v3/voip/turnServer",
             "/_matrix/client/v1/rtc/transports",
             "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
+            "/_matrix/client/v1/rtc/livekit/get_token",
+            "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",
+            "/_matrix/client/v1/rtc/livekit/delegate_delayed_leave",
+            "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave",
+            "/_merovingian/livekit/webhook",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
             "/_matrix/client/v3/devices",
@@ -4227,80 +4247,85 @@ namespace
             std::string_view allow;
         };
         static constexpr auto routes = std::to_array<StaticRouteMethods>({
-            {"/_matrix/client/v3/admin/safety/reports",                                     "GET, POST"       },
-            {"/_matrix/client/v3/admin/safety/policy_rules",                                "GET, POST, PUT"  },
-            {"/_matrix/client/v3/pushrules/",                                               "GET"             },
-            {"/_matrix/client/v3/pushrules/global/",                                        "GET"             },
-            {"/_matrix/client/v3/sync",                                                     "GET"             },
-            {"/_matrix/client/v4/sync",                                                     "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                            "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                 "GET, POST"       },
-            {"/_matrix/client/v3/publicRooms",                                              "GET, POST"       },
-            {"/_matrix/client/v3/register/available",                                       "GET"             },
-            {"/_matrix/client/v1/register/m.login.registration_token/validity",             "GET"             },
-            {"/_matrix/client/v3/register/email/requestToken",                              "POST"            },
-            {"/_matrix/client/v3/register/msisdn/requestToken",                             "POST"            },
-            {"/_matrix/client/v3/register",                                                 "POST"            },
-            {"/_matrix/client/v3/login",                                                    "GET, POST"       },
-            {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
-            {"/_matrix/client/v1/login/get_token",                                          "POST"            },
-            {"/_matrix/client/v3/refresh",                                                  "POST"            },
-            {"/_matrix/client/v3/logout",                                                   "POST"            },
-            {"/_matrix/client/v3/logout/all",                                               "POST"            },
-            {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
-            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
-            {"/_merovingian/oauth2/register",                                               "POST"            },
-            {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
-            {"/_merovingian/oauth2/token",                                                  "POST"            },
-            {"/_merovingian/oauth2/revoke",                                                 "POST"            },
-            {"/_merovingian/oauth2/device",                                                 "POST"            },
-            {"/_merovingian/oauth2/link",                                                   "GET, POST"       },
-            {"/_merovingian/account",                                                       "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
-            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
-            {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
-            {"/_matrix/client/v3/account/password/msisdn/requestToken",                     "POST"            },
-            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken", "POST"            },
-            {"/_matrix/client/v3/account/whoami",                                           "GET"             },
-            {"/_matrix/client/v3/account/password",                                         "POST"            },
-            {"/_matrix/client/v3/account/deactivate",                                       "POST"            },
-            {"/_matrix/client/v3/account/3pid",                                             "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/add",                                         "POST"            },
-            {"/_matrix/client/v3/account/3pid/bind",                                        "POST"            },
-            {"/_matrix/client/v3/account/3pid/unbind",                                      "POST"            },
-            {"/_matrix/client/v3/account/3pid/delete",                                      "POST"            },
-            {"/_matrix/client/v3/pushers",                                                  "GET"             },
-            {"/_matrix/client/v3/pushers/set",                                              "POST"            },
-            {"/_matrix/client/v3/notifications",                                            "GET"             },
-            {"/_matrix/client/v3/capabilities",                                             "GET"             },
-            {"/_matrix/client/v3/keys/changes",                                             "GET"             },
-            {"/_matrix/client/v3/keys/claim",                                               "POST"            },
-            {"/_matrix/client/v3/keys/device_signing/upload",                               "POST"            },
-            {"/_matrix/client/v3/keys/query",                                               "POST"            },
-            {"/_matrix/client/v3/keys/signatures/upload",                                   "POST"            },
-            {"/_matrix/client/v3/keys/upload",                                              "POST"            },
-            {"/_matrix/client/v3/thirdparty/protocols",                                     "GET"             },
-            {"/_matrix/client/v3/thirdparty/location",                                      "GET"             },
-            {"/_matrix/client/v3/thirdparty/user",                                          "GET"             },
-            {"/_matrix/media/v3/config",                                                    "GET"             },
-            {"/_matrix/media/v3/upload",                                                    "POST"            },
-            {"/_matrix/media/v1/create",                                                    "POST"            },
-            {"/_matrix/media/v3/preview_url",                                               "GET"             },
-            {"/_matrix/client/v1/media/config",                                             "GET"             },
-            {"/_matrix/client/v1/media/upload",                                             "POST"            },
-            {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
-            {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
-            {"/_matrix/client/v1/rtc/transports",                                           "GET"             },
-            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                  "GET"             },
-            {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
-            {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
-            {"/_matrix/client/v3/devices",                                                  "GET"             },
-            {"/_matrix/client/v3/delete_devices",                                           "POST"            },
-            {"/_matrix/client/v3/createRoom",                                               "POST"            },
-            {"/_matrix/client/v3/joined_rooms",                                             "GET"             },
-            {"/_matrix/client/v1/mutual_rooms",                                             "GET"             },
-            {"/_matrix/client/v3/user_directory/search",                                    "POST"            },
-            {"/_matrix/client/v3/search",                                                   "POST"            },
+            {"/_matrix/client/v3/admin/safety/reports",                                        "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                                   "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                                  "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                                           "GET"             },
+            {"/_matrix/client/v3/sync",                                                        "GET"             },
+            {"/_matrix/client/v4/sync",                                                        "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                               "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                    "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                                 "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                                          "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity",                "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                                 "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                                "POST"            },
+            {"/_matrix/client/v3/register",                                                    "POST"            },
+            {"/_matrix/client/v3/login",                                                       "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                                          "GET"             },
+            {"/_matrix/client/v1/login/get_token",                                             "POST"            },
+            {"/_matrix/client/v3/refresh",                                                     "POST"            },
+            {"/_matrix/client/v3/logout",                                                      "POST"            },
+            {"/_matrix/client/v3/logout/all",                                                  "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                               "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                      "GET"             },
+            {"/_merovingian/oauth2/register",                                                  "POST"            },
+            {"/_merovingian/oauth2/authorize",                                                 "GET, POST"       },
+            {"/_merovingian/oauth2/token",                                                     "POST"            },
+            {"/_merovingian/oauth2/revoke",                                                    "POST"            },
+            {"/_merovingian/oauth2/device",                                                    "POST"            },
+            {"/_merovingian/oauth2/link",                                                      "GET, POST"       },
+            {"/_merovingian/account",                                                          "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",                             "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                            "POST"            },
+            {"/_matrix/client/v3/account/password/email/requestToken",                         "POST"            },
+            {"/_matrix/client/v3/account/password/msisdn/requestToken",                        "POST"            },
+            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken",    "POST"            },
+            {"/_matrix/client/v3/account/whoami",                                              "GET"             },
+            {"/_matrix/client/v3/account/password",                                            "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                                          "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                                "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                                            "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                                           "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                                         "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                                         "POST"            },
+            {"/_matrix/client/v3/pushers",                                                     "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                                 "POST"            },
+            {"/_matrix/client/v3/notifications",                                               "GET"             },
+            {"/_matrix/client/v3/capabilities",                                                "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                                "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                                  "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                                  "POST"            },
+            {"/_matrix/client/v3/keys/query",                                                  "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                                      "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                                 "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                                        "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                                         "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                                             "GET"             },
+            {"/_matrix/media/v3/config",                                                       "GET"             },
+            {"/_matrix/media/v3/upload",                                                       "POST"            },
+            {"/_matrix/media/v1/create",                                                       "POST"            },
+            {"/_matrix/media/v3/preview_url",                                                  "GET"             },
+            {"/_matrix/client/v1/media/config",                                                "GET"             },
+            {"/_matrix/client/v1/media/upload",                                                "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                                           "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                                             "GET"             },
+            {"/_matrix/client/v1/rtc/transports",                                              "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                     "GET"             },
+            {"/_matrix/client/v1/rtc/livekit/get_token",                                       "POST"            },
+            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",              "POST"            },
+            {"/_matrix/client/v1/rtc/livekit/delegate_delayed_leave",                          "POST"            },
+            {"/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave", "POST"            },
+            {"/_merovingian/livekit/webhook",                                                  "POST"            },
+            {"/_matrix/client/v3/room_keys/version",                                           "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                                              "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                                     "GET"             },
+            {"/_matrix/client/v3/delete_devices",                                              "POST"            },
+            {"/_matrix/client/v3/createRoom",                                                  "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                                "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                                "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                                       "POST"            },
+            {"/_matrix/client/v3/search",                                                      "POST"            },
         });
         auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
         return row == routes.end() ? std::string_view{} : row->allow;
@@ -5918,60 +5943,46 @@ namespace
         });
     }
 
-    // ADR-0819: the IDs of the state events that make a joined room's state at `position` differ from its state at
-    // `since_ordering`, for `state_after`. A key can change with no event of the window about it (state resolution can
-    // move it back), so this compares the two states; it does not list the window's state events.
+    // ADR-0827: a joined room's resolved state as of `position`, which is what a `state_after` client is told and what
+    // a later delta is measured from. Rebuilt from the current state and the state change log; where the log does not
+    // reach `position` (at or before start-up, or past what it holds for the room) it is the state ADR-0247 reads, and
+    // a delta from such a position is never taken, so the two cannot disagree.
+    [[nodiscard]] auto resolved_state_event_ids_at_position(database::PersistentStore const& store,
+                                                            std::string_view room_id, std::uint64_t position)
+        -> std::vector<std::string>
+    {
+        if (auto ids = sync::resolved_state_at(store, room_id, position); ids.has_value())
+        {
+            return std::move(*ids);
+        }
+        return state_event_ids_at_position(store, room_id, position);
+    }
+
+    // ADR-0827: the IDs of the state events that make a joined room's resolved state at `position` differ from its
+    // resolved state at `since_ordering`, the state the response carrying that token told the client. Both are read
+    // from the one record of changes, so the delta is exact whatever the event graph: a fork at `since`, a key state
+    // resolution moved back, and a backfilled event ordered at or below `since` (its change is filed above every
+    // position already answered) are all found, and a key that changed and changed back is not sent.
     //
-    // Cost: nothing for a room with no event since `since` (one look at the newest row). Otherwise the anchor at
-    // `since` is a binary search of the room's index plus the withheld rows stepped over below it, however many rows
-    // the window holds (`state_anchor_rows_examined`). With an unforked graph, then the state group rows between the
-    // two points, none for a window of messages. Otherwise (a fork, a snapshot between the points, an unreadable chain)
-    // it reads the room's state twice, its own rows only.
+    // Cost: the room's changes above `since` and one lookup by key for each key they name; nothing for a window of
+    // messages. Only a `since` the log does not cover (answered before start-up, or older than what the log holds for
+    // the room) reads the room's whole state, once: an update the client already holds is harmless.
     [[nodiscard]] auto joined_state_changes(database::PersistentStore const& store, std::string_view room_id,
                                             std::uint64_t since_ordering, std::uint64_t position)
         -> std::vector<std::string>
     {
-        auto newest_first = store.events.room_in_stream_order(room_id) | std::views::reverse;
-        if (std::ranges::empty(newest_first) || (*newest_first.begin()).stream_ordering <= since_ordering)
+        if (auto changes = sync::resolved_state_changes(store, room_id, since_ordering, position); changes.has_value())
         {
+            return std::move(*changes);
+        }
+        auto newest_first = store.events.room_in_stream_order(room_id) | std::views::reverse;
+        if ((std::ranges::empty(newest_first) || (*newest_first.begin()).stream_ordering <= since_ordering) &&
+            !store.state_change_log.has_change_after(room_id, since_ordering))
+        {
+            // Nothing happened in the room since `since`, in this process or as far as its events show.
             return {};
         }
-        auto const access = sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U};
-        auto const* const since_anchor = sync::state_anchor_event(store, room_id, access, since_ordering);
-        auto const since_group = since_anchor == nullptr
-                                     ? std::optional<std::string>{}
-                                     : database::find_event_state_group(store, since_anchor->event_id);
-        if (since_group.has_value())
-        {
-            // With one extremity the current state is that event's recorded state (ADR-0064). The forward extremity
-            // index answers for one room: it costs that room's tips.
-            auto const tips = store.forward_extremities.tips_of_room(room_id);
-            if (tips.size() == 1U)
-            {
-                auto const tip = store.events.find(tips.front());
-                auto const tip_group = tip != store.events.end() && tip->stream_ordering <= position
-                                           ? database::find_event_state_group(store, tip->event_id)
-                                           : std::optional<std::string>{};
-                if (tip_group.has_value())
-                {
-                    if (auto changes = sync::state_changes_along_chain(store, *since_group, *tip_group);
-                        changes.has_value())
-                    {
-                        return std::move(*changes);
-                    }
-                }
-            }
-        }
-        auto changes = state_event_ids_at_position(store, room_id, position);
-        // A `since` older than anything recorded here gets all of it: an update the client already holds is harmless.
-        if (since_anchor != nullptr)
-        {
-            if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
-            {
-                remove_state_held(changes, *held);
-            }
-        }
-        return changes;
+        return resolved_state_event_ids_at_position(store, room_id, position);
     }
 
     // Whether a timeline carries the join of `user_id`: the join then tells the client everything the spec's "own
@@ -6049,6 +6060,15 @@ namespace
                                                 std::string_view sender, UnreadableMember unreadable)
         -> std::optional<std::string>
     {
+        // ADR-0827: a joined room's member as of `position` is the resolved one, as its `state_after` delta reads it.
+        if (access.kind == sync::RoomReadKind::current)
+        {
+            if (auto const resolved = sync::resolved_state_event_at(store, room_id, "m.room.member", sender, position);
+                resolved.has_value())
+            {
+                return resolved->empty() ? std::optional<std::string>{} : std::optional<std::string>{*resolved};
+            }
+        }
         auto const current = database::find_current_state_event_id(store, room_id, "m.room.member", sender);
         if (current.has_value())
         {
@@ -6403,8 +6423,9 @@ namespace
     // news was dropped (ADR-0658).
     [[nodiscard]] auto select_sync_rooms(ClientServerRuntime const& rt, database::PersistentStore const& store,
                                          std::string_view user, sync::SyncFilter const& filter, bool incremental,
-                                         std::uint64_t since_ordering, std::uint64_t since_sync_stream_id,
-                                         AccountDataByRoom const& user_account_data) -> std::vector<LocalRoom const*>
+                                         bool use_state_after, std::uint64_t since_ordering,
+                                         std::uint64_t since_sync_stream_id, AccountDataByRoom const& user_account_data)
+        -> std::vector<LocalRoom const*>
     {
         struct Candidate final
         {
@@ -6436,6 +6457,12 @@ namespace
                 auto const& room_id = candidate.room->room_id;
                 if (candidate.activity > since_ordering ||
                     room_typing_stream_id_for(rt.homeserver, room_id) > since_sync_stream_id)
+                {
+                    return false;
+                }
+                // ADR-0827: state resolution can change a room's state with no event above `since` (a backfilled
+                // event's change is filed above every position answered); `state_after` reports it. One lookup.
+                if (use_state_after && store.state_change_log.has_change_after(room_id, since_ordering))
                 {
                     return false;
                 }
@@ -6665,14 +6692,13 @@ namespace
                 {
                     ids->clear();
                 }
-                else if (auto const* const since_anchor =
-                             sync::state_anchor_event(store, request.room_id, request.access, *delta_since);
-                         since_anchor != nullptr)
+                else if (auto const held = sync::resolved_state_at(store, request.room_id, *delta_since);
+                         held.has_value())
                 {
-                    if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
-                    {
-                        remove_state_held(*ids, *held);
-                    }
+                    // ADR-0827: the user was joined at `since`, so the client holds the resolved state it was told
+                    // then. A `since` the log does not cover gets the whole readable state: an update it already
+                    // holds is harmless.
+                    remove_state_held(*ids, *held);
                 }
             }
             auto selector = std::optional<LazyRoomSelector>{};
@@ -7037,6 +7063,9 @@ namespace
         // holds nothing above it, or the next sync, starting from it, would
         // deliver that event again.
         auto const sync_position = visible_stream_position(rt.homeserver.database);
+        // ADR-0827: a state change recorded after this is filed above `sync_position`, so the state a `state_after`
+        // client is told as of it never changes afterwards.
+        store.state_change_log.note_served(sync_position);
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
@@ -7081,8 +7110,9 @@ namespace
         // rows, not by walking every room on the server; an incremental sync leaves out a room that cannot have news
         // without charging it to max_sync_rooms; and when more rooms remain than the cap the most recently active are
         // served.
-        auto const served_rooms = select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state,
-                                                    since_ordering, since_sync_stream_id, user_account_data);
+        auto const served_rooms =
+            select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state, use_state_after,
+                              since_ordering, since_sync_stream_id, user_account_data);
 
         for (auto const* const served_room : served_rooms)
         {
@@ -7200,8 +7230,10 @@ namespace
                 // filter hides lies before `next_batch`, and no later sync would report it.
                 if (state_path)
                 {
-                    state_events =
-                        build_state_events_at_position(store, filter.room.state, room.room_id, sync_position, lazy_ref);
+                    // ADR-0827: the resolved state as of the position, the baseline of the next delta.
+                    state_events = build_state_events_array_for_ids(
+                        store, filter.room.state,
+                        resolved_state_event_ids_at_position(store, room.room_id, sync_position), lazy_ref);
                 }
                 else
                 {
@@ -15847,6 +15879,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 json_member("org.matrix.msc4186", json_bool(true)),
                                 json_member("org.matrix.msc4143", json_bool(true)),
                                 json_member("org.matrix.msc4143.stable", json_bool(true)),
+                                // MSC4195 (ADR-0829): the token routes are served only with the built-in service.
+                                json_member("org.matrix.msc4195",
+                                            json_bool(!rt.homeserver.config.server().rtc.token_service.url.empty())),
+                                json_member("org.matrix.msc4195.stable",
+                                            json_bool(!rt.homeserver.config.server().rtc.token_service.url.empty())),
                                 // MSC4140 (ADR-0823): both flags say whether scheduling is on.
                                 json_member("org.matrix.msc4140", json_bool(rt.limits.delayed_events_enabled)),
                                 json_member("org.matrix.msc4140.stable", json_bool(rt.limits.delayed_events_enabled)),
@@ -17394,6 +17431,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (req.method == "POST")
         {
             return DispatchResult{DispatchResult::Status::complete, handle_oauth_revoke(rt, req), {}};
+        }
+    }
+    // POST /_merovingian/livekit/webhook: LiveKit's signed webhook (ADR-0833). LiveKit holds no access token, so it is
+    // answered before the access-token gate; with the built-in token service off the path is not served, so it is 404
+    // whatever the method. Another method falls through to the 405 gate. LiveKitDelegations.cpp authenticates it; an
+    // authenticated event at most brings a delegation's check forward.
+    if (request_path == livekit_webhook_path)
+    {
+        if (rt.homeserver.config.server().rtc.token_service.url.empty())
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            auto const now_seconds = static_cast<std::int64_t>(delayed_event_now_ms(rt.homeserver) / 1000U);
+            auto answer = receive_livekit_webhook(rt, req, now_seconds);
+            if (!answer.ok)
+            {
+                return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+            }
+            return dispatch_resp(req, rt, 200U, std::move(answer.value));
         }
     }
     // POST /_merovingian/oauth2/device (spec "Device authorization grant", RFC 8628 section 3.1) and GET and POST
@@ -20148,17 +20206,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v1/rtc/transports and its unstable MSC4143 path: where the operator's MatrixRTC
-    // authorisation service is (ADR-0822). The two differ in the property name and in what they answer when no
-    // service is configured, as the reference server's do.
+    // authorisation service is (ADR-0822), or the SFU this server issues tokens for itself (ADR-0829). The two differ
+    // in the property name and in what they answer when nothing is configured, as the reference server's do.
     if (req.method == "GET" && (request_path == "/_matrix/client/v1/rtc/transports" ||
                                 request_path == "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports"))
     {
         auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url;
+        auto const& sfu_url = rt.homeserver.config.server().rtc.token_service.url;
         auto const stable = request_path == "/_matrix/client/v1/rtc/transports";
         auto transports = canonicaljson::Array{};
         if (!service_url.empty())
         {
             transports.push_back(livekit_transport_json(service_url));
+        }
+        else if (!sfu_url.empty())
+        {
+            // A `url` and no `livekit_service_url`: released Element Call then asks this server's get_token route.
+            // MSC4195's stable type `m.livekit` is listed beside it on the stable path only; released clients read
+            // only `livekit`.
+            transports.push_back(livekit_sfu_transport_json("livekit", sfu_url));
+            if (stable)
+            {
+                transports.push_back(livekit_sfu_transport_json("m.livekit", sfu_url));
+            }
         }
         if (!stable && transports.empty())
         {
@@ -20168,6 +20238,33 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({
                                  json_member(stable ? "transports" : "rtc_transports", json_arr(std::move(transports))),
                              })));
+    }
+
+    // POST /_matrix/client/{v1,unstable/io.element.msc4195}/rtc/livekit/get_token: a LiveKit token for this server's
+    // SFU (MSC4195; ADR-0829). LiveKitTokenService.cpp judges the request; this only answers.
+    if (req.method == "POST" && (request_path == "/_matrix/client/v1/rtc/livekit/get_token" ||
+                                 request_path == "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token"))
+    {
+        auto answer = issue_client_livekit_token(rt, req, *user, guard);
+        if (!answer.ok)
+        {
+            return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+        }
+        return dispatch_resp(req, rt, 200U, std::move(answer.value));
+    }
+    // POST /_matrix/client/{v1,unstable/io.element.msc4195}/rtc/livekit/delegate_delayed_leave: hand this server the
+    // caller's delayed leave, to be restarted while LiveKit shows them and sent once it does not (MSC4195; ADR-0832).
+    // LiveKitDelegations.cpp judges the request and makes no network call; this only answers.
+    if (req.method == "POST" &&
+        (request_path == "/_matrix/client/v1/rtc/livekit/delegate_delayed_leave" ||
+         request_path == "/_matrix/client/unstable/io.element.msc4195/rtc/livekit/delegate_delayed_leave"))
+    {
+        auto answer = delegate_livekit_delayed_leave(rt, req.body, *user);
+        if (!answer.ok)
+        {
+            return dispatch_err(req, rt, answer.status, answer.errcode, answer.reason, answer.retry_after_ms);
+        }
+        return dispatch_resp(req, rt, 200U, std::move(answer.value));
     }
 
     // Delayed events (MSC4140, ADR-0823): S1 and S2 schedule, M1 to M3 manage and G1 and G2 look up. The listing

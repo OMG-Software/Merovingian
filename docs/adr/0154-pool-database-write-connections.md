@@ -48,3 +48,8 @@ copies of it; `bootstrap_local_database` applies `database.pool_size` through
   a fresh connection dying mid-transaction always did.
 * A replaced SQLite file is not reopened by pooled handles until restart (they keep the file they
   opened, which is also what the DB-10 no-follow checks protected).
+
+## Links
+
+* Refined by [ADR-0834](0834-sqlite-writes-share-one-pooled-connection.md): SQLite writes use one pooled connection,
+  because the busy timeout does not absorb contention between this process's own connections.

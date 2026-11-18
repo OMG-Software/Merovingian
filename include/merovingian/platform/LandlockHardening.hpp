@@ -65,7 +65,9 @@ inline constexpr int k_landlock_max_known_abi = 6;
 // Every non-empty secret file path in `config` the worker must never be able
 // to open: the master key, both TLS private keys, main's database URI file,
 // the worker's own database URI file (delivered over an fd, never opened),
-// the registration token file, and the SMTP password file (ADR-0220).
+// the registration token file, the SMTP password file (ADR-0220), the TURN
+// shared secret file, the LiveKit API secret file (ADR-0830: only main signs
+// LiveKit tokens) and every appservice registration file.
 [[nodiscard]] auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<std::string>;
 
 // Returns the first rule whose path is, or is an ancestor directory of, one

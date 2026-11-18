@@ -823,8 +823,8 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         auto const held = current.find(key);
         if (held == current.end() || held->second != entry.event_id)
         {
-            if (!database::store_state(store,
-                                       {std::string{room_id}, entry.event_type, entry.state_key, entry.event_id}))
+            if (!database::store_state(store, {std::string{room_id}, entry.event_type, entry.state_key, entry.event_id},
+                                       causing_stream_ordering))
             {
                 return {CurrentStateRecomputeStatus::write_failed, {}, {}};
             }
@@ -847,7 +847,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         removed_keys.emplace_back(std::move(row.event_type), std::move(row.state_key));
     }
     if ((!removed_keys.empty() || !corrections.empty()) &&
-        !database::remove_current_state_rows(store, room_id, removed_keys, corrections))
+        !database::remove_current_state_rows(store, room_id, removed_keys, corrections, causing_stream_ordering))
     {
         return {CurrentStateRecomputeStatus::write_failed, {}, {}};
     }
@@ -1195,7 +1195,7 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
     database::apply_forward_extremities_update(store, room_id, event_id, bookkeeping.replaced_extremities);
     for (auto const& change : current_state_changes)
     {
-        database::apply_current_state(store, change);
+        database::apply_current_state(store, change, prepared_event->event.stream_ordering);
     }
     if (resolution.refusal.has_value())
     {

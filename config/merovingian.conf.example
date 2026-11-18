@@ -120,8 +120,22 @@ server.http.ipv6_client_prefix_length=64
 # server.turn.shared_secret_file=/etc/merovingian/turn-secret
 # server.turn.ttl_seconds=86400
 
-# MatrixRTC group calls (optional)
-# The HTTPS URL of an lk-jwt-service (Element's LiveKit authorisation service) that you run beside a LiveKit SFU.
+# MatrixRTC group calls (optional). Choose one of the two ways below; setting both is refused.
+#
+# 1. The built-in token service (MSC4195; restart required). This server hands each caller joined to a room a
+# LiveKit token for your LiveKit SFU, so you run LiveKit only. Set all four of url, api_url, api_key and
+# api_secret_file, or none; a partial set is refused.
+# The SFU address clients connect to: wss, a host, no query or fragment, no trailing slash.
+# server.rtc.livekit.url=wss://livekit.example.org
+# Where this server calls LiveKit's room service: https, or http only to 127.0.0.1 or [::1].
+# server.rtc.livekit.api_url=https://livekit.example.org
+# server.rtc.livekit.api_key=APIexamplekey
+# An owner-only (0400) file holding the API secret, at least 32 bytes, read for each token and never kept.
+# server.rtc.livekit.api_secret_file=/etc/merovingian/livekit-secret
+# How long a token can be used to join: 60s to 3600s.
+# server.rtc.livekit.token_lifetime=3600s
+#
+# 2. An external lk-jwt-service (Element's LiveKit authorisation service) that you run beside a LiveKit SFU.
 # This server never contacts it: it only tells authenticated clients, and the /.well-known/matrix/client
 # document, where it is. Empty means no group-call transport is advertised. Reloadable.
 # Clients append /sfu/get or /get_token to it, so write it with no trailing slash and no query: a URL ending in /

@@ -19,6 +19,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `DelayedEventStore.cpp` | The delayed-event store functions and their caps (`max_delayed_event_id_bytes` 64, `max_delayed_event_content_bytes` 65,536, `max_delayed_event_error_bytes` 1,024, `max_delayed_event_field_bytes` 255, `max_delayed_event_delay_ms` 31 days): store, restart, cancel, record the outcome of a send, delete a user's rows, prune by age. Finalising evicts the user's oldest finalised rows in the same transaction (ADR-0824, ADR-0825) |
 | `DelayedEventStatusText.cpp` | The `status` column's text for `DelayedEventStatus` and its strict parse (an unknown text makes hydration skip the row) |
 | `DelayedEventRowText.cpp` | `parse_delayed_event_row`, the one strict reading of a stored row both loaders use: the three numeric columns are 1+ ASCII digits that fit 64 bits, both booleans are exactly `true` or `false`, a scheduled row's `delay_ms` is 1 to `max_delayed_event_delay_ms`, a finalised row has a non-zero `finalised_at_ms`. Anything else is skipped, never repaired or guessed |
+| `LiveKitDelegationTable.cpp` | `LiveKitDelegationTable`, the in-memory copy of `livekit_delegations` (migration 004, ADR-0832): by delay ID, by (user, room, slot, member) and a count per user; the caps (`max_livekit_delegation_delay_id_bytes` 64, `max_livekit_delegation_field_bytes` 255) and `livekit_delegation_is_storable` |
+| `LiveKitDelegationStore.cpp` | `store_livekit_delegation` (one transaction replaces the row of the same key and of the same delay ID), `delete_livekit_delegation`, `delete_livekit_delegations_of_user` (always runs the DELETE, so a row hydration skipped goes too) |
+| `LiveKitDelegationRowText.cpp` | `parse_livekit_delegation_row`, the strict reading of a stored row both loaders use; a bad row is skipped and counted (`livekit_delegation_rows_skipped_at_load`), never repaired |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
@@ -31,6 +34,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
 | `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
 | `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
+| `StateChangeLog.cpp` | `StateChangeLog`, every change to a room's resolved current state since start-up, filed at the sync position from which a client sees it and never at or below one already served; bounded per room (1,024) and in all (65,536), in memory only, started by the main process alone (ADR-0827) |
 | `StateBeforeMemo.cpp` | `StateBeforeMemo`, the group holding the state before an event by its distinct prev groups, bounded and in memory only (ADR-0694) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
@@ -57,7 +61,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
 
 7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
-   goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
+   goes through the store's `ConnectionPool` (at most `database.pool_size` in use on PostgreSQL, ADR-0154; exactly one
+   on SQLite, ADR-0834: never give SQLite a second write connection, whose wait for the first's lock is SQLite's
+   polling busy handler, which loses to back-to-back commits and refuses the write after 5 s). Hold a lease for exactly
    one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
    A PostgreSQL connection is reused only while idle with nothing to read on its socket.
    Main's reads for a federation worker (room list, room snapshots) lease a reader from `SnapshotReaderPool`, opened
@@ -135,6 +141,16 @@ state.size()` and the row a position names still matches. Every code path that a
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
 and both hydration paths) or, for a deletion, goes through `remove_current_state_rows` (ADR-0615); a new one must too. Do not scan `state` for one key or one room in a handler.
 Both readers add the rows they look at to `state_rows_examined`; tests prove a handler's state reads with it.
+
+## The state change log (ADR-0827)
+
+`PersistentStore::state_change_log` is what `/sync`'s `state_after` reads (see `src/sync/AGENTS.md`). Every in-memory change
+of `state` in the main process records into it: `apply_store_event_with_state` (at the event's stream ordering),
+`apply_current_state`, `store_state` and `remove_current_state_rows` (each with the causing event's ordering, which state
+resolution passes through, 0 when none), and `apply_room_snapshot` calls `forget_room`. A new writer of `state` records too,
+with the value the mirror held before (not the one a statement was prepared against), or a client is told a delta that is
+wrong. The log is started after hydration and repair, so start-up writes are not changes; the federation worker never starts
+it. It is not thread-safe: every caller holds `runtime.mutex`.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
 
@@ -218,6 +234,12 @@ again). A new path that revokes all of a device's or a user's tokens uses one of
 single-table revokes. The grant's
 `oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
 `remember_audit_event` after the commit). Neither table is read by the federation worker.
+
+## LiveKit delegations (migration 004, ADR-0832)
+
+`PersistentStore::livekit_delegations` is a `LiveKitDelegationTable`: write it only through `LiveKitDelegationStore.hpp`
+(hydration uses `insert`), and ask it by `find`, `find_by_key` and `count_of_user`. The store functions change memory
+only after `commit_persistent_transaction` returns true. The federation worker's load profile never reads the table.
 
 ## Delayed events (migration 003, ADR-0824)
 

@@ -111,6 +111,9 @@ struct FederationRuntimeState final
     DeviceKeysQueryProvider device_keys_query_provider{};
     OneTimeKeysClaimProvider one_time_keys_claim_provider{};
     UserDevicesProvider user_devices_provider{};
+    // Mints a MatrixRTC LiveKit token for a verified origin (ADR-0831). Unset: the route answers 501. A worker's is
+    // a relay to main, which holds the LiveKit secret; a worker never reads that configuration.
+    LiveKitTokenProvider livekit_token_provider{};
     // Optional resolvers for inbound event-graph queries. Each unset hook
     // makes its route respond 501 Not Implemented.
     EventQueryProvider event_query_provider{};

@@ -51,6 +51,7 @@ EXPECTED_EVENTS = VERIFIED_EVENTS | {
     "federation.backfill.state_ids_failed",
     "timestamp_to_event.ask",
     "space_hierarchy.fetch",
+    "livekit.relay",
     "room.join.remote.make_join_failed",
     "room.join.remote.send_join_failed",
     "room.leave.remote.make_leave_failed",

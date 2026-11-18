@@ -14,6 +14,8 @@
 // (client-server-api.md, GET /sync, "Joined Room", "Left Room"; ADR-0818 to ADR-0820).
 #include "../support/JsonTestSupport.hpp"
 #include "../support/SyncStateAfterSupport.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 
@@ -257,14 +259,8 @@ SCENARIO("state_after reports a key that state resolution moved back to an older
 
         auto& store = rt.homeserver.database.persistent_store;
         std::ignore = store.forward_extremities.insert({room, old_topic}, user_id("alice"));
-        for (auto& row : store.state)
-        {
-            if (row.room_id == room && row.event_type == "m.room.topic")
-            {
-                row.event_id = old_topic;
-            }
-        }
-        merovingian::database::rebuild_state_index(store);
+        // What a resolution that picked the older topic writes, through the writer it uses.
+        REQUIRE(merovingian::database::store_state(store, {room, "m.room.topic", "", old_topic}));
 
         WHEN("alice syncs with use_state_after=true")
         {

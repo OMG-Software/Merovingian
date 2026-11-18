@@ -1,6 +1,6 @@
 # A `state_after` delta compares the two states, and every change it finds is sent under lazy-loading
 
-* Status: accepted
+* Status: accepted (the baseline at `since` and the chain walk are superseded by [ADR-0827](0827-a-state-after-delta-is-measured-from-an-in-memory-log-of-resolved-state-changes.md); the lazy-loading rules stand)
 * Date: 2026-11-16
 
 ## Context and Problem Statement

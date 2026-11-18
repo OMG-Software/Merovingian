@@ -457,7 +457,7 @@
 * [0510 - The test binaries hash passwords at minimum cost](0510-the-test-binaries-hash-passwords-at-minimum-cost.md)
 * [0462 - Use std::invoke for callable dispatch and immediate lambdas](0462-use-std-invoke-for-callable-dispatch-and-immediate-lambdas.md)
 * [0463 - Confine unavoidable C API pointers to RAII wrappers](0463-confine-unavoidable-c-api-pointers-to-raii-wrappers.md)
-* [0464 - Documentation-only changes do not require a version bump](0464-documentation-only-changes-do-not-require-a-version-bump.md)
+* [0464 - Documentation-only changes do not require a version bump](0464-documentation-only-changes-do-not-require-a-version-bump.md) — Superseded by ADR-0835: no branch bumps the version, so there is nothing to exempt
 * [0465 - Root agent guidance requires the coding rules without copying them](0465-root-agent-guidance-requires-the-coding-rules-without-copying-them.md)
 * [0466 - Define one class or struct per file](0466-define-one-class-or-struct-per-file.md)
 * [0467 - Type filenames match the type name exactly](0467-type-filenames-match-the-type-name-exactly.md)
@@ -559,7 +559,7 @@
 * [0634 - A share of the push delivery budget is kept for gateways that answer, and one host carries an eighth of it](0634-a-share-of-the-push-delivery-budget-is-kept-for-gateways-that-answer-and-a-host-carries-an-eighth.md)
 * [0635 - An inbound federation origin is asked about once at a time, and its decision is kept for a short time](0635-an-inbound-federation-origin-is-asked-about-once-at-a-time-and-its-decision-is-kept-for-a-short-time.md)
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
-* [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
+* [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md) — Partly superseded by ADR-0835: the version changes only when the owner asks, not once per branch
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md) — Extended by ADR-0744: 1.0.1 is waived too
 * [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)
 * [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md) — Partly superseded by ADR-0742: every published file is attested by packages.yml
@@ -705,3 +705,12 @@
 * [0824 - A delayed event is a stored row that is kept after it is finalised, bounded per user, and deleted with the account](0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md)
 * [0825 - A due delayed event is sent by one job through the ordinary send path, never early and at least once](0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)
 * [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
+* [0827 - A state_after delta is measured from an in-memory log of resolved state changes](0827-a-state-after-delta-is-measured-from-an-in-memory-log-of-resolved-state-changes.md)
+* [0828 - LiveKit tokens are signed and verified only through typed HS256 functions in the crypto boundary](0828-livekit-tokens-are-signed-and-verified-only-through-typed-hs256-functions-in-the-crypto-boundary.md)
+* [0829 - The built-in LiveKit token service issues tokens only to users this server finds joined](0829-the-built-in-livekit-token-service-issues-tokens-only-to-users-this-server-finds-joined.md)
+* [0830 - Every call to LiveKit goes to the configured address with a token of its own](0830-every-call-to-livekit-goes-to-the-configured-address-with-a-token-of-its-own.md)
+* [0831 - A federated LiveKit token request is judged by main and answered subscribe-only](0831-a-federated-livekit-token-request-is-judged-by-main-and-answered-subscribe-only.md)
+* [0832 - A delegated delayed leave is restarted while LiveKit shows the participant, and sent once it does not](0832-a-delegated-delayed-leave-is-restarted-while-livekit-shows-the-participant-and-sent-once-it-does-not.md)
+* [0833 - The LiveKit webhook is served on the client listener and trusted only to prompt a check](0833-the-livekit-webhook-is-served-on-the-client-listener-and-trusted-only-to-prompt-a-check.md)
+* [0834 - SQLite writes share one pooled connection, whatever database.pool_size says](0834-sqlite-writes-share-one-pooled-connection.md)
+* [0835 - The version changes only when the owner asks](0835-the-version-changes-only-when-the-owner-asks.md)

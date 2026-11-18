@@ -24,6 +24,14 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // The built-in MatrixRTC token service (ADR-0829) is read once at start-up: the start-up check of the secret file's
+    // owner and mode, the advertised transport and the webhook all depend on it. Only the external service URL
+    // (ADR-0822) stays reloadable.
+    if (starts_with(key, "server.rtc.livekit.") && key != "server.rtc.livekit.service_url")
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // ADR-0236: a weaker password policy is logged at CRITICAL when the server
     // starts. Taking it only on restart keeps that warning from being skipped.
     if (starts_with(key, "security.password_policy."))

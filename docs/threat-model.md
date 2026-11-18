@@ -36,6 +36,9 @@
   SSRF-filtered; namespace matching; masquerading)
 - Identity Service client (outbound `store-invite`/`bind`/`unbind`/`requestToken`)
 - Push gateway delivery (outbound, client-supplied URL, no operator allowlist)
+- The built-in LiveKit token service (1.1.3): the LiveKit API secret, tokens handed to clients, the `CreateRoom` and
+  `GetParticipant` calls to the operator's LiveKit, the federation `rtc/livekit/get_token` route in both directions, the
+  delegated delayed leave and the LiveKit webhook (see below)
 - Email pushers (outbound SMTP to an operator-configured relay; a client-supplied recipient address)
 - Federation worker IPC channel (local process boundary)
 - MSC4186 sliding-sync connection state (client-chosen `conn_id`)
@@ -3363,3 +3366,78 @@ ever logged; (j) the federation worker: it never reads the table and sends nothi
 after a crash in the window between the send and its record, or when a `send` request throws after the event was stored (it has no catch, the event stays scheduled and can be sent again later); a wall clock stepped forwards brings deadlines forward by
 the step; a suspended account's delayed events fail rather than send, so the server does not end a suspended
 participant's call membership; the feature is on by default.
+
+### The built-in LiveKit token service (1.1.3, ADR-0828 to ADR-0833)
+
+New surface: a long-lived secret, `server.rtc.livekit.api_secret_file`, whose holder can mint any token for the
+operator's LiveKit, including administrative ones; two client routes that hand out tokens; an outbound call to
+LiveKit's room service; a federation route, served for other servers and called on other servers; a client route that
+hands this server a user's delayed leave and a job that restarts or sends it on what LiveKit says; and an
+unauthenticated webhook route for LiveKit. Threats and mitigations:
+
+(a) The secret leaking. It is a path to an owner-only (`0400`) file, checked at start-up, read into a
+`core::SecretBuffer` for each signature and wiped after, never held for the life of the process, never logged and
+never in a response. Signing is in `src/crypto/` through typed functions only (ADR-0828): the participant grant cannot
+express `roomCreate`, `roomAdmin` or `hidden`; one other signer grants `roomCreate` alone, and the last `roomAdmin` over
+one named room alone, for `GetParticipant`. The federation
+worker never reads the configuration or the secret, and its Landlock secret-path guard (`worker_landlock_secret_paths`)
+refuses to start the worker if a rule, such as the SQLite database directory grant, would cover the secret file.
+
+(b) A token for someone who should not have one. A token goes only to a caller this server authenticated (access token,
+account gate) and finds joined by its own current room state, never by the request: a user not joined, and a room that
+does not exist, get the same 403. A federated request is judged by main, for the origin main verified, and needs the
+user to be of that origin and joined by this server's state, and the room's server ACL to allow the origin (the room is
+named in the body, so the route-level ACL check does not cover it, and an ACL leaves a denied server's users joined); the
+four refusals are one 403, so a server learns nothing about a room it has no member in (ADR-0831). A relay goes only to a
+server the room's ACL allows.
+
+(c) More rights than a call needs. A local user's token joins one room and may publish and subscribe; another
+server's user's token may only subscribe. Lifetime is 60 to 3600 seconds. The room name and identity are MSC4195's
+hashes, so the SFU does not learn Matrix IDs.
+
+(d) SSRF and outbound abuse. The `url` in a request is only compared, byte for byte, with the configured SFU and never
+fetched. `CreateRoom` goes only to `server.rtc.livekit.api_url`, which is `https` or loopback `http`, with a token of
+its own lasting 60 seconds, one ADR-0079 outbound slot, one deadline of at most 10 seconds, a 16 KiB answer cap and the
+runtime lock released for the call only (ADR-0830). A relay to another server goes only to one this server's roster
+shows in the room, signed, under the same slot and deadline, with an 8 KiB answer cap; only a well-formed `jwt` is
+passed on, and that server's error text never is.
+
+(e) Cost and flooding. The client routes are limited to 60 a minute per user and share the client outbound budget.
+The federation route is limited per origin by `security.federation.per_origin_request_rate` and costs a secret read and
+a signature, with no network call: a request from another server never makes this server call LiveKit.
+
+(f) The worker forging a request. The inbound route reaches main only through the ADR-0595 relay: a permit over the
+body, bound to the request main authenticated, used once, with the origin checked against the pending request's.
+
+(g) A delegation acting on someone else's event. The delayed event must be the caller's own (looked up by owner, so
+another user's ID is the same 400 as an unknown one), scheduled, in the named room, and the caller joined to it by this
+server's state; it is bound to that delay ID, room, slot and member and is dropped when the event stops being
+scheduled, the user leaves or the service is turned off. The job acts only through `manage_delayed_event`, so a send is
+authorised against the room when it happens, as the user's own send would be. At most 20 per user, 30 requests a
+minute, and a delay of at least 5 minutes (ADR-0832).
+
+(h) LiveKit's answers ending a membership early. Only a `not_found` or `DISCONNECTED` answer for a participant seen
+connected, or never seen after 2 minutes, sends the leave; anything else (no answer, a timeout, another error) changes
+nothing and leaves the event to its own timer, and a restart needs a "connected" answer to the call just made. A
+LiveKit that is down or lies about a participant being present can only delay a leave by as long as it keeps saying so
+(the client's own leave and the user's own actions still work); one that lies about a participant being gone ends
+that membership early, which the operator's own SFU could do anyway. `GetParticipant` goes only to `api_url`, from
+the job's thread, at most 16 per run, 10 seconds each, with the runtime lock released, and its token can act on one
+room for one minute: LiveKit has no narrower grant for it (ADR-0830).
+
+(i) A forged or replayed webhook. `POST /_merovingian/livekit/webhook` takes no access token, so it is authenticated as
+LiveKit authenticates it: one `Authorization` header, an HS256 JWT checked in constant time under the API secret with
+the issuer equal to the API key (constant time), `nbf` and `exp` current within 60 seconds, and a `sha256` claim equal
+to the body's hash, so the body is the one LiveKit signed; the body is at most 64 KiB, and the route is 404 with the
+service off (ADR-0833). Even an authentic webhook is only a prompt: it is read only for a recorded delegation created
+before the event, only if `createdAt` is within 5 minutes and its `id` is not one of the last 1024 seen, and then it
+only brings that delegation's next check forward. It never sends or restarts an event, so a forged or replayed webhook
+can at most cost one `GetParticipant` call. Each unauthenticated request costs a secret file read and an HMAC, limited
+by the default per-address rate.
+
+Residual risk: a token stays usable for its lifetime after the user leaves the room, and a participant already
+connected stays in the call until LiveKit removes them (this server does not call `RemoveParticipant`); anyone who can
+read the secret file can mint any LiveKit token, and could forge webhooks (which only prompt checks); a delegated leave
+depends on LiveKit's view of the call, so a LiveKit that keeps reporting a vanished participant keeps their membership
+alive; the relay, the inbound route, the delegation job and the webhook have been tested only against this server and
+a local stand-in for LiveKit, never another implementation or a real LiveKit.

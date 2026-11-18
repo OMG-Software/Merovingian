@@ -1840,15 +1840,6 @@ namespace
         return authorising == nullptr ? std::string{} : *authorising;
     }
 
-    // `user_id`'s membership in the room's current state, or empty.
-    [[nodiscard]] auto current_membership_of(database::PersistentStore const& store, std::string_view room_id,
-                                             std::string_view user_id) -> std::string
-    {
-        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
-        return event_id.has_value() ? std::string{events::extract_content_membership(find_event_json(store, *event_id))}
-                                    : std::string{};
-    }
-
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view sender, std::string_view target_state_key,
                                             std::string_view event_type, canonicaljson::Value const& event)
@@ -2007,7 +1998,7 @@ namespace
         // 4.3.5.1), so a copied field is dropped rather than honoured or refused.
         auto const drop_join_authoriser =
             event_type == "m.room.member" && membership == "join" && event_state_key == sender &&
-            current_membership_of(runtime.database.persistent_store, room_id, sender) == "join";
+            current_state_membership(runtime.database.persistent_store, room_id, sender) == "join";
         if (event_type == "m.room.member")
         {
             // A restricted join names its authorising user's m.room.member
@@ -2736,17 +2727,29 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
 namespace
 {
 
-    // "M_INVITE_BLOCKED" when a remote error body's `errcode` is exactly that, else empty (SS7). The body is a
-    // remote server's, so nothing else of it is kept.
-    [[nodiscard]] auto remote_invite_blocked_errcode(std::string_view body) -> std::string
+    // A remote error body's `errcode` when it is exactly one a caller acts on, else empty: `M_INVITE_BLOCKED` (SS7),
+    // and the `M_FORBIDDEN` and `M_INVALID_PARAM` a LiveKit token relay passes on in its own words (ADR-0831). The
+    // body is a remote server's, so nothing else of it is kept, and only these fixed values are returned.
+    [[nodiscard]] auto remote_known_errcode(std::string_view body) -> std::string
     {
         auto const parsed = canonicaljson::parse_lossless(body);
         auto const* root = parsed.error == canonicaljson::ParseError::none
                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
                                : nullptr;
         auto const* errcode = root == nullptr ? nullptr : string_member(*root, "errcode");
-        return errcode != nullptr && *errcode == invite_blocked_errcode ? std::string{invite_blocked_errcode}
-                                                                        : std::string{};
+        if (errcode == nullptr)
+        {
+            return {};
+        }
+        for (auto const known : {invite_blocked_errcode, std::string_view{"M_FORBIDDEN"},
+                                 std::string_view{"M_INVALID_PARAM"}})
+        {
+            if (*errcode == known)
+            {
+                return std::string{known};
+            }
+        }
+        return {};
     }
 
     // A make_join, make_leave or make_knock answer is one event plus `room_version`, so four times the 64 KiB event
@@ -3050,7 +3053,7 @@ namespace
                 outcome.error_detail.empty() ? "remote server returned " + std::to_string(outcome.response.status)
                                              : outcome.error_detail,
                 outcome.ok ? outcome.response.status : std::uint16_t{0U},
-                outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{},
+                outcome.ok ? remote_known_errcode(outcome.response.body) : std::string{},
                 !outcome.ok && destination_gave_no_answer(outcome.error),
                 outcome.ok || destination_sent_a_response(outcome.error)};
     }
@@ -4636,7 +4639,7 @@ namespace
     {
         auto held = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
         auto const agrees = held.has_value() && *held == claimed_event_id;
-        auto const holds_a_row = held.has_value() || !current_membership_of(store, room_id, user_id).empty();
+        auto const holds_a_row = held.has_value() || !current_state_membership(store, room_id, user_id).empty();
         return {agrees || !holds_a_row, std::move(held)};
     }
 } // namespace
@@ -7940,7 +7943,7 @@ auto exchange_third_party_invite(HomeserverRuntime& runtime, federation::ThirdPa
     }
     // The auth rules let a third-party invite stand in for the usual membership checks, so a member who is already
     // in the room, or banned, would be moved to `invite` by a replayed `signed` object (ADR-0485).
-    auto const membership = current_membership_of(store, exchange.room_id, exchange.target_user_id);
+    auto const membership = current_state_membership(store, exchange.room_id, exchange.target_user_id);
     if (membership == "join" || membership == "ban")
     {
         return make_operation_result(false, {}, "the invited user is already in the room or banned from it", 403U);
@@ -10964,6 +10967,14 @@ auto validate_make_leave_response(std::string_view requested_room_id, std::strin
         return {false, "make_leave response must be a JSON object"};
     }
     return validate_make_leave_event(requested_room_id, requested_user_id, *response_object);
+}
+
+auto current_state_membership(database::PersistentStore const& store, std::string_view const room_id,
+                              std::string_view const user_id) -> std::string
+{
+    auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+    return event_id.has_value() ? std::string{events::extract_content_membership(find_event_json(store, *event_id))}
+                                : std::string{};
 }
 
 } // namespace merovingian::homeserver

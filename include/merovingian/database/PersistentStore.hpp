@@ -13,6 +13,7 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/ForwardExtremityTable.hpp"
 #include "merovingian/database/KeyBackupDigest.hpp"
+#include "merovingian/database/LiveKitDelegationTable.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
@@ -88,6 +89,7 @@
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/StateBeforeMemo.hpp"
+#include "merovingian/database/StateChangeLog.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
@@ -257,10 +259,10 @@ struct PersistentStoreOpenResult;
 namespace detail
 {
     // DB-7, ADR-0154: each backend's pool of write connections, defined in its
-    // own source file. Shared, not copied, by copies of a store.
+    // own source file. Shared, not copied, by copies of a store. Only the
+    // PostgreSQL pool's limit can be set: SQLite's is one (ADR-0834).
     struct SqliteWritePool;
     struct PostgresqlWritePool;
-    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void;
     auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void;
     [[nodiscard]] auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t;
     [[nodiscard]] auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t;
@@ -583,6 +585,14 @@ struct PersistentStore final
     // not digits or is out of range, a boolean that is not "true" or "false", an unknown status, a duplicate key). The
     // rows stay in the database. The homeserver warns once at start-up when this is not zero.
     std::size_t delayed_event_rows_skipped_at_load{0U};
+    // Migration 004 (ADR-0832): `livekit_delegations`, MSC4195 delayed leaves delegated to the LiveKit token service.
+    // Read and write through LiveKitDelegationStore.hpp; it has no lock of its own, so in main `runtime.mutex`
+    // serialises it. The federation worker never holds it.
+    LiveKitDelegationTable livekit_delegations{};
+    // How many `livekit_delegations` rows the last hydration skipped because they were not read exactly (an empty or
+    // over-long field, a `created_ms` that is not digits, a duplicate delay ID or key). The rows stay in the database.
+    // The homeserver warns once at start-up when this is not zero.
+    std::size_t livekit_delegation_rows_skipped_at_load{0U};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
@@ -613,6 +623,12 @@ struct PersistentStore final
     // How many times each room's current state, or the status or JSON of one of its events, has changed
     // (`room_state_revision`, ADR-0624). In memory only.
     std::unordered_map<std::string, std::uint64_t> room_state_revisions{};
+    // Every change to a room's current state since start-up, by the sync position from which a client sees it, for
+    // `/sync`'s `state_after` (ADR-0827). In memory only, and inactive until the main process starts it. The four
+    // writers of current state (`apply_store_event_with_state`, `apply_current_state`, `store_state` and
+    // `remove_current_state_rows`) record into it, and `apply_room_snapshot` forgets the room. A new writer of `state`
+    // records too.
+    StateChangeLog state_change_log{};
     // Stored events parsed for state resolution, for tests that prove cost.
     ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
@@ -643,10 +659,11 @@ struct PersistentStore final
     // stripe locks because capture access is independent of any room. Held by
     // value (ADR-0517) so PersistentStore stays copyable and moveable; a copy gets its own mutex.
     core::CopyableMutex statement_capture_mutex{};
-    // DB-7, ADR-0154: persisted writes reuse at most this many connections
-    // (database.pool_size, applied by set_write_connection_limit), instead of
-    // opening one per transaction. The pool of the store's backend is created
-    // when the store is opened; copies share it.
+    // DB-7, ADR-0154: persisted writes to PostgreSQL reuse at most this many
+    // connections (database.pool_size, applied by set_write_connection_limit),
+    // instead of opening one per transaction; SQLite writes reuse one
+    // (ADR-0834). The pool of the store's backend is created when the store is
+    // opened; copies share it.
     std::uint32_t write_connection_limit{16U};
     std::shared_ptr<detail::SqliteWritePool> sqlite_write_pool{}; // SHARED_PTR: reviewed - shared by store copies.
     std::shared_ptr<detail::PostgresqlWritePool>                  // SHARED_PTR: reviewed - shared by store copies.
@@ -728,9 +745,10 @@ static_assert(std::is_nothrow_move_constructible_v<PersistentStore> &&
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
-// DB-7, ADR-0154: caps the connections persisted writes keep and use at once
-// (database.pool_size). A write waits for a free connection rather than opening
-// another. Takes effect for the next write.
+// DB-7, ADR-0154: caps the PostgreSQL connections persisted writes keep and use
+// at once (database.pool_size). A write waits for a free connection rather than
+// opening another. Takes effect for the next write. SQLite writes always share
+// one connection and ignore it (ADR-0834).
 auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void;
 // Connections ever opened for persisted writes (both backends' pools).
 [[nodiscard]] auto write_connections_opened(PersistentStore const& store) -> std::uint64_t;
@@ -961,7 +979,10 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
-[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+// `causing_stream_ordering` is the stream ordering of the event whose storing made this change, 0 for none; the state
+// change log files the change there or above (ADR-0827).
+[[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state,
+                               std::uint64_t causing_stream_ordering = 0U) -> bool;
 
 // The statements that make `state` current, replacing `previous_event_id`
 // (empty for a key with no current_state row yet), and record the transition.
@@ -970,8 +991,10 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto prepare_current_state(PersistentStateEvent state, std::string previous_event_id)
     -> PreparedCurrentState;
 // Mirrors a committed prepare_current_state into current_state and the
-// state_transitions index.
-auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void;
+// state_transitions index, and records the change in the state change log as made by the event at
+// `causing_stream_ordering` (0 for none, ADR-0827).
+auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared,
+                         std::uint64_t causing_stream_ordering = 0U) -> void;
 // True when `state` names a stored event of that type and state key in that room.
 [[nodiscard]] auto state_matches_stored_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool;
 // With `membership`, also writes that membership row and invite change in the same
@@ -989,9 +1012,11 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
                                                MembershipProjection projection) -> bool;
 // Removes `keys` (event type, state key) from `room_id`'s current state and writes `memberships`, in one transaction,
 // then mirrors both, keeping the state indexes in step (ADR-0615). Costs the rows of the rooms that lose or move a row.
+// Each key removed is recorded in the state change log as made by the event at `causing_stream_ordering` (ADR-0827).
 [[nodiscard]] auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
                                              std::vector<std::pair<std::string, std::string>> const& keys,
-                                             std::vector<MembershipProjection> const& memberships) -> bool;
+                                             std::vector<MembershipProjection> const& memberships,
+                                             std::uint64_t causing_stream_ordering = 0U) -> bool;
 // DB-4: makes each `membership` row agree with its room's current m.room.member
 // state event, which is the user's membership (Matrix v1.19 "m.room.member").
 // A row is rewritten to the event's membership when the row is missing, when it

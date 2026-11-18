@@ -373,6 +373,10 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 // `send_event_as_resolved_user` itself asks.
 [[nodiscard]] auto room_send_refusal(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id)
     -> std::optional<OperationResult>;
+// `user_id`'s membership in `room_id`'s current state (`join`, `leave`, ...), read from its current
+// `m.room.member` event by the state index, or empty when the state holds none. For a user of any server.
+[[nodiscard]] auto current_state_membership(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::string;
 // 403 "event authorization or signing failed": what an event the room's auth rules refuse is answered, shared with
 // the delayed events' schedule-time power check.
 [[nodiscard]] auto event_authorization_refusal() -> OperationResult;

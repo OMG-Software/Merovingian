@@ -13,24 +13,22 @@ ADR-0000/0001/0543/0740/0741. Only the formats are checked by tooling (`test_cha
   upgrading.
 - The bullet says what changed for the operator or client, not how, and ends with its ADR or finding ID.
 - `CHANGELOG-pre-release.md` is frozen (ADR-0740). Any diff to it is a finding.
-- A docs-only branch adds its bullets to the **current** version's entry and does not bump.
+- Every branch adds its bullets to the **newest** version's entry; it opens a new entry only when the owner asked
+  for a new version (ADR-0835).
 
 ## Version
 
-- One bump per branch, BUILD + 1, except documentation-only changes (ADR-0464). `AGENTS.md` and coding-guidance
-  edits count as documentation. Any code, build, packaging or test change means the bump applies.
+- The version changes only when the owner asks (ADR-0835). A branch whose version differs from its base's, with no
+  request from the owner in its PR or linked discussion, is a finding, whatever the branch changes.
 - Every place agrees with `meson.build`. The list is in `docs/versioning.md`: `src/main.cpp`,
   `src/db_migrate.cpp`, the FreeBSD manifest, the NetBSD Makefile, three RPM specs (each also with a new dated
-  `%changelog` entry), the `scripts/build-*.sh` scripts, and the CHANGELOG heading.
-- The number must not be taken by another open branch. Check before approving.
+  `%changelog` entry when the version changes), the `scripts/build-*.sh` scripts, and the CHANGELOG heading.
 
 ```bash
-git show origin/main:meson.build | grep -m1 "version:"; grep -m1 "version:" meson.build
+git show <base>:meson.build | grep -m1 "version:"; grep -m1 "version:" meson.build
 grep -n 'version = std::string_view' src/main.cpp src/db_migrate.cpp
 grep -n '^Version:' packaging/{rpm,rhel,opensuse}/merovingian.spec
 grep -nE '^VERSION=' scripts/build-*.sh
-for r in $(git for-each-ref --format='%(refname)' refs/remotes/origin); do
-  git show "$r:meson.build" 2>/dev/null | grep -m1 -o "version: '[^']*'" | sed "s|^|$r |"; done | sort -k3 | tail
 ```
 
 ## Docs

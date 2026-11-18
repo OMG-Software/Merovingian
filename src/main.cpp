@@ -4,19 +4,22 @@
 #include "merovingian/bootstrap/ExitCode.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ConfigParseResult.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/config/FederationWorkerConfig.hpp"
 #include "merovingian/config/ListenerConfig.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/database/RuntimeDatabaseConfig.hpp"
-#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/SmtpClient.hpp"
+#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/federation/RuntimeFederationConfig.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/ClientTxnPrune.hpp"
 #include "merovingian/homeserver/DeferredPduRetryJob.hpp"
 #include "merovingian/homeserver/DelayedEvents.hpp"
 #include "merovingian/homeserver/EmailPushJob.hpp"
@@ -24,24 +27,22 @@
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
-#include "merovingian/homeserver/LocalDatabaseScope.hpp"
-#include "merovingian/homeserver/PeriodicJob.hpp"
-#include "merovingian/homeserver/PushRetryJob.hpp"
-#include "merovingian/homeserver/TlsServerContext.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/ClientTxnPrune.hpp"
 #include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/homeserver/LibraryVersions.hpp"
+#include "merovingian/homeserver/LiveKitDelegations.hpp"
+#include "merovingian/homeserver/LocalDatabaseScope.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/PushRetryJob.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/StreamTokenEpoch.hpp"
 #include "merovingian/homeserver/Tls.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/RuntimeMediaConfig.hpp"
-#include "merovingian/media/ThumbnailerConfig.hpp"
 #include "merovingian/media/Thumbnailer.hpp"
+#include "merovingian/media/ThumbnailerConfig.hpp"
 #include "merovingian/net/ListenerRole.hpp"
 #include "merovingian/net/RuntimeListeners.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
@@ -49,9 +50,9 @@
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/FileKind.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
-#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/platform/RuntimeHardening.hpp"
 #include "merovingian/platform/SeccompHardening.hpp"
 #include "merovingian/platform/SignalHardening.hpp"
@@ -82,7 +83,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"1.1.2"};
+constexpr auto version = std::string_view{"1.1.3"};
 
 struct BootstrapConfigResult final
 {
@@ -262,6 +263,17 @@ struct BootstrapConfigResult final
         if (!turn_secret_validation.parsed.findings.empty())
         {
             return turn_secret_validation;
+        }
+    }
+
+    // server.rtc.livekit.api_secret_file holds the LiveKit API secret (ADR-0829): owner-only like every other secret.
+    if (!config.server().rtc.token_service.api_secret_file.empty())
+    {
+        auto livekit_secret_validation = validate_existing_secret_file_metadata(
+            config.server().rtc.token_service.api_secret_file, "server.rtc.livekit.api_secret_file", false);
+        if (!livekit_secret_validation.parsed.findings.empty())
+        {
+            return livekit_secret_validation;
         }
     }
 
@@ -951,6 +963,25 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Checks the MSC4195 delegated delayed leaves (ADR-0832): drops those that can no longer be acted on, asks LiveKit
+    // with GetParticipant about at most `livekit_delegation_checks_per_run` due ones with the runtime lock free, and
+    // restarts or sends their events. It sleeps at most 30 s and is woken when a delegation is stored or a webhook
+    // brings a check forward. Stopping waits for at most the one LiveKit call in progress (10 s). Declared after the
+    // pools so it is stopped and joined before them.
+    auto livekit_delegations_job = merovingian::homeserver::PeriodicJob{
+        "livekit-delegations", [&runtime](merovingian::homeserver::StopFlag const& stop) {
+            return merovingian::homeserver::run_livekit_delegations(
+                runtime, merovingian::homeserver::delayed_event_now_ms(runtime.homeserver), stop);
+        }};
+    if (!livekit_delegations_job.start())
+    {
+        LOG_CRITICAL("LiveKit delegations thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Sends a profile change to the rooms its request left (F-11, ADR-0353), taking the runtime lock
     // per room. It only ever touches `runtime`, which outlives this function. Declared after the
     // pools so it is stopped and joined before them.
@@ -1060,6 +1091,9 @@ struct ListenerBinding final
         runtime.homeserver.delayed_events_wake = [&delayed_events_job]() {
             delayed_events_job.wake();
         };
+        runtime.homeserver.livekit_delegations_wake = [&livekit_delegations_job]() {
+            livekit_delegations_job.wake();
+        };
     }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
@@ -1133,11 +1167,15 @@ struct ListenerBinding final
         runtime.homeserver.typing_expiry_wake = nullptr;
         runtime.homeserver.profile_propagation_wake = nullptr;
         runtime.homeserver.delayed_events_wake = nullptr;
+        runtime.homeserver.livekit_delegations_wake = nullptr;
     }
     typing_expiry_job.stop();
     // The wake hook is cleared above; a send in progress ends first (it makes no network call). Events still
     // scheduled stay in the database and are sent by the next start (ADR-0825).
     delayed_events_job.stop();
+    // The wake hook is cleared above; a LiveKit call in progress ends first, under its own 10 s deadline. Delegations
+    // are stored and checked again by the next start (ADR-0832).
+    livekit_delegations_job.stop();
     // Rooms still queued are left for the user's next profile change (ADR-0353). One room's send ends
     // first; it makes no network call.
     profile_propagation_job.stop();
@@ -1263,6 +1301,13 @@ struct ListenerBinding final
     {
         LOG_WARNING("delayed_events.rows_skipped_at_load: " + std::to_string(skipped) +
                     " delayed event rows were not read and stay in the database");
+    }
+    // Likewise for LiveKit delegation rows (ADR-0832): the count only, never a row's columns.
+    if (auto const skipped = runtime.homeserver.database.persistent_store.livekit_delegation_rows_skipped_at_load;
+        skipped != 0U)
+    {
+        LOG_WARNING("livekit_delegations.rows_skipped_at_load: " + std::to_string(skipped) +
+                    " LiveKit delegation rows were not read and stay in the database");
     }
     // Wire federation callbacks and start the outbound dispatch worker now that
     // the runtime is in its final stable location (no further moves). Doing this

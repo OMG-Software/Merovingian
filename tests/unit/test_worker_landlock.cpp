@@ -955,6 +955,49 @@ SCENARIO("A Landlock rule on a directory holding the SMTP password file is detec
     }
 }
 
+SCENARIO("A LiveKit API secret file the worker could read is detected",
+         "[platform][security][worker_landlock][livekit]")
+{
+    GIVEN("the LiveKit API secret placed under /etc/ssl/certs, which the worker reads for CA trust")
+    {
+        auto config = merovingian::config::Config{};
+        config.server().rtc.token_service.api_secret_file = "/etc/ssl/certs/livekit-secret";
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
+            auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(rules, secrets);
+
+            THEN("the file is a secret and the exposure names it, so the worker refuses to start")
+            {
+                REQUIRE(std::ranges::count(secrets, "/etc/ssl/certs/livekit-secret") == 1);
+                REQUIRE(exposure.has_value());
+                REQUIRE(exposure->rule_path == "/etc/ssl/certs");
+                REQUIRE(exposure->secret_path == "/etc/ssl/certs/livekit-secret");
+            }
+        }
+    }
+
+    GIVEN("the LiveKit API secret in the shipped layout")
+    {
+        auto config = merovingian::config::Config{};
+        config.server().rtc.token_service.api_secret_file = "/etc/merovingian/livekit-api-secret";
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
+
+            THEN("the file is listed and no rule covers it")
+            {
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/livekit-api-secret") == 1);
+                REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
          "[platform][security][worker_landlock]")
 {

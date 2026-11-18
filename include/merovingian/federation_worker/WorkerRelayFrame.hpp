@@ -24,16 +24,21 @@ namespace merovingian::federation_worker
 {
 
 // The frame asking main for a relay of `kind`: its type (`otk_claim_ingest`, `device_keys_query_ingest`,
-// `user_devices_ingest`, `profile_query_ingest`), `parent_request_id`, and `argument` as `request_body` (claim and
-// keys query) or `user_id` (device list and profile). nullopt when `parent_request_id` is 0: a worker serving no
-// request main forwarded relays nothing, since main would refuse it.
+// `user_devices_ingest`, `profile_query_ingest`, `livekit_token_ingest`), `parent_request_id`, and `argument` as
+// `request_body` (claim, keys query and LiveKit token) or `user_id` (device list and profile). The LiveKit token frame
+// also carries `origin`, the verified origin of the request main forwarded, which main compares with the pending
+// request's; `origin` is ignored for every other kind. nullopt when `parent_request_id` is 0: a worker serving no
+// request main forwarded relays nothing, since main would refuse it. nullopt too for a LiveKit token frame with an
+// empty `origin`.
 [[nodiscard]] auto worker_relay_frame(federation::WorkerRelayKind kind, std::string_view argument,
-                                      std::uint64_t parent_request_id) -> std::optional<std::string>;
-
-// Sends worker_relay_frame(kind, argument, parent_request_id) to main over `channel` and returns main's reply frame.
-// nullopt, with nothing sent, when there is no parent request; nullopt when main does not answer within `timeout`.
-[[nodiscard]] auto relay_to_main(ipc::IpcChannel& channel, federation::WorkerRelayKind kind, std::string_view argument,
-                                 std::uint64_t parent_request_id, std::chrono::seconds timeout)
+                                      std::uint64_t parent_request_id, std::string_view origin = {})
     -> std::optional<std::string>;
+
+// Sends worker_relay_frame(kind, argument, parent_request_id, origin) to main over `channel` and returns main's reply
+// frame. nullopt, with nothing sent, when there is no parent request; nullopt when main does not answer within
+// `timeout`.
+[[nodiscard]] auto relay_to_main(ipc::IpcChannel& channel, federation::WorkerRelayKind kind, std::string_view argument,
+                                 std::uint64_t parent_request_id, std::chrono::seconds timeout,
+                                 std::string_view origin = {}) -> std::optional<std::string>;
 
 } // namespace merovingian::federation_worker

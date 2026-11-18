@@ -22,7 +22,7 @@ namespace
     // never an edit to core_tables that changes what v1 creates. Each later
     // version's tables and indexes are an array of their own, below core_indexes
     // (ADR-0778).
-    constexpr auto schema_version = std::uint32_t{3U};
+    constexpr auto schema_version = std::uint32_t{4U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -293,6 +293,20 @@ namespace
         SchemaIndexDefinition{"idx_delayed_events_user_id", "delayed_events", "user_id"},
     };
 
+    // Migration 004 (ADR-0832): MSC4195 delegated delayed leaves, one row per delegation. Every column is TEXT like the
+    // rest of the schema: `created_ms` is decimal text. No foreign key: the store keeps its rules in code.
+    constexpr auto livekit_delegation_tables = std::array{
+        SchemaTableDefinition{"livekit_delegations",
+                              "delay_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, "
+                              "slot_id TEXT NOT NULL, member_id TEXT NOT NULL, created_ms TEXT NOT NULL"},
+    };
+
+    // The delete at account deactivation reads a user's rows by user ID; the store answers every other lookup from
+    // memory.
+    constexpr auto livekit_delegation_indexes = std::array{
+        SchemaIndexDefinition{"idx_livekit_delegations_user_id", "livekit_delegations", "user_id"},
+    };
+
     template <typename Definition, std::size_t Size>
     auto append_all(std::vector<Definition>& into, std::array<Definition, Size> const& from) -> void
     {
@@ -305,7 +319,8 @@ namespace
             return known.name == index.name && known.table == index.table && known.columns_sql == index.columns_sql;
         };
         return std::ranges::any_of(core_indexes, same) || std::ranges::any_of(oauth_indexes, same) ||
-               std::ranges::any_of(delayed_event_indexes, same);
+               std::ranges::any_of(delayed_event_indexes, same) ||
+               std::ranges::any_of(livekit_delegation_indexes, same);
     }
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)
@@ -351,6 +366,10 @@ auto schema_definitions_added_by(std::uint32_t version) -> std::vector<SchemaTab
     {
         append_all(tables, delayed_event_tables);
     }
+    else if (version == 4U)
+    {
+        append_all(tables, livekit_delegation_tables);
+    }
     return tables;
 }
 
@@ -368,6 +387,10 @@ auto schema_indexes_added_by(std::uint32_t version) -> std::vector<SchemaIndexDe
     else if (version == 3U)
     {
         append_all(indexes, delayed_event_indexes);
+    }
+    else if (version == 4U)
+    {
+        append_all(indexes, livekit_delegation_indexes);
     }
     return indexes;
 }
@@ -440,6 +463,11 @@ auto schema_table_definition(std::string_view table_name) noexcept -> std::optio
     if (auto const delayed = std::ranges::find_if(delayed_event_tables, named); delayed != delayed_event_tables.end())
     {
         return *delayed;
+    }
+    if (auto const delegation = std::ranges::find_if(livekit_delegation_tables, named);
+        delegation != livekit_delegation_tables.end())
+    {
+        return *delegation;
     }
     return std::nullopt;
 }

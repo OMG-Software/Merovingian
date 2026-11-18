@@ -33,6 +33,7 @@ enum class FederationEndpoint
     media_download,
     media_thumbnail,
     exchange_third_party_invite,
+    livekit_token,
 };
 
 } // namespace merovingian::federation

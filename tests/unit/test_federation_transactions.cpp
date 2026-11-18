@@ -116,6 +116,8 @@ SCENARIO("federation_endpoint_requires_main_relay classifies every registered en
             merovingian::federation::FederationEndpoint::claim_keys,
             merovingian::federation::FederationEndpoint::query_user_devices,
             merovingian::federation::FederationEndpoint::query_event,
+            // livekit_token is signed with a secret only main holds (ADR-0831).
+            merovingian::federation::FederationEndpoint::livekit_token,
         };
 
         WHEN("each registered route's endpoint is classified")

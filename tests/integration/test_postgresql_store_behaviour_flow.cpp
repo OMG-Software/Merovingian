@@ -11,6 +11,7 @@
 #include <merovingian/database/DelayedEventOutcomeResult.hpp>
 #include <merovingian/database/DelayedEventStatus.hpp>
 #include <merovingian/database/DelayedEventStore.hpp>
+#include <merovingian/database/LiveKitDelegationStore.hpp>
 #include <merovingian/database/OAuthClientStoreResult.hpp>
 #include <merovingian/database/OAuthStore.hpp>
 #include <merovingian/database/PersistentStore.hpp>
@@ -1933,6 +1934,73 @@ SCENARIO("PostgreSQL hydration skips delayed event rows that are not read exactl
                 auto again = reopen(uri);
                 CHECK(again.store.delayed_event_rows_skipped_at_load == baseline);
                 CHECK(again.store.delayed_events.scheduled_count(user) == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL LiveKit delegations survive a reopen, replace by key and by delay ID, and leave with the account",
+         "[database][postgresql][integration][pg-behaviour][livekit-delegations]")
+{
+    GIVEN("three delegations of two users, one of them replaced by a new delay ID for the same key")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = reopen(uri);
+        auto const suffix = unique_suffix();
+        auto const alice = "@delegation-a-" + suffix + ":example.org";
+        auto const bob = "@delegation-b-" + suffix + ":example.org";
+        auto const room_id = "!delegation-" + suffix + ":example.org";
+        auto const make = [&](std::string id, std::string const& user, std::string member) {
+            return db::PersistentLiveKitDelegation{"dl-" + id + "-" + suffix, user,        room_id, "slot-" + suffix,
+                                                   std::move(member),         123'456'789U};
+        };
+        REQUIRE(db::store_livekit_delegation(opened.store, make("old", alice, "member-1")));
+        REQUIRE(db::store_livekit_delegation(opened.store, make("two", alice, "member-2")));
+        REQUIRE(db::store_livekit_delegation(opened.store, make("bob", bob, "member-1")));
+        REQUIRE(db::store_livekit_delegation(opened.store, make("new", alice, "member-1")));
+        REQUIRE(db::store_livekit_delegation(opened.store, make("two", alice, "member-3")));
+        REQUIRE(db::store_livekit_delegation(opened.store, make("gone", bob, "member-9")));
+        REQUIRE(db::delete_livekit_delegation(opened.store, "dl-gone-" + suffix));
+
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = reopen(uri);
+            auto const& table = reopened.store.livekit_delegations;
+
+            THEN("exactly the surviving rows are back with every column, and the lookups answer")
+            {
+                REQUIRE(table.find("dl-old-" + suffix) == nullptr);
+                REQUIRE(table.find("dl-gone-" + suffix) == nullptr);
+                REQUIRE(table.find("dl-new-" + suffix) != nullptr);
+                REQUIRE(table.find("dl-new-" + suffix)->user_id == alice);
+                REQUIRE(table.find("dl-new-" + suffix)->room_id == room_id);
+                REQUIRE(table.find("dl-new-" + suffix)->slot_id == "slot-" + suffix);
+                REQUIRE(table.find("dl-new-" + suffix)->member_id == "member-1");
+                REQUIRE(table.find("dl-new-" + suffix)->created_ms == 123'456'789U);
+                REQUIRE(table.find("dl-two-" + suffix)->member_id == "member-3");
+                REQUIRE(table.find_by_key(alice, room_id, "slot-" + suffix, "member-2") == nullptr);
+                REQUIRE(table.find_by_key(alice, room_id, "slot-" + suffix, "member-1") ==
+                        table.find("dl-new-" + suffix));
+                REQUIRE(table.find_by_key(bob, room_id, "slot-" + suffix, "member-1") ==
+                        table.find("dl-bob-" + suffix));
+                REQUIRE(table.count_of_user(alice) == 2U);
+                REQUIRE(table.count_of_user(bob) == 1U);
+            }
+
+            AND_THEN("deleting both users' rows removes them from the database as well")
+            {
+                REQUIRE(db::delete_livekit_delegations_of_user(reopened.store, alice));
+                REQUIRE(db::delete_livekit_delegations_of_user(reopened.store, bob));
+                auto again = reopen(uri);
+                REQUIRE(again.store.livekit_delegations.find("dl-new-" + suffix) == nullptr);
+                REQUIRE(again.store.livekit_delegations.find("dl-bob-" + suffix) == nullptr);
+                REQUIRE(again.store.livekit_delegations.count_of_user(alice) == 0U);
             }
         }
     }

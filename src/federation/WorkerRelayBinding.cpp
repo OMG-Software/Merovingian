@@ -35,6 +35,8 @@ namespace
             return "user_devices";
         case WorkerRelayKind::profile_query:
             return "profile_query";
+        case WorkerRelayKind::livekit_token:
+            return "livekit_token";
         }
         return "unknown";
     }
@@ -102,6 +104,9 @@ auto verified_request_relay_digests(std::string_view method, std::string_view ta
         {
             std::ignore = append_digest(digests, WorkerRelayKind::profile_query, user_id);
         }
+        break;
+    case FederationEndpoint::livekit_token:
+        std::ignore = append_digest(digests, WorkerRelayKind::livekit_token, body);
         break;
     default:
         break;
