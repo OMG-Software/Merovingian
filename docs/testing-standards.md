@@ -374,6 +374,16 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
   in the `WHEN` after the action; `ScopedThreadJoin` joins only at scope exit,
   after the `THEN` has read it. A counter a test double bumps from calls that
   may overlap is a `std::atomic`. Never order such accesses with a sleep.
+- A mock server's responder runs on the mock's thread, so it never uses a
+  Catch2 assertion (see "Concurrency and locking tests" above): TSan reports
+  Catch2's last-assertion globals racing the main thread's. It records what
+  went wrong as a value that the scenario asserts on after the join, as
+  `InviteeServer::finish()` in `test_invite_federation_flow.cpp` does.
+- A scenario that the TSan runtime itself makes unobservable skips under TSan
+  and is listed in the `tsan` group of `tests/expected_skips.json`. That covers
+  mlock lock state, since sanitizer_common's `mlock` interceptor locks nothing,
+  and a forked child's task count, since TSan starts its background thread
+  again in the child.
 - A test calls `homeserver::ingest_pdu_event` with `runtime.mutex` released at
   every level: it refuses a caller that holds it (ADR-0848). Read the store under
   a `RuntimeLock`, then call ingestion inside a `RuntimeLockRelease` scope.

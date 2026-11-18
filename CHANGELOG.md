@@ -36,8 +36,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   could deadlock against an ingest of the same room (ADR-0848).
 * SRV lookups on glibc each own their resolver state, set up and torn down under a lock that ThreadSanitizer can see;
   the query itself stays unlocked (ADR-0849).
-* Tests no longer read what a mock server's thread recorded before joining it, and count concurrent discovery calls
-  atomically, so the `tsan` job reports no races.
+* Tests no longer read what a mock server's thread recorded before joining it, count concurrent discovery calls
+  atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
+* The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
+  TSan's own interceptor and background thread make what they check unobservable.
 
 ## Release notes
 
