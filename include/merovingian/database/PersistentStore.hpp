@@ -259,10 +259,10 @@ struct PersistentStoreOpenResult;
 namespace detail
 {
     // DB-7, ADR-0154: each backend's pool of write connections, defined in its
-    // own source file. Shared, not copied, by copies of a store.
+    // own source file. Shared, not copied, by copies of a store. Only the
+    // PostgreSQL pool's limit can be set: SQLite's is one (ADR-0834).
     struct SqliteWritePool;
     struct PostgresqlWritePool;
-    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void;
     auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void;
     [[nodiscard]] auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t;
     [[nodiscard]] auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t;
@@ -659,10 +659,11 @@ struct PersistentStore final
     // stripe locks because capture access is independent of any room. Held by
     // value (ADR-0517) so PersistentStore stays copyable and moveable; a copy gets its own mutex.
     core::CopyableMutex statement_capture_mutex{};
-    // DB-7, ADR-0154: persisted writes reuse at most this many connections
-    // (database.pool_size, applied by set_write_connection_limit), instead of
-    // opening one per transaction. The pool of the store's backend is created
-    // when the store is opened; copies share it.
+    // DB-7, ADR-0154: persisted writes to PostgreSQL reuse at most this many
+    // connections (database.pool_size, applied by set_write_connection_limit),
+    // instead of opening one per transaction; SQLite writes reuse one
+    // (ADR-0834). The pool of the store's backend is created when the store is
+    // opened; copies share it.
     std::uint32_t write_connection_limit{16U};
     std::shared_ptr<detail::SqliteWritePool> sqlite_write_pool{}; // SHARED_PTR: reviewed - shared by store copies.
     std::shared_ptr<detail::PostgresqlWritePool>                  // SHARED_PTR: reviewed - shared by store copies.
@@ -744,9 +745,10 @@ static_assert(std::is_nothrow_move_constructible_v<PersistentStore> &&
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
-// DB-7, ADR-0154: caps the connections persisted writes keep and use at once
-// (database.pool_size). A write waits for a free connection rather than opening
-// another. Takes effect for the next write.
+// DB-7, ADR-0154: caps the PostgreSQL connections persisted writes keep and use
+// at once (database.pool_size). A write waits for a free connection rather than
+// opening another. Takes effect for the next write. SQLite writes always share
+// one connection and ignore it (ADR-0834).
 auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void;
 // Connections ever opened for persisted writes (both backends' pools).
 [[nodiscard]] auto write_connections_opened(PersistentStore const& store) -> std::uint64_t;

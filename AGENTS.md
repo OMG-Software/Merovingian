@@ -27,7 +27,9 @@ report any unresolved conflict or unmet requirement. See
 - Flag potential bugs or edge cases after the code explanation if relevant.
 - With every change, update the relevant docs. See [docs/AGENTS.md](docs/AGENTS.md) for the update table.
 - Before creating a new branch from main, pull from origin so that main is up to date.
-- Bump the version number on creating a new branch, except for documentation-only changes. See versioning doc for all the places where the version number needs updating.
+- Never change the version number unless the owner asks for it; a new branch keeps its base's version, and its
+  CHANGELOG bullets go in the newest version's entry. See the [bump policy](docs/versioning.md#bump-policy) and
+  [ADR-0835](docs/adr/0835-the-version-changes-only-when-the-owner-asks.md).
 - Update the docs when code change invalidates something.
 - Record a decision in the ADR register (`docs/adr/`) whenever you make one. A
   decision qualifies when a future reader would otherwise be likely to undo it

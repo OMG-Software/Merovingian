@@ -1670,11 +1670,6 @@ namespace
 namespace detail
 {
 
-    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void
-    {
-        pool.pool.set_limit(limit);
-    }
-
     auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t
     {
         return pool.pool.opened_total();
@@ -1768,7 +1763,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     store.sqlite_read_only = read_only;
     if (!read_only)
     {
-        store.sqlite_write_pool = std::make_shared<detail::SqliteWritePool>(store.write_connection_limit);
+        store.sqlite_write_pool = std::make_shared<detail::SqliteWritePool>();
     }
     store.schema = load_schema_state(sqlite);
     log_diagnostic("store.schema_loaded",
@@ -1923,8 +1918,10 @@ namespace detail
             auto connection = open_writer();
             return connection.has_value() && execute_transaction(**connection, statements);
         }
-        // DB-7, ADR-0154: reuse a pooled connection; a SQLite handle stays usable
-        // after a failed transaction (execute_transaction rolls back).
+        // DB-7, ADR-0154: reuse the pooled connection; a SQLite handle stays usable
+        // after a failed transaction (execute_transaction rolls back). There is one
+        // (ADR-0834), so a writer waits here for the one before it, never in
+        // SQLite's busy handler against another connection of this process.
         auto lease = store.sqlite_write_pool->pool.acquire(open_writer, [](SqliteConnection const&) {
             return true;
         });

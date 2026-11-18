@@ -1296,7 +1296,7 @@ federation port `8448`.
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
 | `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
-| `database.pool_size` | `16` | Database connections persisted writes keep and use at once; a write waits for a free one rather than opening another (DB-7, ADR-0154). Requires restart. |
+| `database.pool_size` | `16` | PostgreSQL connections persisted writes keep and use at once; a write waits for a free one rather than opening another (DB-7, ADR-0154). SQLite writes always share one connection, since SQLite runs one write at a time (ADR-0834). Requires restart. |
 | `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. The file itself must not be a symlink and is created `0600`; missing directories are created `0700`. Directories that already exist may be symlinks (for example `/var/lib/merovingian` pointing at a data volume). |
 
 #### PostgreSQL TLS admission

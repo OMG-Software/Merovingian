@@ -10,10 +10,17 @@
 namespace merovingian::database::detail
 {
 
+// ADR-0834: one SQLite write connection, whatever database.pool_size says.
+// SQLite runs one write transaction at a time; a second connection of this
+// process would wait for the first's lock in SQLite's polling busy handler,
+// lose to its back-to-back commits and be refused after 5 s. Writers wait in
+// the pool instead, without a time limit.
 struct SqliteWritePool final
 {
-    explicit SqliteWritePool(std::uint32_t limit)
-        : pool{limit}
+    static constexpr auto connection_limit = std::uint32_t{1U};
+
+    SqliteWritePool()
+        : pool{connection_limit}
     {
     }
     ConnectionPool<SqliteConnection> pool;
