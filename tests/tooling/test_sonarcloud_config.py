@@ -81,14 +81,56 @@ def repository_files() -> list[str]:
     return files
 
 
-def scan_step_of(workflow: str) -> str:
-    """The step that uses the SonarQube scan action, found by its `uses:` and not by its name."""
-    steps = workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[1].split("\n      - ")
+def job_text(workflow: str, job: str) -> str:
+    """The text of one job: from its `  <job>:` line under `jobs:` to the next job or the end of the file."""
+    section = workflow.split("\njobs:\n", 1)[1]
+    match = re.search(rf"(?m)^  {re.escape(job)}:[ \t]*\n(.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*$|\Z)", section, re.DOTALL)
+    assert match, f"the workflow has no job {job}"
+    return match.group(1)
+
+
+def steps_of(workflow: str, job: str) -> list[str]:
+    """The job's own steps, each indented like a step's later keys so its first key reads like the rest."""
+    steps = ("\n" + job_text(workflow, job)).split("\n    steps:\n", 1)[1].split("\n      - ")
     # A step's first key follows its `- ` marker, so `uses:` is not indented there; indent that first line like the rest.
-    steps = ["        " + step for step in steps]
-    scans = [step for step in steps if re.search(r"(?m)^        uses: SonarSource/sonarqube-scan-action@", step)]
-    assert len(scans) == 1, "expected exactly one SonarQube scan step"
+    return ["        " + step for step in steps]
+
+
+def scan_step_of(workflow: str) -> str:
+    """The step of `jobs.coverage` that uses the SonarQube scan action, found by its `uses:` and not by its name."""
+    scans = [
+        step
+        for step in steps_of(workflow, "coverage")
+        if re.search(r"(?m)^        uses: SonarSource/sonarqube-scan-action@", step)
+    ]
+    assert len(scans) == 1, "expected exactly one SonarQube scan step in jobs.coverage"
     return scans[0]
+
+
+def codecov_is_confined(workflow: str) -> bool:
+    """The Codecov action appears in `jobs.codecov` and never in `jobs.coverage`, which holds the Sonar token."""
+    action = "codecov/codecov-action@"
+    return action in job_text(workflow, "codecov") and action not in job_text(workflow, "coverage")
+
+
+def build_step_of(workflow: str) -> str:
+    """The step of `jobs.coverage` that runs scripts/build-linux.sh."""
+    builds = [
+        step for step in steps_of(workflow, "coverage") if re.search(r"(?m)^        run: .*build-linux\.sh", step)
+    ]
+    assert len(builds) == 1, "expected exactly one build step in jobs.coverage"
+    return builds[0]
+
+
+def permissions_of(job: str) -> dict[str, str] | str | None:
+    """The job's own `permissions:`: its mapping, an inline value such as `write-all`, or None without one."""
+    match = re.search(r"(?m)^    permissions:[ \t]*(.*)\n((?:      .*\n?)*)", job)
+    if match is None:
+        return None
+    if match.group(1).strip():
+        return match.group(1).strip()
+    pairs = (line.split(":", 1) for line in match.group(2).splitlines() if line.strip())
+    return {key.strip(): value.strip() for key, value in pairs}
 
 
 def step_env(step: str) -> dict[str, str]:
@@ -103,7 +145,7 @@ class ScanStepLookupTest(unittest.TestCase):
     @staticmethod
     def workflow(first_key: str, other_keys: str) -> str:
         return (
-            "name: x\njobs:\n  scan:\n    steps:\n      - name: other\n        run: true\n"
+            "name: x\njobs:\n  coverage:\n    steps:\n      - name: other\n        run: true\n"
             f"      - {first_key}\n{other_keys}"
         )
 
@@ -130,6 +172,65 @@ class ScanStepLookupTest(unittest.TestCase):
 
         # THEN it is that step.
         self.assertEqual(step_env(step), {"SONAR_TOKEN": "t"})
+
+
+    def test_given_the_action_only_in_a_later_job_when_the_step_is_looked_up_then_it_is_not_found(self) -> None:
+        # GIVEN a workflow whose coverage job has no scan, and a later job that has one.
+        text = (
+            "name: x\njobs:\n  coverage:\n    steps:\n      - name: other\n        run: true\n"
+            "  codecov:\n    steps:\n      - uses: SonarSource/sonarqube-scan-action@abc\n"
+            "        env:\n          SONAR_TOKEN: t\n"
+        )
+
+        # WHEN the scan step is looked up.
+        # THEN jobs.coverage has none, so the lookup fails instead of finding the later job's step.
+        with self.assertRaises(AssertionError):
+            scan_step_of(text)
+
+
+class JobScopedReadersTest(unittest.TestCase):
+    CODECOV = "        uses: codecov/codecov-action@abc\n"
+
+    def test_given_codecov_with_write_all_and_a_later_job_with_contents_when_read_then_it_is_not_contents_read(
+        self,
+    ) -> None:
+        # GIVEN a codecov job granting `write-all`, followed by a job that grants `contents: read`.
+        text = (
+            "name: x\njobs:\n  codecov:\n    permissions: write-all\n    steps:\n      - run: true\n"
+            "  later:\n    permissions:\n      contents: read\n"
+        )
+
+        # WHEN the permissions of the codecov job are read from its own text.
+        permissions = permissions_of(job_text(text, "codecov"))
+
+        # THEN they are `write-all`, not the later job's mapping.
+        self.assertEqual(permissions, "write-all")
+        self.assertEqual(permissions_of(job_text(text, "later")), {"contents": "read"})
+
+    def test_given_a_build_step_with_a_false_condition_when_read_then_it_has_a_condition(self) -> None:
+        # GIVEN a coverage job whose build step is switched off by `if: ${{ false }}`.
+        text = (
+            "name: x\njobs:\n  coverage:\n    steps:\n      - name: Build\n        if: ${{ false }}\n"
+            "        run: sh scripts/build-linux.sh --builddir build-coverage --coverage\n"
+        )
+
+        # WHEN the build step is found.
+        step = build_step_of(text)
+
+        # THEN its own `if:` is visible, so the check that it always runs fails.
+        self.assertRegex(step, r"(?m)^        if:")
+
+    def test_given_codecov_moved_into_the_coverage_job_when_read_then_it_is_not_confined_to_its_own_job(self) -> None:
+        # GIVEN a coverage job that uploads to Codecov right after the scan, and a codecov job that does too.
+        text = (
+            "name: x\njobs:\n  coverage:\n    steps:\n      - uses: SonarSource/sonarqube-scan-action@abc\n"
+            "      - name: Upload\n" + self.CODECOV + "  codecov:\n    steps:\n      - name: Upload\n" + self.CODECOV
+        )
+
+        # WHEN each job's text is searched for the Codecov action.
+        # THEN the confinement check rejects it, and accepts the same workflow without the coverage job's upload.
+        self.assertFalse(codecov_is_confined(text))
+        self.assertTrue(codecov_is_confined(text.replace("      - name: Upload\n" + self.CODECOV, "", 1)))
 
 
 class SonarCloudExclusionsTest(unittest.TestCase):
@@ -206,15 +307,15 @@ class SonarCloudCiScanTest(unittest.TestCase):
     def test_given_the_workflow_when_read_then_it_scans_full_history_with_least_privilege(self) -> None:
         # GIVEN the coverage workflow.
         # WHEN its checkout depth and permissions are read.
-        coverage_job, codecov_job = self.workflow.split("\n  codecov:\n", 1)
+        coverage_job = job_text(self.workflow, "coverage")
+        codecov_job = job_text(self.workflow, "codecov")
 
         # THEN it fetches full history, grants nothing at workflow level, and only the scanning job may read pull
-        # requests; the Codecov job reads contents alone.
+        # requests; the Codecov job reads contents alone, each judged within its own job's text.
         self.assertIn("fetch-depth: 0", self.workflow)
         self.assertRegex(self.workflow, r"(?m)^permissions: \{\}$")
-        self.assertRegex(coverage_job, r"(?m)^    permissions:\n      contents: read\n      pull-requests: read\n")
-        self.assertRegex(codecov_job, r"(?m)^    permissions:\n      contents: read\n(?!      )")
-        self.assertNotIn("pull-requests", codecov_job)
+        self.assertEqual(permissions_of(coverage_job), {"contents": "read", "pull-requests": "read"})
+        self.assertEqual(permissions_of(codecov_job), {"contents": "read"})
 
     def test_given_the_workflow_when_read_then_the_token_is_in_the_scan_step_alone(self) -> None:
         # GIVEN the job runs beside third-party actions (Codecov downloads its CLI at run time).
@@ -224,8 +325,9 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertNotIn("secrets.SONAR_TOKEN", before_steps)
         # AND that step's own `env` maps the token to the secret, and binds nothing else.
         self.assertEqual(step_env(scan_step_of(self.workflow)), {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"})
-        # AND the Codecov CLI, downloaded at run time with its signature check skipped, runs after the scan.
-        self.assertLess(self.workflow.index("sonarqube-scan-action@"), self.workflow.index("codecov/codecov-action@"))
+        # AND the Codecov CLI, downloaded at run time with its signature check skipped, runs in its own job and never
+        # in the job that holds the token.
+        self.assertTrue(codecov_is_confined(self.workflow))
 
     def test_given_a_cpp26_build_when_the_properties_are_read_then_cpp26_analysis_is_enabled(self) -> None:
         # The analyser stops with "C++26 standard detected" unless this is set.
@@ -288,6 +390,17 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertRegex(scan, r"(?m)^        " + re.escape(condition) + r"$")
         job = self.workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
         self.assertNotRegex(job, r"(?m)^    if:")
+
+    def test_given_the_workflow_when_read_then_the_build_step_always_runs_its_real_command(self) -> None:
+        # GIVEN the build step of the coverage job.
+        builddir = sonar_property("sonar.cfamily.compile-commands").rpartition("/")[0]
+        step = build_step_of(self.workflow)
+
+        # WHEN its condition and command are read.
+        # THEN it has no `if:` of its own, so it cannot be switched off, and it runs the coverage build.
+        self.assertNotRegex(step, r"(?m)^        if:")
+        command = rf"sh scripts/build-linux\.sh --builddir {re.escape(builddir)} --coverage --skip-job coverage"
+        self.assertRegex(step, rf"(?m)^        run: {command}$")
 
     def test_given_the_workflow_when_read_then_one_build_feeds_the_scan_and_the_reports(self) -> None:
         # The scan reads the build directory the coverage build writes; nothing else compiles in the job.

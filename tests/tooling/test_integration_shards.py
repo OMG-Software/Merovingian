@@ -30,16 +30,17 @@ import zlib
 from pathlib import Path
 
 here = Path(__file__).parent
-filter_spec, count, index, seed = "", 1, 0, ""
+filter_spec, count, index, seed, order, sharded = "", 1, 0, "", "", False
 arguments = sys.argv[1:]
 while arguments:
     argument = arguments.pop(0)
     if argument == "--order":
-        arguments.pop(0)
+        order = arguments.pop(0)
     elif argument == "--rng-seed":
         seed = arguments.pop(0)
     elif argument == "--shard-count":
         count = int(arguments.pop(0))
+        sharded = True
     elif argument == "--shard-index":
         index = int(arguments.pop(0))
     elif argument == "--verbosity":
@@ -47,6 +48,9 @@ while arguments:
             sys.exit("the fake lists names only at quiet verbosity, as Catch2 3 does")
     elif argument != "--list-tests":
         filter_spec = argument
+# The full listing and every shard listing share Meson's order and seed; a standalone tag filter needs neither.
+if (filter_spec == "" or sharded) and (order, seed) != ("rand", "__SEED__"):
+    sys.exit(f"the listing needs --order rand --rng-seed __SEED__, got order {order!r} and seed {seed!r}")
 broken = (here / "BROKEN").exists()
 if broken:
     seed = "fixed"  # healthy mode keeps the caller's seed; broken mode orders every process the same way
@@ -72,6 +76,13 @@ print("\n".join(names[start:end]))
 """
 
 
+def meson_seed() -> str:
+    """The numeric `--rng-seed` tests/meson.build gives every shard."""
+    match = re.search(r"(?m)^\s*integration_shard_seed = '(\d+)'$", TESTS_MESON.read_text(encoding="utf-8"))
+    assert match is not None, "tests/meson.build defines no integration_shard_seed"
+    return match.group(1)
+
+
 def scenarios(total: int = 40) -> str:
     lines = []
     for number in range(total):
@@ -82,6 +93,43 @@ def scenarios(total: int = 40) -> str:
             tags += "[serial]"
         lines.append(f"Scenario: scenario {number}\t{tags}")
     return "\n".join(lines) + "\n"
+
+
+def without_meson_comments(text: str) -> str:
+    """`text` with every Meson `#` comment removed and its lines kept, so a comment never satisfies a match."""
+    return "".join(re.sub(r"\s*#.*$", "", line) + "\n" for line in text.splitlines())
+
+
+def registration_in(meson: str, name: str) -> str | None:
+    """The text of the active `test(...)` call whose first argument is `name`, even when `test(` ends its line."""
+    active = without_meson_comments(meson)
+    opener = re.search(rf"\btest\(\s*'{re.escape(name)}'", active)
+    if opener is None:
+        return None
+    end = re.search(r"\n {2,4}\)\n", active[opener.start() :])
+    return None if end is None else active[opener.start() : opener.start() + end.start()]
+
+
+def has_unsharded_registration(meson: str) -> bool:
+    """True when an active `test('integration-tests', ...)` runs the whole binary as one test."""
+    return re.search(r"\btest\(\s*'integration-tests'", without_meson_comments(meson)) is not None
+
+
+def order_args_stay_shared(meson: str) -> bool:
+    """`integration_shard_order_args` is assigned once and the shard registration passes it on unchanged."""
+    active = without_meson_comments(meson)
+    if len(re.findall(r"(?m)^\s*integration_shard_order_args\s*[-+*/]?=", active)) != 1:
+        return False
+    shards = registration_in(meson, "integration-tests-shard-@0@-of-@1@")
+    if shards is None:
+        return False
+    definition = re.search(r"(?m)^\s*integration_shard_order_args\s*=", active)
+    between = active[definition.start() : active.index(shards) + len(shards)]
+    # One mention is the definition and one is the shard's own `args:`, which adds nothing to it.
+    return (
+        between.count("integration_shard_order_args") == 2
+        and "args: [integration_shard_filter] + integration_shard_order_args + [" in shards
+    )
 
 
 def active_lines(text: str) -> list[str]:
@@ -113,7 +161,9 @@ class IntegrationShardRegistrationTests(unittest.TestCase):
         # AND the shard's own active arguments hand Catch2 the shared count and this iteration's index.
         self.assertIn("'--shard-count', integration_shard_count.to_string(),", shards)
         self.assertIn("'--shard-index', shard_index.to_string(),", shards)
-        self.assertNotIn("test('integration-tests',", self.active)
+        self.assertFalse(has_unsharded_registration(self.meson), "the whole binary must not run as one test")
+        # AND the order arguments are assigned once and reach the shards unchanged.
+        self.assertTrue(order_args_stay_shared(self.meson))
 
     def test_coverage_check_is_given_the_registration_it_checks(self) -> None:
         # GIVEN the shard registration.
@@ -143,10 +193,9 @@ class IntegrationShardRegistrationTests(unittest.TestCase):
 
     def registration(self, name: str) -> str:
         """The text of the `test(...)` call that registers `name`, or of the foreach that registers the shards."""
-        start = self.meson.index(f"'{name}'")
-        end = re.search(r"\n {2,4}\)\n", self.meson[start:])
-        self.assertIsNotNone(end, name)
-        return self.meson[start : start + end.start()]
+        found = registration_in(self.meson, name)
+        self.assertIsNotNone(found, f"no active test() registers {name}")
+        return found
 
     def test_the_shards_the_postgresql_test_and_the_serial_test_each_pass_their_own_filter(self) -> None:
         # GIVEN the three kinds of registration of the integration binary.
@@ -179,14 +228,16 @@ class IntegrationShardRegistrationTests(unittest.TestCase):
 
 class CheckIntegrationShardsTests(unittest.TestCase):
     def run_check(self, broken: str = "", scenario_text: str | None = None, count: int = 4,
-                  filters: tuple[str, ...] = ("[postgresql]", "[serial]")) -> subprocess.CompletedProcess[str]:
+                  filters: tuple[str, ...] = ("[postgresql]", "[serial]"),
+                  seed: str | None = None) -> subprocess.CompletedProcess[str]:
+        seed = meson_seed() if seed is None else seed
         shell = shutil.which("sh")
         if shell is None or sys.platform == "win32" and shell.lower().endswith("system32\\sh.exe"):
             self.skipTest("POSIX sh is not available")
         root = Path(tempfile.mkdtemp(prefix="shard-check-"))
         self.addCleanup(shutil.rmtree, root, True)
         binary = root / "fake-integration-tests"
-        (root / "lister.py").write_text(FAKE_LISTER, encoding="utf-8")
+        (root / "lister.py").write_text(FAKE_LISTER.replace("__SEED__", meson_seed()), encoding="utf-8")
         launcher = f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$(dirname "$0")/lister.py" "$@"\n'
         binary.write_text(launcher, encoding="utf-8", newline="\n")
         binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
@@ -194,7 +245,7 @@ class CheckIntegrationShardsTests(unittest.TestCase):
         if broken:
             (root / "BROKEN").write_text(broken, encoding="utf-8")
         return subprocess.run(
-            [shell, str(SCRIPT), str(binary), str(count), "271828", "~[postgresql]~[serial]", *filters],
+            [shell, str(SCRIPT), str(binary), str(count), seed, "~[postgresql]~[serial]", *filters],
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -244,6 +295,15 @@ class CheckIntegrationShardsTests(unittest.TestCase):
         diff_lines = [line for line in result.stderr.splitlines() if re.match(r"[<>] Scenario: ", line)]
         self.assertEqual(sorted(line[0] for line in diff_lines), ["<", ">"])
 
+    def test_a_checker_invoked_without_the_meson_seed_fails(self) -> None:
+        # GIVEN a binary that lists the full binary and every shard only with Meson's `--order rand --rng-seed`.
+        # WHEN the check is started with an empty seed, as when the seed is dropped from the Meson arguments.
+        result = self.run_check(seed="")
+
+        # THEN the binary refuses the listing and the check fails closed.
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("needs --order rand --rng-seed", result.stderr)
+
     def test_an_empty_binary_fails_closed(self) -> None:
         # GIVEN a binary that lists no scenario.
         result = self.run_check(scenario_text="")
@@ -251,6 +311,66 @@ class CheckIntegrationShardsTests(unittest.TestCase):
         # WHEN the check runs.
         # THEN the check refuses to pass.
         self.assertEqual(result.returncode, 2, result.stderr)
+
+
+class TheMesonRegistrationReadersIgnoreCommentsAndLineBreaks(unittest.TestCase):
+    SHARDS = (
+        "  integration_shard_order_args = ['--order', 'rand', '--rng-seed', integration_shard_seed]\n"
+        "  foreach shard_index : range(integration_shard_count)\n"
+        "{inside}"
+        "    test(\n"
+        "      'integration-tests-shard-@0@-of-@1@'.format(shard_index + 1, integration_shard_count),\n"
+        "      integration_tests,\n"
+        "      args: [integration_shard_filter] + integration_shard_order_args + [\n"
+        "      ],\n"
+        "    )\n"
+        "  endforeach\n"
+    )
+
+    def test_given_an_unsharded_registration_on_two_lines_when_read_then_it_is_found(self) -> None:
+        # GIVEN `test(` and the name on separate lines, and the same text in a comment.
+        active = "  test(\n    'integration-tests',\n    integration_tests,\n  )\n"
+        commented = "  # test('integration-tests', integration_tests)\n"
+
+        # WHEN each is checked for an unsharded registration.
+        # THEN the active one is rejected and the comment is not.
+        self.assertTrue(has_unsharded_registration(active))
+        self.assertFalse(has_unsharded_registration(commented))
+
+    def test_given_a_comment_naming_a_test_when_its_registration_is_read_then_the_comment_does_not_move_it(
+        self,
+    ) -> None:
+        # GIVEN a comment above the PostgreSQL test that mentions the serial test's name.
+        meson = (
+            "  # the 'integration-tests-serial' test must stay out of this one\n"
+            "  test(\n    'integration-tests-postgresql',\n    args: ['[postgresql]'],\n  )\n"
+            "  test(\n    'integration-tests-serial',\n    args: ['[serial]'],\n  )\n"
+        )
+
+        # WHEN the serial registration is read.
+        found = registration_in(meson, "integration-tests-serial")
+
+        # THEN it is the serial test's own call.
+        self.assertIsNotNone(found)
+        self.assertIn("args: ['[serial]'],", found)
+        self.assertNotIn("[postgresql]", found)
+
+    def test_given_the_order_arguments_when_a_shard_overrides_them_then_the_check_fails(self) -> None:
+        cases = {
+            "untouched": ("", True),
+            "reassigned in the loop": ("    integration_shard_order_args = ['--order', 'decl']\n", False),
+            "extended in the loop": ("    integration_shard_order_args += ['--rng-seed', '1']\n", False),
+        }
+        for label, (inside, shared) in cases.items():
+            with self.subTest(case=label):
+                # GIVEN the shard loop, with or without a per-shard change to the order arguments.
+                meson = self.SHARDS.format(inside=inside)
+
+                # WHEN the order arguments are checked.
+                result = order_args_stay_shared(meson)
+
+                # THEN only the untouched assignment, passed on unchanged, passes.
+                self.assertEqual(result, shared)
 
 
 if __name__ == "__main__":

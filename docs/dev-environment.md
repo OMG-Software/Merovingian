@@ -39,7 +39,8 @@ than `yyjson.h` directly.
 
 CI runs clang-tidy through `clang-tidy-diff` on the lines a change adds or edits
 in C++ translation units under `src/` and `tests/`, compared with the pull
-request's or merge queue's base commit, with a per-file timeout; a diagnostic on
+request's or merge queue's base commit (for a push, the tip it replaced; for a
+manual run, the commit's parent), with a per-file timeout; a diagnostic on
 an unchanged line does not fail it
 ([ADR-0847](adr/0847-clang-tidy-gates-only-the-lines-a-change-adds-or-edits.md)).
 Headers are not run as standalone clang-tidy inputs. To check one file locally,

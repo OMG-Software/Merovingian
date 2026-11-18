@@ -55,19 +55,30 @@ jobs:
         shell: bash
         env:
           # The commit the change is compared with: the pull request's base, or the merge
-          # queue's base. Empty for a push or a manual run, which compare with main.
+          # queue's base. Empty for a push or a manual run.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # A push's previous tip (all zeros when the push created the branch).
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -eu
           # The checkout is one commit deep, so the history has no merge base and a
           # three-dot diff fails. A two-dot diff compares the two trees and needs only both
           # commits. Before, a failed three-dot diff behind `|| true` read as "no changed
           # files", and clang-tidy never ran on a pull request.
-          if [ -n "${BASE_SHA}" ]; then
-            git fetch --no-tags --depth=1 origin "${BASE_SHA}"
-          else
-            git fetch --no-tags --depth=1 origin main
+          # A push to main compares with the tip it replaced, not with main itself, which is
+          # the pushed commit and would leave nothing to check. A manual run, or a push that
+          # created the branch, compares with the checked-out commit's parent.
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${GITHUB_EVENT_NAME}" = "push" ] &&
+            [ -n "${PUSH_BEFORE}" ] && [ "${PUSH_BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            base="${PUSH_BEFORE}"
           fi
+          if [ -z "${base}" ]; then
+            git fetch --no-tags --deepen=1 origin "${GITHUB_SHA}"
+            base="$(git rev-parse HEAD^)"
+          fi
+          # FETCH_HEAD is the base commit from here on.
+          git fetch --no-tags --depth=1 origin "${base}"
 
           # clang-tidy-diff runs clang-tidy on each changed translation unit with a line
           # filter, so only diagnostics on added or changed lines count: code that predates

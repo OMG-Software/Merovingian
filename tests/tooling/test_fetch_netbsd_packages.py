@@ -124,6 +124,28 @@ class DeweyTests(unittest.TestCase):
         self.assertEqual(order, -1)
         self.assertEqual(best.pkgname, "x-1.0q1")
 
+    def test_modifiers_nb_and_letters_are_case_insensitive(self) -> None:
+        # GIVEN NetBSD's dewey.c, which matches modifiers and "nb" with strncasecmp and letters with tolower.
+        # WHEN upper-case spellings are compared
+        # THEN they order as their lower-case forms do.
+        self.assertEqual(fetch.dewey_compare("1.0RC1", "1.0"), -1)
+        self.assertEqual(fetch.dewey_compare("1.0ALPHA1", "1.0Beta1"), -1)
+        self.assertEqual(fetch.dewey_compare("1.0PL1", "1.0"), 1)
+        self.assertEqual(fetch.dewey_compare("1.0NB2", "1.0nb1"), 1)
+        self.assertEqual(fetch.dewey_compare("1.0A", "1.0a"), 0)
+
+    def test_a_pre_release_in_capitals_is_not_preferred_to_the_release(self) -> None:
+        # GIVEN lib-1.0RC1 and lib-1.0 in a summary.
+        packages = fetch.parse_summary(
+            "PKGNAME=lib-1.0RC1\nFILE_NAME=lib-1.0RC1.tgz\nFILE_SIZE=1\n\n"
+            "PKGNAME=lib-1.0\nFILE_NAME=lib-1.0.tgz\nFILE_SIZE=1\n"
+        )
+        # WHEN lib>=1.0 is matched
+        best = fetch.best_match("lib>=1.0", packages)
+        # THEN the release is chosen and the release candidate is not a candidate at all.
+        self.assertEqual(best.pkgname, "lib-1.0")
+        self.assertEqual([p.pkgname for p in packages if fetch.dewey_compare(p.version, "1.0") >= 0], ["lib-1.0"])
+
     def test_trailing_zeros_are_equal(self) -> None:
         self.assertEqual(fetch.dewey_compare("1.0", "1"), 0)
         self.assertEqual(fetch.dewey_compare("2.5nb0", "2.5"), 0)
@@ -273,6 +295,7 @@ class SyncTests(unittest.TestCase):
         # THEN the file is kept and verify_file was not called again.
         self.assertEqual(result, (1, 0, 0))
         self.assertEqual(calls, ["x-1.tgz"])
+        self.assertEqual((self.output / "x-1.tgz").read_bytes(), self.data)
         verify.assert_not_called()
 
     def test_a_download_that_cannot_be_verified_fails_and_leaves_nothing(self) -> None:
@@ -492,6 +515,113 @@ class SummaryRootsTests(unittest.TestCase):
         # THEN the second candidate is used, not a crash.
         self.assertEqual(packages[0].file_size, 5)
 
+    def test_a_summary_that_expands_past_the_limit_is_a_failed_candidate(self) -> None:
+        # GIVEN a first format that is a small gzip expanding past a lowered limit and a second that is small.
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            if url.endswith(".gz"):
+                destination.write(gzip.compress(b"#" * 100000))
+            else:
+                destination.write(bz2.compress(self.CLANG.encode()))
+
+        # WHEN the summary is fetched with the decoded limit at 1000 bytes
+        with (
+            mock.patch.object(fetch, "MAX_DECODED_SUMMARY_BYTES", 1000),
+            mock.patch.object(fetch, "http_get", get),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            packages = fetch.fetch_summary(["https://a/"], None, 1, 1, ["clang"])
+        # THEN the oversized one is skipped and the next format is used.
+        self.assertEqual(packages[0].file_size, 5)
+
+    def test_a_summary_that_only_expands_past_the_limit_fails_naming_it(self) -> None:
+        # GIVEN one mirror whose only working format expands past the limit.
+        texts = {"https://a/pkg_summary.gz": "#" * 100000}
+        # WHEN the summary is fetched with the limit lowered THEN it fails and names the limit.
+        with mock.patch.object(fetch, "MAX_DECODED_SUMMARY_BYTES", 1000):
+            with self.assertRaisesRegex(fetch.FetchError, "decodes to more than 1000"):
+                self.fetch(texts, ["https://a/"], None, ["clang"])
+
+    def test_each_summary_format_decodes_within_the_limit(self) -> None:
+        # GIVEN a payload compressed three ways
+        payload = b"PKGNAME=x-1\n" * 1000
+        compressors = {
+            "pkg_summary.gz": gzip.compress,
+            "pkg_summary.bz2": bz2.compress,
+            "pkg_summary.xz": lzma.compress,
+        }
+        for name, make in fetch.SUMMARY_NAMES:
+            with self.subTest(name=name):
+                # WHEN it is decoded with a limit equal to its size THEN the whole payload comes back.
+                decoded = fetch.decompress_bounded(make(), compressors[name](payload), len(payload))
+                self.assertEqual(decoded, payload)
+
+    def test_a_truncated_summary_stream_is_an_error(self) -> None:
+        # GIVEN a gzip stream cut short
+        data = gzip.compress(b"payload" * 1000)[:-10]
+        # WHEN it is decoded THEN the end of the data before the end of the stream is an EOFError.
+        with self.assertRaises(EOFError):
+            fetch.decompress_bounded(fetch.SUMMARY_NAMES[0][1](), data, 1 << 20)
+
+    INCOMPLETE = "PKGNAME=clang-1\nDEPENDS=gone>=1\nFILE_NAME=clang-1.tgz\nFILE_SIZE=6\n"
+
+    def served_with_log(self, texts: dict[str, str]):
+        urls: list[str] = []
+        serve = self.serving(texts)
+
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            urls.append(url)
+            serve(url, destination, limit, timeout, deadline)
+
+        return urls, get
+
+    def test_a_complete_second_candidate_is_preferred_to_an_incomplete_first(self) -> None:
+        # GIVEN a first mirror whose required closure has an unresolved dependency and a complete second.
+        texts = {"https://a/pkg_summary.gz": self.INCOMPLETE, "https://b/pkg_summary.gz": self.CLANG}
+        urls, get = self.served_with_log(texts)
+        # WHEN the summary is fetched
+        with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+            packages = fetch.fetch_summary(["https://a/", "https://b/"], None, 1, 1, ["clang"])
+        # THEN the second is returned.
+        self.assertEqual(packages[0].file_size, 5)
+        self.assertIn("https://b/pkg_summary.gz", urls)
+
+    def test_only_incomplete_candidates_return_the_first_with_a_warning(self) -> None:
+        # GIVEN two mirrors, both leaving a dependency unresolved, the first with FILE_SIZE 6.
+        second = self.INCOMPLETE.replace("FILE_SIZE=6", "FILE_SIZE=7")
+        texts = {"https://a/pkg_summary.gz": self.INCOMPLETE, "https://b/pkg_summary.gz": second}
+        errors = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            summary_file = Path(directory) / "summary.txt"
+            # WHEN the summary is fetched
+            with mock.patch.object(fetch, "http_get", self.serving(texts)), contextlib.redirect_stderr(errors):
+                packages = fetch.fetch_summary(["https://a/", "https://b/"], summary_file, 1, 1, ["clang"])
+            # THEN the first is returned and written, and the warning names the unresolved dependency.
+            self.assertEqual(packages[0].file_size, 6)
+            self.assertEqual(summary_file.read_text(encoding="utf-8"), self.INCOMPLETE)
+        self.assertIn("warning:", errors.getvalue())
+        self.assertIn("gone>=1", errors.getvalue())
+
+    def test_a_complete_first_candidate_does_not_fetch_the_second(self) -> None:
+        # GIVEN a complete first mirror and a second that must not be asked.
+        texts = {"https://a/pkg_summary.gz": self.CLANG, "https://b/pkg_summary.gz": self.CLANG}
+        urls, get = self.served_with_log(texts)
+        # WHEN the summary is fetched
+        with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+            fetch.fetch_summary(["https://a/", "https://b/"], None, 1, 1, ["clang"])
+        # THEN only the first mirror was requested.
+        self.assertEqual(urls, ["https://a/pkg_summary.gz"])
+
+    def test_a_complete_mirror_is_preferred_to_an_incomplete_cached_summary(self) -> None:
+        # GIVEN a cached summary that leaves a dependency unresolved and a complete mirror.
+        texts = {"https://a/pkg_summary.gz": self.CLANG}
+        with tempfile.TemporaryDirectory() as directory:
+            summary_file = Path(directory) / "summary.txt"
+            summary_file.write_text(self.INCOMPLETE, encoding="utf-8")
+            # WHEN the summary is fetched THEN the mirror's summary is used and replaces the cached one.
+            packages = self.fetch(texts, ["https://a/"], summary_file, ["clang"])
+            self.assertEqual(packages[0].file_size, 5)
+            self.assertEqual(summary_file.read_text(encoding="utf-8"), self.CLANG)
+
     def test_every_candidate_failing_the_closure_check_fails(self) -> None:
         # GIVEN one mirror whose required package has no FILE_SIZE.
         texts = {"https://a/pkg_summary.gz": self.CLANG_NO_SIZE}
@@ -628,6 +758,30 @@ class RunTests(unittest.TestCase):
         ):
             code = fetch.run(self.arguments(root, "--resolve-only", "--optional", "gdb", "clang"))
         # THEN the run succeeds, warns, and the lockfile lacks gdb.
+        self.assertEqual(code, 0)
+        self.assertIn("warning: optional package gdb-1.tgz dropped", errors.getvalue())
+        self.assertNotIn("gdb-1.tgz", (root / "lock").read_text(encoding="utf-8"))
+
+    def test_a_malformed_file_size_on_an_optional_only_package_keeps_the_summary(self) -> None:
+        # GIVEN gdb, which only the optional list needs, with FILE_SIZE of a superscript two, and a valid clang set.
+        root = self.temp_root()
+        size = len(self.DATA)
+        text = (
+            f"PKGNAME=clang-1\nDEPENDS=zlib>=1\nFILE_NAME=clang-1.tgz\nFILE_SIZE={size}\n\n"
+            f"PKGNAME=zlib-1\nFILE_NAME=zlib-1.tgz\nFILE_SIZE={size}\n\n"
+            "PKGNAME=gdb-1\nFILE_NAME=gdb-1.tgz\nFILE_SIZE=²\n"
+        )
+        # WHEN the summary is judged and the run resolves
+        packages, _ = fetch.usable_summary(text, ["clang"])
+        errors = io.StringIO()
+        with (
+            mock.patch.object(fetch, "fetch_summary", return_value=packages),
+            contextlib.redirect_stderr(errors),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = fetch.run(self.arguments(root, "--resolve-only", "--optional", "gdb", "clang"))
+        # THEN the summary is kept, gdb has no size, and the run drops gdb with the warning.
+        self.assertIsNone(next(p for p in packages if p.pkgname == "gdb-1").file_size)
         self.assertEqual(code, 0)
         self.assertIn("warning: optional package gdb-1.tgz dropped", errors.getvalue())
         self.assertNotIn("gdb-1.tgz", (root / "lock").read_text(encoding="utf-8"))

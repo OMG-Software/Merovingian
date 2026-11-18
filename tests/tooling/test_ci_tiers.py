@@ -80,21 +80,29 @@ def without_comments(text: str) -> str:
 
 
 def pull_request_admits_main(text: str) -> bool:
-    """The pull_request trigger has no `branches:` filter, or one whose complete value lists exactly `main`."""
+    """The pull_request trigger admits main: no filter, `branches:` listing it, or `branches-ignore:` not naming it."""
     match = re.search(r"^  pull_request:[ \t]*\n((?:    .*\n|\s*\n)*)", without_comments(triggers(text)), flags=re.MULTILINE)
     if match is None:
         return False
     body = match.group(1)
-    filter_match = re.search(r"(?m)^    branches:[ \t]*(.*)$", body)
+    ignored = branch_filter(body, "branches-ignore")
+    if ignored is not None and "main" in ignored:
+        return False
+    allowed = branch_filter(body, "branches")
+    return allowed is None or "main" in allowed
+
+
+def branch_filter(body: str, key: str) -> list[str] | None:
+    """The complete value of the trigger's `key:` filter, inline or block list; None when it has no such filter."""
+    filter_match = re.search(rf"(?m)^    {key}:[ \t]*(.*)$", body)
     if filter_match is None:
-        return True
+        return None
     inline = filter_match.group(1).strip()
     if inline:
-        listed = [item.strip().strip("'\"") for item in inline.strip("[]").split(",")]
-    else:
-        block = re.match(r"((?:      - .*\n?|\s*\n)*)", body[filter_match.end() + 1 :])
-        listed = [line.strip()[2:].strip().strip("'\"") for line in (block.group(1) if block else "").splitlines() if line.strip()]
-    return "main" in listed
+        return [item.strip().strip("'\"") for item in inline.strip("[]").split(",")]
+    block = re.match(r"((?:      - .*\n?|\s*\n)*)", body[filter_match.end() + 1 :])
+    lines = (block.group(1) if block else "").splitlines()
+    return [line.strip()[2:].strip().strip("'\"") for line in lines if line.strip()]
 
 
 def jobs(text: str) -> dict[str, str]:
@@ -145,28 +153,30 @@ def rendered_names(label: str, job: str) -> list[str]:
     return names
 
 
-def producers_in(workflow: str, text: str, name: str) -> list[tuple[str, str]]:
-    """One (workflow, job id) entry per check called exactly `name` that the workflow's jobs report for a pull request.
+def producers_in(workflow: str, text: str, name: str, event: str = "pull_request") -> list[tuple[str, str]]:
+    """One (workflow, job id) entry per check called exactly `name` that the workflow's jobs report for `event`.
 
-    A matrix job yields one entry per rendered leg, so two legs that render the same required name count twice.
+    A matrix job yields one entry per rendered leg, so two legs that render the same required name count twice. A
+    leg a job-level `if` skips for a pull request still runs, and reports, in the merge queue.
     """
     found = []
     for job_id, job in jobs(text).items():
         label = job_name(job_id, job)
         if label == name:
             found.append((workflow, job_id))
-        elif "${{ matrix." in label and NOT_A_PULL_REQUEST not in job_if(job):
+        elif "${{ matrix." in label and (event != "pull_request" or NOT_A_PULL_REQUEST not in job_if(job)):
             # A matrix leg reports its rendered name, which must be the check's own name, and only when the job is
             # not skipped: a job-level `if` that is false reports one check under the unexpanded template.
             found.extend((workflow, job_id) for rendered in rendered_names(label, job) if rendered == name)
     return found
 
 
-def check_producers(name: str) -> list[tuple[str, str]]:
-    """The (workflow, job id) pairs that report a check called exactly `name` for a pull request."""
+def check_producers(name: str, event: str = "pull_request") -> list[tuple[str, str]]:
+    """The (workflow, job id) pairs that report a check called exactly `name` for `event`."""
     found = []
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
-        found.extend(producers_in(workflow.name, workflow.read_text(encoding="utf-8"), name))
+        if has_trigger(workflow.read_text(encoding="utf-8"), event):
+            found.extend(producers_in(workflow.name, workflow.read_text(encoding="utf-8"), name, event))
     return found
 
 
@@ -207,10 +217,16 @@ class TheMergeQueueRunsWhatAPullRequestSkips(unittest.TestCase):
 
 
 class EveryRequiredCheckReportsForAPullRequestAndTheMergeQueue(unittest.TestCase):
-    def test_given_the_required_checks_when_the_jobs_are_read_then_each_name_belongs_to_one_job(self) -> None:
+    def test_given_the_required_checks_when_the_jobs_are_read_then_each_name_belongs_to_one_job_per_event(self) -> None:
         for name in REQUIRED_CHECKS:
-            with self.subTest(check=name):
-                self.assertEqual(len(check_producers(name)), 1, f"{name}: {check_producers(name)}")
+            for event in ("pull_request", "merge_group"):
+                with self.subTest(check=name, event=event):
+                    # GIVEN a required check and an event.
+                    # WHEN the jobs that report it for that event are collected.
+                    found = check_producers(name, event)
+
+                    # THEN exactly one job does.
+                    self.assertEqual(len(found), 1, f"{name} on {event}: {found}")
 
     def test_given_the_required_checks_when_their_workflows_are_read_then_each_triggers_for_both_events(self) -> None:
         for name in REQUIRED_CHECKS:
@@ -254,6 +270,10 @@ class TheCheckHelpersRejectWhatTheyShouldNot(unittest.TestCase):
             "main-experimental inline": ("    branches: [main-experimental]\n", False),
             "main-experimental block": ("    branches:\n      - main-experimental\n", False),
             "main in a comment": ("    branches: [release] # main\n", False),
+            "ignore main inline": ("    branches-ignore: [main]\n", False),
+            "ignore main block": ("    branches-ignore:\n      - main\n", False),
+            "ignore others inline": ("    branches-ignore: [release]\n", True),
+            "ignore others block": ("    branches-ignore:\n      - release\n", True),
         }
         for label, (body, admits) in cases.items():
             with self.subTest(case=label):
@@ -300,6 +320,24 @@ class TheCheckHelpersRejectWhatTheyShouldNot(unittest.TestCase):
         # THEN the aggregate alone reports it.
         self.assertEqual(found, [("w.yml", "aggregate")])
 
+    def test_given_a_pull_request_skipped_matrix_and_an_aggregate_when_the_merge_queue_runs_then_two_jobs_report_it(
+        self,
+    ) -> None:
+        # GIVEN a matrix leg skipped for pull requests and an aggregate, both rendering the required name `suite`.
+        text = (
+            "\njobs:\n"
+            + self.matrix_job("suite", condition="github.event_name != 'pull_request'")
+            + "  aggregate:\n    name: suite\n    runs-on: x\n"
+        )
+
+        # WHEN the producers of `suite` are collected for each event.
+        pull_request = producers_in("w.yml", text, "suite", "pull_request")
+        merge_group = producers_in("w.yml", text, "suite", "merge_group")
+
+        # THEN a pull request has one producer, but the merge queue has two, which the uniqueness check rejects.
+        self.assertEqual(len(pull_request), 1)
+        self.assertEqual(len(merge_group), 2)
+
 
 class TheAnalysisStepsFailLoudly(unittest.TestCase):
     @staticmethod
@@ -334,6 +372,15 @@ class TheAnalysisStepsFailLoudly(unittest.TestCase):
         self.assertIn("git diff -U0 --diff-filter=d FETCH_HEAD HEAD -- src tests | \\", active)
         self.assertIn('python3 "${clang_tidy_diff}" -p1 -path build', active)
         self.assertNotIn("FETCH_HEAD...HEAD", active)
+        # AND a push compares with the tip it replaced, never with main, which for a push to main is the pushed commit.
+        self.assertRegex(step, r"(?m)^          PUSH_BEFORE: \$\{\{ github\.event\.before \}\}$")
+        self.assertIn('[ "${GITHUB_EVENT_NAME}" = "push" ]', active)
+        self.assertIn('[ "${PUSH_BEFORE}" != "0000000000000000000000000000000000000000" ]', active)
+        self.assertIn('base="${PUSH_BEFORE}"', active)
+        self.assertNotIn("origin/main", active)
+        # AND a manual run, or a push that created its branch, compares with the checked-out commit's parent.
+        self.assertIn('git fetch --no-tags --deepen=1 origin "${GITHUB_SHA}"', active)
+        self.assertIn('base="$(git rev-parse HEAD^)"', active)
         # AND nothing turns a failure into success.
         self.assertNotIn("|| true", active)
 

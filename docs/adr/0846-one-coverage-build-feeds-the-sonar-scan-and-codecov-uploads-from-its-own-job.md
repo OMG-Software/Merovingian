@@ -40,9 +40,11 @@ Rejected:
 * The `coverage` check now also fails when the Sonar scan fails.
 * A failed Codecov upload no longer blocks a merge. Before, the upload ran inside `coverage` with `fail_ci_if_error: true`,
   so a Codecov outage failed the required check; now it fails only the `codecov` job, which the ruleset does not require.
-  The coverage counters still gate through the Sonar quality gate, and an outage of a third-party upload service should not
-  hold every merge. To make an upload failure block again, the owner adds `codecov` to the required checks; the workflow
-  needs no change.
+  An outage of a third-party upload service should not hold every merge. The SonarQube Cloud quality gate, which also
+  judges coverage, does not block a merge either: the scan does not wait for the gate (`sonar.qualitygate.wait` is not
+  set, as it was not before), and the gate's own check is not required. Making it block is the owner's choice: require
+  that check, or set the wait so the `coverage` check fails with the gate. To make an upload failure block again, the
+  owner adds `codecov` to the required checks; the workflow needs no change.
 * The artifact is kept for 30 days, as long as GitHub lets a maintainer re-run only the `codecov` job, so a retried upload
   finds its report instead of needing a new instrumented build.
 * Codecov receives a report for pull requests of any base and for the merge queue, as Sonar's workflow ran; before, Codecov saw

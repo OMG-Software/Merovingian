@@ -33,9 +33,11 @@ job and passed to the host script, the cache key and the guest; the VM's `releas
 Each lockfile line is `<FILE_NAME> <FILE_SIZE> <FILE_CKSUM or ->`, so the cache key changes when a size or checksum does. A
 package with no `FILE_SIZE` is refused. A file that fails verification moves the download to the next mirror. Packages marked
 `--optional` (gdb) are best-effort: a failure to fetch one does not fail the step, and the lockfile is rewritten without it,
-so the cache is never saved under the key of a set it does not hold. A summary, cached or downloaded, is used only when every
-required package and its dependencies are in it with a `FILE_SIZE`; otherwise the next mirror's is tried. HTTPS redirects to any host are followed, as
-`pkg_add` does.
+so the cache is never saved under the key of a set it does not hold. A summary, cached or downloaded, is usable only when it
+decodes to at most 256 MiB, lists every required package and gives a `FILE_SIZE` for every package in their closure;
+otherwise the next mirror's is tried. Of the usable ones, the first whose required closure resolves completely is used; when
+none does, the first usable one is, with a warning naming what the guest must take from the mirrors. Version order follows
+`pkg_install`'s `dewey.c`, case-insensitive like it. HTTPS redirects to any host are followed, as `pkg_add` does.
 
 Only `main` saves the cache. NetBSD 11.0's repository publishes no `FILE_CKSUM`, so a restored file is checked for its size and
 stream only; with saves limited to `main`, no other ref can write an entry that `main` or the merge queue restores.

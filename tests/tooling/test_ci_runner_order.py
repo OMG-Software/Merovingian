@@ -136,9 +136,35 @@ def skips_pull_request(condition: str | None) -> bool:
     wrapped = re.fullmatch(r"\$\{\{(.*)\}\}", text, flags=re.DOTALL)
     if wrapped is not None:
         text = wrapped.group(1).strip()
-    if "||" in text:
+    if "||" in text or "!(" in text:
         return False
-    return NOT_A_PULL_REQUEST in [part.strip() for part in text.split("&&")]
+    parts = top_level_conjuncts(text)
+    return parts is not None and NOT_A_PULL_REQUEST in parts
+
+
+def top_level_conjuncts(text: str) -> list[str] | None:
+    """The `&&` operands outside every parenthesis; None when the parentheses do not balance."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 0 and text.startswith("&&", index):
+            parts.append(text[start:index].strip())
+            start = index + 2
+            index += 1
+        index += 1
+    if depth != 0:
+        return None
+    parts.append(text[start:].strip())
+    return parts
 
 
 def jobs_that_start_at_once() -> dict[str, int]:
@@ -167,6 +193,12 @@ class ThePullRequestExclusionIsRecognisedOnlyWhenExact(unittest.TestCase):
             "exclusion and needs": ("${{ !cancelled() && github.event_name != 'pull_request' && needs.a.result == 'success' }}", True),
             "disjunction": ("${{ github.event_name != 'pull_request' || github.ref == 'refs/heads/main' }}", False),
             "disjunction after and": ("${{ !cancelled() && (github.event_name != 'pull_request' || always()) }}", False),
+            "negated group around the exclusion": (
+                "!(always() && github.event_name != 'pull_request' && !cancelled())",
+                False,
+            ),
+            "exclusion inside a group": ("${{ !cancelled() && (github.event_name != 'pull_request') }}", False),
+            "unbalanced group": ("${{ !cancelled() && (github.event_name != 'pull_request' }}", False),
             "no exclusion": ("${{ !cancelled() }}", False),
             "no condition": (None, False),
         }

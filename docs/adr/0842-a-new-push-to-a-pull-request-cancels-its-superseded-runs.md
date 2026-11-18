@@ -42,8 +42,10 @@ Rejected:
   workflow for the same pull request still in progress. Usually that is a run for a commit that is no longer the head,
   which nobody merges, so ADR-0511's objection to `concurrency` (a cancelled required check shows as failed on the
   commit) does not matter. Two runs for the same head can also overlap (a re-run, or a `reopened` event during a run,
-  since no workflow narrows the default `opened`, `synchronize` and `reopened` types); the newer one cancels the
-  older, and the newer run's result is the one the check reports.
+  since no workflow narrows the default `opened`, `synchronize` and `reopened` types). Usually the run that enters
+  the group last cancels the other, but GitHub does not promise that runs enter the group in the order they were
+  triggered: an older run can arrive late and cancel the newer one, and the current head's check then shows as cancelled
+  and needs a re-run.
 * `push`, `merge_group`, `schedule`, `workflow_dispatch` and `workflow_call` runs are never cancelled or held back, with one
   exception: `pages.yml` groups by `github.ref` and cancels only runs that are not on `main`, so it keeps its own group scheme
   and is not covered by "every non-pull-request run has its own group".

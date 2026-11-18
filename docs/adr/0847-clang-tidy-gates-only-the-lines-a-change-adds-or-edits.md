@@ -22,11 +22,13 @@ Catch2 `SCENARIO`). Once the check runs, which code should a pull request answer
 
 ## Decision Outcome
 
-Chosen: changed lines. The step pipes `git diff -U0` against the pull request's or the merge queue's base commit into the
-`clang-tidy-diff` script of the same LLVM release as the installed clang-tidy; it exits 1 when any run reports an error or
-times out, and the step runs under `bash`, so a failed diff fails the step instead of reading as "nothing changed". Headers are
-not run on their own, as before; a diagnostic in a header counts only when the header's changed lines are in the filter, which
-they are not for a `.cpp`-only run.
+Chosen: changed lines. The step pipes `git diff -U0` against a base commit into the `clang-tidy-diff` script of the same LLVM
+release as the installed clang-tidy; it exits 1 when any run reports an error or times out, and the step runs under `bash`, so
+a failed diff fails the step instead of reading as "nothing changed". The base is the pull request's or the merge queue's base
+commit; for a push, the tip the push replaced (comparing with `main` would compare the pushed commit with itself and check
+nothing); for a manual run, or a push that created its branch, the checked-out commit's parent. Headers are not run on their
+own, as before; a diagnostic in a header counts only when the header's changed lines are in the filter, which they are not for
+a `.cpp`-only run.
 
 `tests/.clang-tidy` turns off `misc-use-anonymous-namespace`: every Catch2 `SCENARIO` expands to a `static` function
 (`dummyFunctionN`), so any new scenario would fail it, and the expansion is Catch2's, not code this project can change. The

@@ -7,9 +7,15 @@ connections; pkg_add inside the guest then paid a multi-minute timeout per failu
 dependency install took about 100 minutes. The host runner has a fast, stable network. This
 script resolves the transitive closure of the requested packages from the mirror's
 pkg_summary, downloads every .tgz into one directory inside the workspace (which the VM
-action syncs into the guest) and verifies it. The guest then runs
-`PKG_PATH="<that directory>;<mirror URL>"`, so anything the resolver missed still comes from
-the network.
+action syncs into the guest) and verifies it. The guest installs from that directory alone
+first, and from the directory plus each mirror only if that fails, so anything the resolver
+missed still comes from the network (ADR-0844).
+
+Which pkg_summary: the cached one, else each mirror's gz, bz2 and xz in turn. A candidate must
+decode to at most MAX_DECODED_SUMMARY_BYTES, list every required package, and give a FILE_SIZE
+for every package in the required closure; one that fails is skipped. The first candidate whose
+required closure resolves completely is used. When none does, the first that passed the other
+checks is used, with a warning naming the dependencies the guest must take from the mirrors.
 
 Trust: HTTPS only. Requests go to the configured mirrors; a redirect from a mirror to another host
 is followed when the target is HTTPS, as pkg_add itself does, and a redirect to anything but HTTPS is
@@ -17,8 +23,8 @@ refused. Integrity rests on three checks, made on every run for every file, whet
 (verified once, inside the download) or restored from the CI cache: FILE_SIZE from pkg_summary
 (required for the required closure; an optional-only package without one is dropped), a full read
 of the compressed stream (gzip, xz or bzip2), which checks its integrity trailer, and FILE_CKSUM
-when the repository publishes one. NetBSD 11.0 publishes no FILE_CKSUM, so nothing authenticates an archive beyond what pkg_add had before. A file that fails is deleted and downloaded
-again (from the next mirror when it failed on download); a file no mirror serves verified fails the run.
+when the repository publishes one. NetBSD 11.0 publishes no FILE_CKSUM, so nothing authenticates
+an archive beyond what pkg_add had before. A file that fails is deleted and downloaded again (from the next mirror when it failed on download); a file no mirror serves verified fails the run.
 
 Optional packages (--optional) are best-effort: the required closure is downloaded first and any
 failure there fails the run; a failure in the packages only the optional ones need is a warning.
@@ -53,7 +59,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_MIRRORS = ("cdn.netbsd.org", "ftp.netbsd.org")
-SUMMARY_NAMES = (("pkg_summary.gz", gzip.decompress), ("pkg_summary.bz2", bz2.decompress), ("pkg_summary.xz", lzma.decompress))
+# Each format with a factory for a streaming decompressor, so the decoded size can be bounded.
+SUMMARY_NAMES = (
+    ("pkg_summary.gz", lambda: zlib.decompressobj(wbits=31)),
+    ("pkg_summary.bz2", bz2.BZ2Decompressor),
+    ("pkg_summary.xz", lzma.LZMADecompressor),
+)
 # Package names, patterns and file names: pkgsrc's alphabet plus the pattern syntax. No '/'.
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-]*$")
 SAFE_PATTERN = re.compile(r"^[A-Za-z0-9_.+\-\[\]\*\?\{\},<>=!]+$")
@@ -64,6 +75,8 @@ SAFE_HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
 GZIP_MAGIC = bytes([0x1F, 0x8B])
 XZ_MAGIC = bytes([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
 MAX_SUMMARY_BYTES = 256 * 1024 * 1024
+# The decoded pkg_summary is a few tens of MiB; a compressed file this small must not inflate past this.
+MAX_DECODED_SUMMARY_BYTES = 256 * 1024 * 1024
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 CHUNK = 1024 * 1024
 
@@ -106,29 +119,30 @@ def expand_braces(pattern: str) -> list[str]:
     return result
 
 
-# pkg_install's dewey.c knows exactly these modifiers; "patch" is the letters p, a, t, c, h.
+# pkg_install's dewey.c (mkcomponent) matches the modifiers, "nb" and single letters with strncasecmp and
+# tolower, so every one of them is case-insensitive. It knows exactly these modifiers; "patch" is the
+# letters p, a, t, c, h. "nb" takes any number of digits (none is 0) and may appear anywhere.
 _MODIFIERS = {"alpha": -3, "beta": -2, "pre": -1, "rc": -1, "pl": 0}
-_TOKEN = re.compile(r"[0-9]+|alpha|beta|pre|rc|pl|[a-zA-Z]|[._]")
+_TOKEN = re.compile(r"[0-9]+|alpha|beta|pre|rc|pl|nb[0-9]*|[a-z]|[._]", re.IGNORECASE | re.ASCII)
 
 
 def _version_parts(version: str) -> tuple[list[int], int]:
     revision = 0
-    match = re.search(r"nb([0-9]+)$", version)
-    if match:
-        revision = int(match.group(1))
-        version = version[: match.start()]
     parts: list[int] = []
     for token in _TOKEN.findall(version):
+        lowered = token.lower()
         if token.isdigit():
             parts.append(int(token))
-        elif token in _MODIFIERS:
-            parts.append(_MODIFIERS[token])
+        elif lowered in _MODIFIERS:
+            parts.append(_MODIFIERS[lowered])
+        elif lowered.startswith("nb"):
+            revision = int(lowered[2:] or "0")
         elif token in "._":
             parts.append(0)
         else:
             # pkg_install's dewey.c: a letter is two components, 0 then its ordinal, so 1.0a is 1.0.0.1.
             parts.append(0)
-            parts.append(ord(token.lower()) - ord("a") + 1)
+            parts.append(ord(lowered) - ord("a") + 1)
     return parts, revision
 
 
@@ -183,11 +197,17 @@ def parse_summary(text: str) -> list[Package]:
             continue
         pkgname = values["PKGNAME"][0]
         size = values.get("FILE_SIZE", [""])[0]
+        file_size: int | None = None
+        if size.isdigit():
+            try:
+                file_size = int(size)
+            except ValueError:  # str.isdigit is true for characters int() refuses, such as a superscript two
+                file_size = None
         packages.append(
             Package(
                 pkgname=pkgname,
                 file_name=values.get("FILE_NAME", [pkgname + ".tgz"])[0],
-                file_size=int(size) if size.isdigit() else None,
+                file_size=file_size,
                 file_cksum=values.get("FILE_CKSUM", [None])[0],
                 depends=tuple(values.get("DEPENDS", [])),
             )
@@ -379,18 +399,50 @@ def safe_packages(packages: list[Package]) -> list[Package]:
     return [p for p in packages if SAFE_FILE.match(p.file_name)]
 
 
-def usable_summary(text: str, required: tuple[str, ...] | list[str]) -> list[Package]:
-    """Parses `text` and returns its safe packages, or raises when the summary cannot serve this run:
-    a required package is absent, or a package in the required closure has no valid FILE_SIZE."""
+def usable_summary(
+    text: str, required: tuple[str, ...] | list[str]
+) -> tuple[list[Package], list[str]]:
+    """Parses `text` and returns its safe packages with the dependency patterns the required closure
+    leaves unresolved, or raises when the summary cannot serve this run: a required package is absent,
+    or a package in the required closure has no valid FILE_SIZE."""
     packages = safe_packages(parse_summary(text))
     absent = [r for r in required if best_match(r, packages) is None]
     if absent:
         raise FetchError(f"no package matches required {', '.join(absent)}")
-    closure, _ = resolve_closure(list(required), [], packages)
+    closure, unresolved = resolve_closure(list(required), [], packages)
     unsized = [p.file_name for p in closure if p.file_size is None]
     if unsized:
         raise FetchError(f"pkg_summary gives no valid FILE_SIZE for required: {' '.join(unsized)}")
-    return packages
+    return packages, unresolved
+
+
+def decompress_bounded(decompressor, data: bytes, limit: int) -> bytes:  # noqa: ANN001
+    """Decodes `data` with a streaming `decompressor`, failing once the output exceeds `limit` bytes,
+    so a small compressed file cannot inflate without bound. A stream that ends early is an EOFError."""
+    pieces: list[bytes] = []
+    total = 0
+    for offset in range(0, max(len(data), 1), CHUNK):
+        piece = data[offset : offset + CHUNK]
+        while True:
+            produced = decompressor.decompress(piece, limit + 1 - total)
+            total += len(produced)
+            if total > limit:
+                raise FetchError(f"pkg_summary decodes to more than {limit} bytes")
+            pieces.append(produced)
+            if decompressor.eof:
+                return b"".join(pieces)
+            piece = getattr(decompressor, "unconsumed_tail", b"")
+            if not piece and getattr(decompressor, "needs_input", True):
+                break
+            # zlib left input unconsumed, or bz2 and lzma hold output back: ask again.
+    raise EOFError("pkg_summary ends before its compressed stream does")
+
+
+def _store_summary(summary_file: Path, text: str) -> None:
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = summary_file.with_name(summary_file.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(temporary, summary_file)
 
 
 def fetch_summary(
@@ -400,19 +452,25 @@ def fetch_summary(
     timeout: float,
     required: tuple[str, ...] | list[str] = (),
 ) -> list[Package]:
-    """The parsed pkg_summary of the first source that serves the `required` closure: an existing
-    `summary_file`, else the first mirror and format that downloads, decompresses, parses and resolves it.
-    A candidate that does not is recorded and the next is tried; only a usable download is written."""
+    """The parsed pkg_summary of the first source that serves the `required` closure completely: an existing
+    `summary_file`, else the first mirror and format that downloads, decompresses (within
+    MAX_DECODED_SUMMARY_BYTES), parses and resolves it. A candidate that does not is recorded and the next
+    is tried. A candidate whose required closure leaves dependencies unresolved is only a fallback: the
+    first such one is used, with a warning, when no candidate is complete. Only a used download is written."""
     errors: list[str] = []
+    fallback: tuple[list[Package], list[str], str | None] | None = None
     if summary_file is not None and summary_file.is_file():
         # Written by an earlier run of this script in the same job: decompressed pkg_summary text.
         try:
-            return usable_summary(summary_file.read_text(encoding="utf-8", errors="replace"), required)
+            packages, unresolved = usable_summary(summary_file.read_text(encoding="utf-8", errors="replace"), required)
+            if not unresolved:
+                return packages
+            fallback = (packages, unresolved, None)
         except (FetchError, OSError, ValueError) as error:
             print(f"  {summary_file}: ignored, not usable: {error}", file=sys.stderr)
             errors.append(f"{summary_file}: {error}")
     for base in bases:
-        for name, decompress in SUMMARY_NAMES:
+        for name, make_decompressor in SUMMARY_NAMES:
             buffer = io.BytesIO()
 
             def attempt(url: str = base + name, buffer: io.BytesIO = buffer) -> None:
@@ -422,17 +480,29 @@ def fetch_summary(
 
             try:
                 with_retries(attempt, base + name, attempts, 3)
-                text = _decode(decompress(buffer.getvalue()))
-                packages = usable_summary(text, required)
+                decoded = decompress_bounded(make_decompressor(), buffer.getvalue(), MAX_DECODED_SUMMARY_BYTES)
+                text = _decode(decoded)
+                packages, unresolved = usable_summary(text, required)
             except (FetchError, OSError, EOFError, lzma.LZMAError, zlib.error, ValueError) as error:
                 errors.append(f"{base}{name}: {error}")
                 continue
+            if unresolved:
+                if fallback is None:
+                    fallback = (packages, unresolved, text)
+                continue
             if summary_file is not None:
-                summary_file.parent.mkdir(parents=True, exist_ok=True)
-                temporary = summary_file.with_name(summary_file.name + ".tmp")
-                temporary.write_text(text, encoding="utf-8", newline="\n")
-                os.replace(temporary, summary_file)
+                _store_summary(summary_file, text)
             return packages
+    if fallback is not None:
+        packages, unresolved, text = fallback
+        print(
+            "warning: no pkg_summary resolves every required dependency; using the first usable one, "
+            f"and the guest takes these from the mirrors: {' '.join(unresolved)}",
+            file=sys.stderr,
+        )
+        if summary_file is not None and text is not None:
+            _store_summary(summary_file, text)
+        return packages
     raise FetchError("cannot fetch pkg_summary: " + "; ".join(errors))
 
 

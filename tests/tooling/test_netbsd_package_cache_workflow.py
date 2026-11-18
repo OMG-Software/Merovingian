@@ -4,6 +4,7 @@ from the synced directory before the mirrors (scripts/fetch-netbsd-packages.py).
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -36,17 +37,38 @@ def active_commands(step: str) -> list[str]:
     return commands
 
 
-def fetch_invocations(step: str) -> list[str]:
-    """The active commands of the step that run the fetch script."""
-    return [command for command in active_commands(step) if FETCH_COMMAND.match(command)]
+def without_inline_comment(command: str) -> list[str]:
+    """The command's words with any unquoted `# ...` shell comment removed."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=False)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        return list(lexer)
+    except ValueError:  # an unterminated quote: keep the words as written, so nothing is hidden
+        return command.split()
+
+
+def fetch_invocations(step: str) -> list[list[str]]:
+    """The words of each active command of the step that runs the fetch script, inline comments removed."""
+    return [without_inline_comment(command) for command in active_commands(step) if FETCH_COMMAND.match(command)]
+
+
+def option_value(words: list[str], option: str) -> str | None:
+    """The value of `option VALUE` or `option=VALUE` among the command's words."""
+    for index, word in enumerate(words):
+        if word == option and index + 1 < len(words):
+            return words[index + 1]
+        if word.startswith(option + "="):
+            return word[len(option) + 1 :]
+    return None
 
 
 def is_resolve(step: str) -> bool:
-    return any("--resolve-only" in command.split() for command in fetch_invocations(step))
+    return any("--resolve-only" in words for words in fetch_invocations(step))
 
 
 def is_download(step: str) -> bool:
-    return any("--resolve-only" not in command.split() for command in fetch_invocations(step))
+    return any("--resolve-only" not in words for words in fetch_invocations(step))
 
 
 def active_text(text: str) -> str:
@@ -66,7 +88,7 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
 
                 # THEN the fetch (resolve, then download) precedes the VM step.
                 self.assertEqual(len(invocations), 2)
-                self.assertEqual(["--resolve-only" in c.split() for c in invocations], [True, False])
+                self.assertEqual(["--resolve-only" in words for words in invocations], [True, False])
                 self.assertLess(text.index("scripts/fetch-netbsd-packages.py"), text.index("uses: vmactions/netbsd-vm@"))
                 # AND the package list is passed to the script and the VM from one definition.
                 self.assertEqual(text.count("NETBSD_PACKAGES="), 1)
@@ -111,6 +133,13 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
             "            --output-dir netbsd-packages $NETBSD_PACKAGES"
         )
         resolving = "name: R\n        run: |\n          python3 scripts/fetch-netbsd-packages.py --resolve-only $P"
+        commented_flag = (
+            "name: D\n        run: |\n"
+            "          python3 scripts/fetch-netbsd-packages.py --release \"$R\" $NETBSD_PACKAGES # --resolve-only"
+        )
+        quoted_hash = (
+            "name: R\n        run: |\n          python3 scripts/fetch-netbsd-packages.py '--resolve-only' '#' $P"
+        )
 
         # WHEN each is classified by its active commands.
         # THEN only an active invocation counts, and `--resolve-only` decides which kind it is.
@@ -121,6 +150,11 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
         self.assertFalse(is_resolve(live))
         self.assertTrue(is_resolve(resolving))
         self.assertFalse(is_download(resolving))
+        # AND a flag that appears only in an unquoted trailing comment does not make the command a resolve.
+        self.assertTrue(is_download(commented_flag))
+        self.assertFalse(is_resolve(commented_flag))
+        # AND a quoted `#` is an argument, not a comment.
+        self.assertTrue(is_resolve(quoted_hash))
 
     def test_cache_actions_are_pinned_and_keyed_on_the_lockfile(self) -> None:
         for workflow, job in JOBS:
@@ -137,6 +171,51 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
                 self.assertIn(
                     "if: github.ref == 'refs/heads/main' && steps.netbsd-cache.outputs.cache-hit != 'true'", text
                 )
+
+    def test_given_the_fetch_commands_when_their_options_are_read_then_they_match_the_cache_and_the_guest(self) -> None:
+        for workflow, job in JOBS:
+            text = job_text(workflow, job)
+            with self.subTest(job=job):
+                # GIVEN the job's two active fetch commands, the cache steps and the guest script.
+                steps = re.split(r"\n      - ", text)
+                commands = [words for step in steps for words in fetch_invocations(step)]
+                cache_steps = [active_text(step) for step in steps if "actions/cache/" in step]
+                self.assertEqual(len(commands), 2)
+                self.assertEqual(len(cache_steps), 2)
+
+                # WHEN their output directory and lockfile are read.
+                directories = {option_value(words, "--output-dir") for words in commands}
+                lockfiles = {option_value(words, "--lockfile") for words in commands}
+
+                # THEN both commands write the one directory the cache saves and the guest installs from.
+                self.assertEqual(directories, {"netbsd-packages"})
+                for step in cache_steps:
+                    self.assertRegex(step, r"(?m)^ *path: netbsd-packages$")
+                self.assertIn('local_packages="$base/netbsd-packages"', active_text(text))
+                # AND both read the lockfile whose hash keys the cache.
+                self.assertEqual(len(lockfiles), 1)
+                (lockfile,) = lockfiles
+                self.assertIsNotNone(lockfile)
+                for step in cache_steps:
+                    self.assertRegex(step, r"(?m)^ *key: .*hashFiles\('" + re.escape(lockfile) + r"'\)")
+
+    def test_given_a_second_fetch_command_with_another_output_directory_when_read_then_it_differs(self) -> None:
+        # GIVEN two fetch commands whose output directories differ, and one whose option is joined with `=`.
+        steps = (
+            "name: R\n        run: |\n"
+            "          python3 scripts/fetch-netbsd-packages.py --resolve-only --output-dir netbsd-packages \\\n"
+            "            --lockfile netbsd-packages.lock $P",
+            "name: D\n        run: |\n"
+            "          python3 scripts/fetch-netbsd-packages.py --output-dir=elsewhere --lockfile "
+            "netbsd-packages.lock $P # --output-dir netbsd-packages",
+        )
+
+        # WHEN the output directories are read from the active words.
+        directories = [option_value(words, "--output-dir") for step in steps for words in fetch_invocations(step)]
+
+        # THEN the second command's directory is its own, so the binding to the cache path fails.
+        self.assertEqual(directories, ["netbsd-packages", "elsewhere"])
+        self.assertNotEqual(set(directories), {"netbsd-packages"})
 
     def test_the_vm_tries_the_local_directory_alone_first_and_keeps_the_mirrors(self) -> None:
         for workflow, job in JOBS:
