@@ -1109,6 +1109,8 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net/displayname", {}, {}});
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the answer is 200 with just that field and the federation request named it")
             {
