@@ -137,8 +137,9 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
             "name: D\n        run: |\n"
             "          python3 scripts/fetch-netbsd-packages.py --release \"$R\" $NETBSD_PACKAGES # --resolve-only"
         )
+        # The quoted `#` comes first, so if it were read as a comment the `--resolve-only` after it would be lost.
         quoted_hash = (
-            "name: R\n        run: |\n          python3 scripts/fetch-netbsd-packages.py '--resolve-only' '#' $P"
+            "name: R\n        run: |\n          python3 scripts/fetch-netbsd-packages.py '#' --resolve-only $P"
         )
 
         # WHEN each is classified by its active commands.
@@ -153,8 +154,12 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
         # AND a flag that appears only in an unquoted trailing comment does not make the command a resolve.
         self.assertTrue(is_download(commented_flag))
         self.assertFalse(is_resolve(commented_flag))
-        # AND a quoted `#` is an argument, not a comment.
+        # AND a quoted `#` is an argument, not a comment: it stays in the words, and so does what follows it.
         self.assertTrue(is_resolve(quoted_hash))
+        self.assertFalse(is_download(quoted_hash))
+        (words,) = fetch_invocations(quoted_hash)
+        self.assertIn("#", words)
+        self.assertLess(words.index("#"), words.index("--resolve-only"))
 
     def test_cache_actions_are_pinned_and_keyed_on_the_lockfile(self) -> None:
         for workflow, job in JOBS:
