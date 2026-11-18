@@ -12,7 +12,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SONAR_CONFIG = REPO_ROOT / "sonar-project.properties"
 AUTOMATIC_ANALYSIS_CONFIG = REPO_ROOT / ".sonarcloud.properties"
-SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
+# The scan is a step of the coverage job: one build and one run of the suites feed Codecov and Sonar.
+SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "coverage.yml"
 
 # Paths whose findings must keep reaching the quality gate: the server itself,
 # what packages install on a user's system, and the CI workflows.
@@ -108,7 +109,9 @@ class SonarCloudExclusionsTest(unittest.TestCase):
 
 
 class SonarCloudCiScanTest(unittest.TestCase):
-    """ADR-0250: the scan runs in CI, against the compilation database of a real build."""
+    """ADR-0250: the scan runs in CI, against the compilation database of a real build.
+
+    The scan is a step of the `coverage` job, which builds once and feeds Codecov and Sonar from that build."""
 
     def setUp(self) -> None:
         self.workflow = SONAR_WORKFLOW.read_text(encoding="utf-8")
@@ -126,7 +129,7 @@ class SonarCloudCiScanTest(unittest.TestCase):
         builddir, _, filename = compile_commands.rpartition("/")
         self.assertEqual(filename, "compile_commands.json")
         self.assertTrue(builddir)
-        # The coverage build also writes the compilation database the analysis reads.
+        # The coverage build writes the compilation database the analysis reads.
         self.assertIn(f"scripts/build-linux.sh --builddir {builddir} --coverage", self.workflow)
         # The build directory's generated files are not project sources.
         patterns = [sonar_pattern(p.strip()) for p in sonar_property("sonar.exclusions").split(",") if p.strip()]
@@ -137,17 +140,30 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@[0-9a-f]{40}\b")
         self.assertNotRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@v")
 
-    def test_given_the_workflow_when_read_then_every_action_is_pinned_to_a_commit(self) -> None:
-        # Every step shares the job with SONAR_TOKEN, the checkout and Python setup included.
-        uses = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", self.workflow)
-        self.assertTrue(uses)
+    def test_given_the_workflow_when_read_then_the_steps_before_the_scan_are_pinned_to_a_commit(self) -> None:
+        # The job holds SONAR_TOKEN, in the scan step only, but a step that ran earlier in the job can still change
+        # what that step runs: the checkout, Python setup and ccache steps that precede it are pinned to a commit,
+        # where a tag can be moved. The artifact upload and Codecov's action come after the scan.
+        scan = self.workflow.index("uses: SonarSource/sonarqube-scan-action@")
+        uses = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", self.workflow[:scan])
+        self.assertGreaterEqual(len(uses), 3)
         for action in uses:
-            self.assertRegex(action, r"@[0-9a-f]{40}$", f"{action} is not pinned to a commit")
+            self.assertRegex(action, r"@[0-9a-f]{40}\b", f"{action} runs before the scan and is not pinned to a commit")
 
-    def test_given_the_workflow_when_read_then_it_scans_full_history_with_the_repository_secret(self) -> None:
+    def test_given_the_workflow_when_read_then_it_scans_full_history_with_least_privilege(self) -> None:
         self.assertIn("fetch-depth: 0", self.workflow)
-        self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", self.workflow)
-        self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read")
+        self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read\n  pull-requests: read\n\n")
+
+    def test_given_the_workflow_when_read_then_the_token_is_in_the_scan_step_alone(self) -> None:
+        # GIVEN the job runs beside third-party actions (Codecov downloads its CLI at run time).
+        # THEN the secret is named once, in the scan step's own environment: not in the workflow's or the job's env.
+        self.assertEqual(self.workflow.count("secrets.SONAR_TOKEN"), 1)
+        before_steps, steps = self.workflow.split("\n    steps:\n", 1)
+        self.assertNotIn("secrets.SONAR_TOKEN", before_steps)
+        scan_step = steps[steps.index("      - name: SonarQube Cloud scan") :].split("\n      - name:")[0]
+        self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", scan_step)
+        # AND the Codecov CLI, downloaded at run time with its signature check skipped, runs after the scan.
+        self.assertLess(self.workflow.index("sonarqube-scan-action@"), self.workflow.index("codecov/codecov-action@"))
 
     def test_given_a_cpp26_build_when_the_properties_are_read_then_cpp26_analysis_is_enabled(self) -> None:
         # The analyser stops with "C++26 standard detected" unless this is set.
@@ -180,7 +196,7 @@ class SonarCloudCiScanTest(unittest.TestCase):
     def test_given_the_workflow_when_read_then_it_builds_with_coverage_and_runs_the_suites_with_gcc(self) -> None:
         # --coverage builds instrumented and runs meson test; --compile-only would run nothing.
         self.assertNotIn("--compile-only", self.workflow)
-        # GCC, as in coverage.yml: only GCC's gcov labels the throw edges that
+        # GCC: only GCC's gcov labels the throw edges that
         # --exclude-throw-branches drops (ADR-0217).
         self.assertIn("CC: gcc-14", self.workflow)
         self.assertIn("CXX: g++-14", self.workflow)
@@ -200,10 +216,22 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertRegex(self.workflow, r"image: postgres:16@sha256:[0-9a-f]{64}")
         self.assertIn("MEROVINGIAN_TEST_POSTGRESQL_URI:", self.workflow)
 
-    def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_the_scan_is_skipped(self) -> None:
-        # A fork's pull request gets no secrets; it is analysed once merged.
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.workflow)
+    def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_only_the_scan_is_skipped(self) -> None:
+        # A fork's pull request gets no secrets; it is scanned once merged. The coverage build, reports and Codecov
+        # upload still run for it, so the skip is the scan step's own condition and the job has none.
+        condition = "if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository"
+        self.assertEqual(self.workflow.count(condition), 1)
+        scan = self.workflow[self.workflow.index("- name: SonarQube Cloud scan") :]
+        self.assertLess(scan.index(condition), scan.index("uses: SonarSource/sonarqube-scan-action@"))
+        job = self.workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
+        self.assertNotRegex(job, r"(?m)^    if:")
 
+    def test_given_the_workflow_when_read_then_one_build_feeds_the_scan_and_the_reports(self) -> None:
+        # The scan reads the build directory the coverage build writes; nothing else compiles in the job.
+        builddir = sonar_property("sonar.cfamily.compile-commands").rpartition("/")[0]
+        self.assertEqual(self.workflow.count("run: sh scripts/build-linux.sh"), 1)
+        self.assertNotIn("meson compile", self.workflow)
+        self.assertIn(f"            {builddir}\n", self.workflow)
 
 if __name__ == "__main__":
     unittest.main()

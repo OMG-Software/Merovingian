@@ -18,7 +18,7 @@ same thing:
 
 - **Clang ≥ 18** (`-std=c++26`) or **GCC ≥ 14**, with the matching
   `libc++` / `libstdc++` C++26 runtime. CI (`ci.yml`, `packages.yml`) builds with clang everywhere. The separate
-  `coverage.yml` and `sonarcloud.yml` workflows build with GCC 14 (ADR-0217).
+  `coverage.yml` workflow (coverage and the SonarQube Cloud scan, one build) builds with GCC 14 (ADR-0217).
 - **Meson ≥ 1.1.0** and Ninja.
 - Core dependencies are vendored and built from subprojects
   (`--wrap-mode=forcefallback`); only the base toolchain and the optional image

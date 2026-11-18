@@ -211,9 +211,9 @@ answer are in [the threat model](threat-model.md#oauth-20-api-110-adr-0766-to-ad
   `.github/` workflows; test code and developer tooling (`tests/`,
   `scripts/`, `build.py`, `llvm.sh`, `.codex/`) are excluded in
   `sonar-project.properties` (ADR-0229). The analysis runs in CI
-  (`.github/workflows/sonarcloud.yml`) against the build's compilation
-  database, with coverage from every suite (ADR-0250); a `sonarcloud` job that
-  did not run for the commit is
+  (the scan step of `.github/workflows/coverage.yml`) against the build's compilation
+  database, with coverage from every suite (ADR-0250); a `coverage` job whose scan
+  step did not run for the commit is
   not a pass. A finding in an analysed path is
   fixed or reviewed in SonarQube, never hidden by widening that list.
 - Dependency vulnerability triage artifacts were reviewed before tagging.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -97,6 +98,84 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("CREATE ROLE merovingian_runtime", workflow)
         # AND hardening stays on, so the hardening paths remain measured.
         self.assertNotIn("MEROVINGIAN_TEST_DISABLE_HARDENING", workflow)
+
+    def test_one_job_named_coverage_builds_and_tests_once(self) -> None:
+        # GIVEN the coverage workflow, whose `coverage` job is a required check in the main ruleset.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        job_ids = re.findall(r"(?m)^  ([A-Za-z0-9_-]+):[ \t]*$", workflow.split("\njobs:\n", 1)[1])
+
+        # WHEN its jobs are listed.
+        # THEN there is exactly one, with that name: Sonar's analysis is a step of it, not a second build.
+        self.assertEqual(job_ids, ["coverage"])
+        self.assertRegex(workflow, r"(?m)^name: coverage$")
+        self.assertFalse((COVERAGE_WORKFLOW.parent / "sonarcloud.yml").exists())
+        # AND the build and the suites run once.
+        self.assertEqual(workflow.count("run: sh scripts/build-linux.sh"), 1)
+
+    def test_one_gcovr_run_writes_the_codecov_and_the_sonarqube_reports(self) -> None:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN gcovr reads the one build directory.
+        # THEN it writes the Cobertura report Codecov uploads, the HTML report and the SonarQube-format report the
+        # scan reads, from the same counters, in one run.
+        self.assertEqual(workflow.count("--root ."), 1)
+        self.assertIn("--output coverage/coverage.xml", workflow)
+        self.assertIn("--html coverage/index.html", workflow)
+        self.assertIn("--sonarqube coverage/sonarqube.xml", workflow)
+        self.assertRegex(workflow, r"(?m)^[ \t]+build-coverage$")
+        # AND Codecov and the artifact take those reports.
+        self.assertIn("flags: full-test-suite", workflow)
+        self.assertIn("files: coverage/coverage.xml", workflow)
+        self.assertIn("path: coverage", workflow)
+
+    def test_only_the_sonar_scan_is_skipped_for_a_pull_request_from_a_fork(self) -> None:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        before_steps, steps = workflow.split("\n    steps:\n", 1)
+        guard = "if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository"
+
+        # THEN the fork guard is on the scan step and on no other step.
+        guarded = [step for step in steps.split("\n      - ") if guard in step]
+        self.assertEqual(len(guarded), 1)
+        self.assertIn("SonarSource/sonarqube-scan-action@", guarded[0])
+        # AND the job itself has no condition, so the build, reports and Codecov upload run for a fork.
+        self.assertNotRegex(before_steps, r"(?m)^    if:")
+
+    def test_the_workflow_runs_for_main_every_pull_request_the_merge_queue_and_by_hand(self) -> None:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertRegex(workflow, r"(?m)^on:\n  push:\n    branches: \[main\]\n")
+        # A pull request of any base, as Sonar's was: no `branches:` under it.
+        self.assertRegex(workflow, r"(?m)^  pull_request:[ \t]*\n  merge_group:[ \t]*\n  workflow_dispatch:[ \t]*\n")
+
+    def test_a_new_push_to_a_pull_request_cancels_its_earlier_run_and_nothing_else_is_cancelled(self) -> None:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # THEN a pull request's runs share a group and cancel each other; every other run has a group of its own,
+        # so a run on main or in the merge queue is never cancelled (a cancelled required check shows as a failure).
+        self.assertIn(
+            "group: coverage-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)"
+            " || github.run_id }}",
+            workflow,
+        )
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
+
+    def test_compiler_output_is_cached_with_ccache_that_main_alone_saves(self) -> None:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # THEN ccache is installed by the package manager before the action runs (ADR-0650).
+        install = workflow[workflow.index("sudo apt-get install") : workflow.index("- name: Cache compiler output with ccache")]
+        self.assertRegex(install, r"(?m)^\s+ccache \\$")
+        # AND the pinned action restores the newest cache and saves only on main.
+        self.assertIn("uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24", workflow)
+        self.assertIn("key: ccache-coverage-${{ github.run_id }}", workflow)
+        self.assertIn("restore-keys: ccache-coverage-", workflow)
+        self.assertIn("max-size: 1G", workflow)
+        self.assertIn("save: ${{ github.ref == 'refs/heads/main' }}", workflow)
+        # AND the cache step precedes the build.
+        self.assertLess(workflow.index("ccache-action@"), workflow.index("run: sh scripts/build-linux.sh"))
+        # AND the compiler stays one command, which build-linux.sh checks with `command -v`; the action's PATH
+        # links make gcc-14 and g++-14 run through ccache.
+        self.assertNotRegex(workflow, r"(?m)^[ \t]+CC: ccache")
 
 
 if __name__ == "__main__":
