@@ -374,10 +374,12 @@ artifact-only job does not depend on checkout state. It recreates the release
 with `--target` set to the commit the packages were built from, so the `latest`
 tag names that commit. Publishes run one at a time in the
 `packages-publish-latest` concurrency group, and before deleting anything the
-step compares the tag's commit with its own: it publishes when its commit is the
-same or newer, leaves `latest` alone when the published build is newer and still
-on `main`, and fails without deleting anything when the two have diverged,
-`main` no longer holds the published commit, or anything about the release or
+step first checks that its own commit is still on `main`, and fails if a
+force-push or reset has discarded it. It then compares the tag's commit with its
+own: it publishes when its commit is the same or newer, leaves `latest` alone
+when the published build is newer, still on `main` and has its release, and fails
+without deleting anything when the two have diverged, `main` no longer holds the
+published commit, the newer tag has no release, or anything about the release or
 its tag cannot be read. It looks the tag up on its own, because `gh release
 create` would reuse a tag left behind by a deleted release; such a tag is
 compared like any other and removed before the new release is created.
@@ -387,13 +389,17 @@ A publish that a later one cancelled while it waited can leave `latest` behind
 publish. After a force-push or a reset of `main` that removed the published
 commit, every publish fails until you recover it:
 
-1. Cancel every `packages.yml` run of the old history that has not finished.
-2. Wait for any `publish-latest` job in progress to finish.
-3. Delete `latest`: `gh release delete latest --cleanup-tag`.
-4. Re-run the newest run's `publish-latest`.
+1. Wait for any `publish-latest` job in progress to finish.
+2. Delete `latest`. If the release exists (`gh release view latest` succeeds),
+   run `gh release delete latest --cleanup-tag`. If only the tag is left, delete
+   the tag alone:
+   `gh api -X DELETE repos/OMG-Software/Merovingian/git/refs/tags/latest`.
+3. Re-run the newest run's `publish-latest`.
 
-Skipping the first two steps lets an old run publish after the deletion, and
-the newest run fails again
+A publish already past its checks when `main` moved can still replace `latest`,
+so deleting before it ends makes the newest run fail again. A run of the old
+history that has not reached its checks fails at the first one and publishes
+nothing; cancel those runs only to save runner time
 ([ADR-0850](adr/0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
 
 The static Linux fallback artifact is built on Alpine/musl with `-static-pie`

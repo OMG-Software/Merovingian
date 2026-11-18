@@ -25,13 +25,16 @@ know whether it is newer than what is already there?
 Chosen: the group on the job, plus the ancestry check. `publish-latest` is in the fixed group `packages-publish-latest`
 with `cancel-in-progress: false`, so two publishes never interleave and one already deleting the old release finishes
 creating the new one. `gh release create --target "${GITHUB_SHA}"` puts the `latest` tag on the commit the packages were
-built from. Before deleting, the step reads that tag's commit and asks the compare API how this run's commit relates to
-it: `ahead` or `identical` publishes; `behind` leaves the newer release and ends the job successfully, but only while
-`main` still holds the published commit, and fails once a reset of `main` has removed it; anything else (`diverged`, an
-empty answer, a failed call) fails the job without deleting anything. The tag is looked up on its own, not through the
-release: `gh release create` reuses an existing tag whatever `--target` says, so a tag left behind by a deleted release
-is compared like any other and, once this run is shown to be the same commit or newer, deleted before the release is
-created. A release whose tag is gone fails the job, as does any answer about the release other than "found" or a 404.
+built from. The step first asks the compare API whether `main` still holds this run's own commit, and fails if it does
+not: a run of a discarded history never publishes, whatever `latest` holds. Before deleting, it reads the tag's commit
+and asks how this run's commit relates to it: `ahead` or `identical` publishes; `behind` leaves the newer release and
+ends the job successfully, but only while `main` still holds the published commit and that commit has its release, and
+fails once a reset of `main` has removed it or when the tag is left without a release (nothing would ever publish
+again); anything else (`diverged`, an empty answer, a failed call) fails the job without deleting anything. The tag is
+looked up on its own, not through the release: `gh release create` reuses an existing tag whatever `--target` says, so a
+tag left behind by a deleted release is compared like any other and, once this run is shown to be the same commit or
+newer, deleted before the release is created. A release whose tag is gone fails the job, as does any answer about the
+release other than "found" or a 404.
 
 Rejected:
 
@@ -49,10 +52,10 @@ Rejected:
   replaces), but it can lag behind `main` until the next push, or until a maintainer re-runs the cancelled
   `publish-latest`, which then sees itself `ahead` and publishes. No setting queues more than one pending job.
 * A force-push to `main` that rewrites the published commit, or a reset of `main` behind it, makes every later publish
-  fail until a maintainer recovers: cancel every `packages.yml` run of the old history that has not finished, wait for
-  any `publish-latest` in progress, delete `latest` (`gh release delete latest --cleanup-tag`), then re-run the newest
-  run's `publish-latest`. A run of the old history left running could publish after the deletion and make the newest
-  run fail again.
+  fail until a maintainer recovers: wait for any `publish-latest` in progress, delete `latest` (with
+  `gh release delete latest --cleanup-tag` when the release exists, or the tag's ref alone when only the tag is left),
+  then re-run the newest run's `publish-latest`. A run of the old history fails at the check of its own commit, so it
+  cannot publish after the deletion; only one already past its checks can, which is why the recovery waits for it.
 * The first publish after this change compares against a tag that `gh release create` put on `main`'s tip at the time,
   which may be newer than what that release was built from. A run older than that tip leaves `latest` until the next push.
 * A tag's run skips `publish-latest` (its `if` requires a push to `main`), so it never waits for or touches `latest`.

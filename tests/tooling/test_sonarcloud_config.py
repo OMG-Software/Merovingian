@@ -323,6 +323,17 @@ class SonarCloudCiScanTest(unittest.TestCase):
         for action in uses:
             self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$", f"{action} runs before the scan and is not pinned to a commit")
 
+    def test_given_the_codecov_job_when_read_then_every_action_it_runs_is_pinned_to_a_commit(self) -> None:
+        # GIVEN the codecov job, which holds CODECOV_TOKEN: any step that runs before the upload can change what the
+        # upload sends, and a tag can be moved where a commit cannot.
+        codecov_job = job_text(self.workflow, "codecov")
+        # WHEN the actions it uses are read.
+        uses = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", codecov_job)
+        # THEN there are the checkout, the artifact download and the upload, each pinned to a commit.
+        self.assertGreaterEqual(len(uses), 3)
+        for action in uses:
+            self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$", f"{action} runs in the codecov job and is not pinned")
+
     def test_given_the_workflow_when_read_then_it_scans_full_history_with_least_privilege(self) -> None:
         # GIVEN the coverage workflow.
         # WHEN its checkout depth and permissions are read.

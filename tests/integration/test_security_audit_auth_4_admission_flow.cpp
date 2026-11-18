@@ -130,12 +130,12 @@ SCENARIO("Registration does not hold the runtime mutex while it hashes the passw
         auto& runtime = started.runtime;
 
         // The registration's hash stops until the competing request is done, so it lands inside the window
-        // the lock is released for every time (ADR-0851). The pause outlives no thread: it is destroyed, and
-        // so released, before the worker is joined.
-        auto worker = merovingian::tests::JoiningThreads{};
-        auto const pause = merovingian::tests::PasswordHashPause{};
+        // the lock is released for every time (ADR-0851). Declaration order is destruction order in reverse:
+        // the pause is released, then the worker joined, and only then the state it writes is destroyed.
         auto registration_done = std::atomic<bool>{false};
         auto registration = hs::OperationResult{};
+        auto worker = merovingian::tests::JoiningThreads{};
+        auto const pause = merovingian::tests::PasswordHashPause{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
@@ -250,11 +250,12 @@ SCENARIO("A password change that races another password change is refused, not o
         auto const signed_in = hs::login_local_user(runtime, registered.value, alice_password, "DEV1");
         REQUIRE(signed_in.ok);
 
-        // Armed after the setup's own hashes, so the later change's hash is the one that stops (ADR-0851).
-        auto worker = merovingian::tests::JoiningThreads{};
-        auto const pause = merovingian::tests::PasswordHashPause{};
+        // Armed after the setup's own hashes, so the later change's hash is the one that stops (ADR-0851). The
+        // worker's state is declared first, so it outlives the join that the pause's release lets finish.
         auto change_done = std::atomic<bool>{false};
         auto change = hs::OperationResult{};
+        auto worker = merovingian::tests::JoiningThreads{};
+        auto const pause = merovingian::tests::PasswordHashPause{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
@@ -309,9 +310,10 @@ SCENARIO("A password change races a logout of the session that authorised it",
 
         // Armed after the setup's own hashes, so the change's hash is the one that stops (ADR-0851). Without it
         // the deletion could land after the change had finished, and the scenario would test nothing.
+        // The worker's state is declared first, so it outlives the join that the pause's release lets finish.
+        auto change = hs::OperationResult{};
         auto worker = merovingian::tests::JoiningThreads{};
         auto const pause = merovingian::tests::PasswordHashPause{};
-        auto change = hs::OperationResult{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};

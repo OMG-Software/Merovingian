@@ -53,6 +53,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   moves to the next mirror on a bad file; the guest tries the cached packages alone before any mirror (ADR-0844).
 * A failed Codecov upload fails the `codecov` job instead of the required `coverage` check; its report is kept 30 days
   so the job can be re-run alone (ADR-0846). `coverage.yml` grants its permissions per job, none to the workflow.
+* Every action the `codecov` job runs is pinned to a commit, since the job holds `CODECOV_TOKEN`; its artifact
+  download was a tag.
 * PDU ingestion refuses a caller that holds the runtime lock: it would take the room's lock in the reverse order and
   could deadlock against an ingest of the same room (ADR-0848).
 * SRV lookups on glibc each own their resolver state, set up and torn down under a lock that ThreadSanitizer can see;
@@ -61,10 +63,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   atomically, and keep Catch2 assertions off mock threads, so the `tsan` job reports no races.
 * The mlock and forked-task-count scenarios skip under ThreadSanitizer, as the mlock ones already did under ASan:
   TSan's own interceptor and background thread make what they check unobservable.
-* A slower package run of an older `main` commit no longer replaces a newer `latest`: publishes run one at a time,
-  and the `latest` tag names its build commit, which a publish must equal or descend from (ADR-0850).
+* A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
+  publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
 * The scenarios that race a request against a password hash pause the hash until the other request is made, so a slow
   runner can no longer make them fail, or pass without testing the race (ADR-0851).
+* The test-only local router runs inbound federation without `runtime.mutex`, as the server does, so its PDU sink no
+  longer refuses every transaction's PDUs for a held lock (ADR-0848).
 
 ## Release notes
 

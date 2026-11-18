@@ -1083,6 +1083,17 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Only a build of a commit main still holds may become latest: after
+          # a reset of main, a run of the discarded history stops here, before
+          # it reads or deletes anything, whatever is published.
+          build_on_main="$(gh api "repos/${REPOSITORY}/compare/${GITHUB_SHA}...${GITHUB_REF_NAME}" --jq .status)"
+          case "${build_on_main}" in
+            ahead|identical) ;;
+            *)
+              echo "::error::${GITHUB_SHA} is not on ${GITHUB_REF_NAME} ('${build_on_main}'); not publishing it"
+              exit 1
+              ;;
+          esac
           # Whether the release exists: a 404 says no; any other failure stops
           # the job rather than being read as "no release".
           if answer="$(gh api "repos/${REPOSITORY}/releases/tags/latest" --jq .id 2>&1)"; then
@@ -1116,6 +1127,13 @@ jobs:
                 on_main="$(gh api "repos/${REPOSITORY}/compare/${published}...${GITHUB_REF_NAME}" --jq .status)"
                 case "${on_main}" in
                   ahead|identical)
+                    if [ "${release}" != true ]; then
+                      # Only the tag is left: a newer publish failed between
+                      # deleting the release and creating it again. Leaving
+                      # it would report success with no latest release.
+                      echo "::error::latest is tagged at ${published} but has no release; re-run that build's publish"
+                      exit 1
+                    fi
                     echo "::notice::latest is built from ${published}, newer than ${GITHUB_SHA}; leaving it"
                     exit 0
                     ;;

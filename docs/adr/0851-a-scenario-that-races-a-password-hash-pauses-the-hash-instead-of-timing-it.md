@@ -40,8 +40,11 @@ through the wrapper of ADR-0510, stops until `release()` or the pause's destruct
 4. makes its competing request under `runtime.mutex`;
 5. releases the pause and joins the worker.
 
-The worker is declared before the pause, so on any early exit the pause is destroyed (released) before the thread is
-joined. Such a scenario hashes at the minimum cost and does not hold `RealPasswordHashCost`.
+The declaration order is fixed: first the state the worker writes, then the worker, then the pause. On any early exit
+the pause is destroyed (released) first, then the worker is joined, and only then is the state destroyed. A pause
+declared before the worker would leave a held thread unjoinable. State declared after the worker would be destroyed
+while the released thread still writes to it. Such a scenario hashes at the minimum cost and does not hold
+`RealPasswordHashCost`.
 
 ADR-0510's minimum-cost wrapper is unchanged. Its rule that a racing scenario holds `RealPasswordHashCost` is
 superseded for races against `crypto_pwhash_str`.

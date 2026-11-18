@@ -70,7 +70,9 @@ production code's call to `tests/support/RealPasswordHashCost.cpp`, so no produc
 - A scenario that races another request against a password hash (the window in which the runtime lock is released around
   `crypto_pwhash_str`) pauses the hash with `merovingian::tests::PasswordHashPause`, never by timing it
   ([ADR-0851](adr/0851-a-scenario-that-races-a-password-hash-pauses-the-hash-instead-of-timing-it.md)):
-  - arm the pause after the setup's own hashes, with the worker thread declared before it;
+  - arm the pause after the setup's own hashes;
+  - declare, in this order, the state the worker writes, the worker's `JoiningThreads`, then the pause. Unwinding then
+    releases the hash, joins the worker, and only then destroys what it wrote;
   - `REQUIRE` that `wait_until_hashing(timeout)` returned true;
   - make the competing request, then `release()` and join.
 

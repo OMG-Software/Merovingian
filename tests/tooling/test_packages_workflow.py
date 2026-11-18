@@ -98,6 +98,7 @@ def write_fake_gh(path: Path) -> None:
         '  "api repos/"*/commits/latest)\n'
         '    [ "$FAKE_COMMIT" = FAIL ] && exit 1\n'
         '    printf \'%s\\n\' "$FAKE_COMMIT" ;;\n'
+        '  "api repos/"*/compare/"$GITHUB_SHA"...main) printf \'%s\\n\' "$FAKE_BUILD_ON_MAIN" ;;\n'
         '  "api repos/"*/compare/*...main) printf \'%s\\n\' "$FAKE_ON_MAIN" ;;\n'
         '  "api repos/"*/compare/*) printf \'%s\\n\' "$FAKE_STATUS" ;;\n'
         "  *) echo \"unexpected gh call: $*\" >&2; exit 99 ;;\n"
@@ -228,26 +229,32 @@ class PackagesWorkflowTests(unittest.TestCase):
         run = publish_latest_script()
         this_commit = "b" * 40
         published = "a" * 40
-        # Each case: release ("1" exists, "0" a 404, "ERR" another failure), tag ("1", "0" or "FAIL"), the
-        # commit the tag names ("FAIL" a failed call), its comparison with this run and with main, then the
-        # exit status and what the step may do: publish, delete the release, delete a leftover tag.
+        # Each case: whether main holds this run's commit, release ("1" exists, "0" a 404, "ERR" another
+        # failure), tag ("1", "0" or "FAIL"), the commit the tag names ("FAIL" a failed call), its comparison with
+        # this run and with main, then the exit status and what the step may do: publish, delete the release,
+        # delete a leftover tag.
         cases = (
-            ("nothing published yet", "0", "0", "", "", "", 0, "publish"),
-            ("this run is newer", "1", "1", published, "ahead", "", 0, "publish delete-release"),
-            ("a re-run of the same commit", "1", "1", published, "identical", "", 0, "publish delete-release"),
-            ("this run is older, main holds the newer", "1", "1", published, "behind", "ahead", 0, ""),
-            ("this run is older, main is at the newer", "1", "1", published, "behind", "identical", 0, ""),
-            ("main was reset behind the published commit", "1", "1", published, "behind", "behind", 1, ""),
-            ("histories diverged", "1", "1", published, "diverged", "", 1, ""),
-            ("published commit unreadable", "1", "1", "", "ahead", "", 1, ""),
-            ("published commit lookup fails", "1", "1", "FAIL", "ahead", "", 1, ""),
-            ("a leftover tag, this run newer", "0", "1", published, "ahead", "", 0, "publish delete-tag"),
-            ("a leftover tag, this run older", "0", "1", published, "behind", "ahead", 0, ""),
-            ("a release without its tag", "1", "0", "", "", "", 1, ""),
-            ("release lookup fails", "ERR", "0", "", "", "", 1, ""),
-            ("tag lookup fails", "1", "FAIL", published, "ahead", "", 1, ""),
+            ("nothing published yet", "ahead", "0", "0", "", "", "", 0, "publish"),
+            ("this run is newer", "ahead", "1", "1", published, "ahead", "", 0, "publish delete-release"),
+            ("this run is main's tip", "identical", "1", "1", published, "ahead", "", 0, "publish delete-release"),
+            ("a re-run of the same commit", "ahead", "1", "1", published, "identical", "", 0, "publish delete-release"),
+            ("this run is older, main holds the newer", "ahead", "1", "1", published, "behind", "ahead", 0, ""),
+            ("this run is older, main is at the newer", "ahead", "1", "1", published, "behind", "identical", 0, ""),
+            ("main was reset behind the published commit", "ahead", "1", "1", published, "behind", "behind", 1, ""),
+            ("histories diverged", "ahead", "1", "1", published, "diverged", "", 1, ""),
+            ("published commit unreadable", "ahead", "1", "1", "", "ahead", "", 1, ""),
+            ("published commit lookup fails", "ahead", "1", "1", "FAIL", "ahead", "", 1, ""),
+            ("a leftover tag, this run newer", "ahead", "0", "1", published, "ahead", "", 0, "publish delete-tag"),
+            ("a leftover tag, this run older", "ahead", "0", "1", published, "behind", "ahead", 1, ""),
+            ("a release without its tag", "ahead", "1", "0", "", "", "", 1, ""),
+            ("release lookup fails", "ahead", "ERR", "0", "", "", "", 1, ""),
+            ("tag lookup fails", "ahead", "1", "FAIL", published, "ahead", "", 1, ""),
+            ("main was reset behind this run", "behind", "1", "1", published, "ahead", "", 1, ""),
+            ("this run's history was discarded", "diverged", "1", "1", published, "ahead", "", 1, ""),
+            ("this run's history was discarded, nothing published", "diverged", "0", "0", "", "", "", 1, ""),
+            ("main's answer about this run is unreadable", "", "1", "1", published, "ahead", "", 1, ""),
         )
-        for name, release, tag, commit, status, on_main, want_exit, want in cases:
+        for name, build_on_main, release, tag, commit, status, on_main, want_exit, want in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 log = tmp_path / "gh.log"
@@ -263,6 +270,7 @@ class PackagesWorkflowTests(unittest.TestCase):
                     "FAKE_COMMIT": commit,
                     "FAKE_STATUS": status,
                     "FAKE_ON_MAIN": on_main,
+                    "FAKE_BUILD_ON_MAIN": build_on_main,
                 }
 
                 # WHEN the step runs.
@@ -285,7 +293,9 @@ class PackagesWorkflowTests(unittest.TestCase):
                 if "api -X DELETE repos/owner/repo/git/refs/tags/latest" in calls:
                     done.add("delete-tag")
                 self.assertEqual(done, set(want.split()), calls)
-                if tag == "1" and commit not in ("", "FAIL"):
+                # The first call is the check that main holds this run's commit.
+                self.assertEqual(calls[:1], [f"api repos/owner/repo/compare/{this_commit}...main --jq .status"])
+                if build_on_main in ("ahead", "identical") and tag == "1" and commit not in ("", "FAIL"):
                     self.assertIn(
                         f"api repos/owner/repo/compare/{published}...{this_commit} --jq .status", calls
                     )
