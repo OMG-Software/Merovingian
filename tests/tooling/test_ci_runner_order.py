@@ -29,10 +29,11 @@ GATES = {
 GATED_WORKFLOWS = tuple(GATES)
 # Workflows whose gated jobs feed further jobs (aggregates, staging, signing).
 WORKFLOWS_WITH_DOWNSTREAM_JOBS = ("ci.yml", "packages.yml")
-# The analyses that must not wait, in the order the owner ranks them: Sonar (about an hour), CodeQL, then the two
-# sanitizer suites. Every other analysis needs nothing either; CodeRabbit runs on its own service, not on these runners.
+# The analyses that must not wait, in the order the owner ranks them: coverage (one instrumented build and run of the
+# suites that feeds Codecov and the Sonar scan, about an hour), CodeQL, then the two sanitizer suites. Every other
+# analysis needs nothing either; CodeRabbit runs on its own service, not on these runners.
 ANALYSES = (
-    ("sonarcloud.yml", "sonarcloud"),
+    ("coverage.yml", "coverage"),
     ("codeql.yml", "analyze"),
     ("sanitizers.yml", "tsan"),
     ("sanitizers.yml", "asan-ubsan"),
