@@ -3,27 +3,6 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
-# Version 1.1.4
-
-## Features
-
-* None.
-
-## Security Fixes
-
-* None.
-
-## Bug fixes
-
-* SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
-  first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
-
-## Release notes
-
-1.1.4 stops a SQLite server from refusing writes under sustained write load. Writes now wait their turn on the one
-SQLite write connection instead of racing for SQLite's lock on several and failing after 5 s. `database.pool_size`
-now applies to PostgreSQL only. No configuration change is needed.
-
 # Version 1.1.3
 
 ## Features
@@ -34,6 +13,8 @@ now applies to PostgreSQL only. No configuration change is needed.
   tokens for this server's SFU, judged by the main process and refused to a server the room's ACL denies (ADR-0831).
 * `delegate_delayed_leave` (MSC4195): this server sends a caller's delayed leave once LiveKit no longer shows them,
   checked every 30 s and sooner on LiveKit's signed webhook, kept across restarts (ADR-0832, ADR-0833).
+* A branch no longer bumps the version: it changes only when the owner asks, and a change adds its bullets to the
+  newest version's entry here (ADR-0835).
 
 ## Security Fixes
 
@@ -49,12 +30,15 @@ now applies to PostgreSQL only. No configuration change is needed.
 
 * `use_state_after`: a room forked at `since` now gets exactly what changed since what the client was told, read from an
   in-memory log of state changes, and so does a left room (ADR-0827).
+* SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
+  first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
 
 ## Release notes
 
 Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
 and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
-`state_after` sync of each room with news carries its whole state once.
+`state_after` sync of each room with news carries its whole state once. A SQLite server no longer refuses writes under
+sustained write load, and `database.pool_size` now applies to PostgreSQL only.
 
 # Version 1.1.2
 

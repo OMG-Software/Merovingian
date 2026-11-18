@@ -5,13 +5,10 @@
 From 1.0.0 Merovingian uses **`MAJOR.MINOR.BUILD`**
 ([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md)).
 
-`BUILD` is the working counter: feature, fix, and packaging branches increment
-it by one, exactly as `PATCH` did before 1.0.0. The bump policy below is
-unchanged. Documentation-only changes do not require a version bump
-([ADR-0464](adr/0464-documentation-only-changes-do-not-require-a-version-bump.md)).
-
-`MINOR` and `MAJOR` change only when the owner decides. The decision states the
-version that follows.
+No part of the version changes on its own: `BUILD`, `MINOR` and `MAJOR` all
+change only when the owner asks, and the request states the version that follows
+([ADR-0835](adr/0835-the-version-changes-only-when-the-owner-asks.md)). See the
+bump policy below.
 
 **Project phase is declared in `README.md` and `CHANGELOG.md`, never encoded in
 the version number** ([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md), which restates the rule
@@ -28,26 +25,34 @@ long, and a new series did not restart at `.0` (`0.9.25` to `0.10.1`, `0.10.63`
 to `0.11.4`). `1.0.0` was cut when the project reached production. Beta was
 declared at `v0.10.59`. These rules no longer apply.
 
+From 1.0.0 until 2026-11-18, every branch with a code, build, packaging or test
+change incremented `BUILD` once when it was created, and documentation-only
+branches did not ([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md),
+[ADR-0464](adr/0464-documentation-only-changes-do-not-require-a-version-bump.md)).
+That is why 1.0.x and 1.1.x moved one number per branch. It no longer applies.
+
 ## Bump policy
 
-**One bump per branch, when the branch is created, except for documentation-only changes.** Update `CHANGELOG.md`
-and every version location below together before the branch's first commit.
-Do not increment again on intermediate commits. Before raising the PR, verify
-that the version remains consistent with the base branch; if another branch
-has used that version in the meantime, update all locations together to the
-next available build number. There is no separate merge-time bump.
+**The version changes only when the owner asks for it**
+([ADR-0835](adr/0835-the-version-changes-only-when-the-owner-asks.md)). No branch
+changes it on its own, whatever the branch changes: code, build, packaging,
+tests or documentation. A branch keeps the version of the branch it is based on,
+in every location below.
 
-The one exception is the `release.yml` fix that let 1.0.0 publish: the owner
-kept it at 1.0.0 and moved the unpublished `v1.0.0` tag to it
+Every change adds its notes as bullets to the newest `# Version` entry of
+`CHANGELOG.md`, in the [changelog format](#changelog-format): new behaviour or
+guidance under `Features`, a vulnerability under `Security Fixes`, any other
+correction under `Bug fixes`. Update that entry's release-notes paragraph when an
+operator needs to know about the change.
+
+When the owner asks for a version, that change sets the version the owner names
+in every location below in one commit, adds the dated `%changelog` entry to each
+RPM spec, and opens a new `# Version` entry at the top of `CHANGELOG.md` for the
+changes that follow.
+
+The `release.yml` fix that let 1.0.0 publish kept 1.0.0 and moved the
+unpublished `v1.0.0` tag to it
 ([ADR-0651](adr/0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)).
-It is not a precedent.
-
-For a documentation-only branch, keep the current version and add the change
-notes as bullets in its `CHANGELOG.md` entry: new guidance under `Features`, a
-correction under `Bug fixes`. Changes to coding
-guidance and `AGENTS.md` files are documentation changes. If the branch later
-includes code, build, or packaging changes, apply the bump policy before
-committing those changes.
 
 ## Changelog format
 
@@ -136,19 +141,19 @@ than the others.
   a new dated entry for every version — the `Version:` field alone is not
   sufficient for `rpmbuild` to accept the spec.
 - Historical version strings in `CHANGELOG.md`, `CHANGELOG-pre-release.md` and every spec
-  `%changelog` are records, not live values; do not edit them when bumping.
+  `%changelog` are records, not live values; do not edit them when the version changes.
 - `CHANGELOG.md` starts at 1.0.0. The 0.x entries are in `CHANGELOG-pre-release.md`, a frozen record that
   nothing is added to ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 - `tests/tooling/test_packages_workflow.py` enforces that every file in the table
   above carries the current `meson.build` version. Run it (or `python build.py
-  vm`) after a bump to catch any location that was missed.
+  vm`) after a version change to catch any location that was missed.
 
 ## Release process
 
 1. Update `main` from `origin`, then create a feature or fix branch from it.
-2. Unless the changes are documentation-only, increment the build number in every location above and add its changelog section.
-3. Make the changes and keep that version for intermediate commits.
-4. Before raising the PR, check version consistency and conflicts with the base branch.
+2. Make the changes without touching the version, and add their bullets to the newest `CHANGELOG.md` entry.
+3. Only when the owner asks for a version: set it in every location above and open its changelog entry.
+4. Before raising the PR, check that the version and the CHANGELOG agree with the base branch and do not conflict.
 5. Raise a PR. CI builds the configured platform artifacts and runs the test suite;
    see [platform-support.md](platform-support.md) for the artifact matrix.
 6. Merge to `main`. The `publish-latest` CI job replaces the rolling GitHub

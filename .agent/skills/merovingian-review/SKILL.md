@@ -1,6 +1,6 @@
 ---
 name: merovingian-review
-description: "Review a Merovingian pull request, branch or local diff against this project's binding rules: docs/coding-rules.md, the security coding rules, the per-module AGENTS.md invariants, the Matrix v1.19 spec, and the change obligations (CHANGELOG, docs, ADR, version bump, PR headings). It targets the defect classes this project has actually shipped. Use when asked to review a PR, branch, diff or commit in this repository, to check a change before merge, to verify a subagent's or another session's work, or to post review comments on a Merovingian PR."
+description: "Review a Merovingian pull request, branch or local diff against this project's binding rules: docs/coding-rules.md, the security coding rules, the per-module AGENTS.md invariants, the Matrix v1.19 spec, and the change obligations (CHANGELOG, docs, ADR, version and PR headings). It targets the defect classes this project has actually shipped. Use when asked to review a PR, branch, diff or commit in this repository, to check a change before merge, to verify a subagent's or another session's work, or to post review comments on a Merovingian PR."
 ---
 
 # Merovingian review
@@ -22,7 +22,7 @@ against this skill.
 | [references/rule-checks.md](references/rule-checks.md) | Grep-able rule checks and judgement checks from the coding and security rules |
 | [references/recurring-defects.md](references/recurring-defects.md) | Defect classes this project has shipped and fixed, as questions to ask of a diff |
 | [references/tests.md](references/tests.md) | Where a test belongs, required structure, what the gates catch and miss, how to run and read tests |
-| [references/obligations.md](references/obligations.md) | CHANGELOG, docs, ADR, version bump, PR description: rules and commands |
+| [references/obligations.md](references/obligations.md) | CHANGELOG, docs, ADR, version, PR description: rules and commands |
 
 ## Modes
 
@@ -192,7 +192,7 @@ under Verification as not reviewed.
 | Tag | Meaning in this project | Blocks merge |
 |---|---|---|
 | **[Blocker]** | Wrong result, auth or signature bypass, a worker-trust violation, data loss, a crash, a deadlock or timeout, an unbounded cost reachable by an unprivileged client or remote, a weakened conformance assertion, a broken build or test | Yes |
-| **[Major]** | Real defect on a plausible path; incomplete fix; behaviour without a test that fails if reverted; missing CHANGELOG, docs, ADR or version bump the project rules require | Yes, unless the author shows it is wrong |
+| **[Major]** | Real defect on a plausible path; incomplete fix; behaviour without a test that fails if reverted; missing CHANGELOG, docs or ADR the project rules require, or a version change the owner did not ask for | Yes, unless the author shows it is wrong |
 | **[Minor]** | Correct but fragile, unclear or wasteful; a missing negative-path test on non-security code; doc drift | No |
 | **[Nit]** | Wording, naming, or style no tool owns | Never; collapse them |
 
@@ -260,10 +260,10 @@ One or two sentences: what the change does, and whether the diff supports what i
 
 ## Obligations
 | Item | State | Evidence |
-| CHANGELOG bullet in current version, right section | | |
+| CHANGELOG bullet in the newest version's entry, right section | | |
 | Docs per docs/AGENTS.md table | | |
 | ADR (needed? numbered above all branches? index line?) | | |
-| Version bump (or docs-only exemption) and all places agree | | |
+| Version unchanged from the base unless the owner asked (ADR-0835), and all places agree | | |
 | PR description headings | | |
 
 ## Evidence log

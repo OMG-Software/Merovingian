@@ -1,6 +1,6 @@
 # Versions from 1.0.0 are MAJOR.MINOR.BUILD
 
-* Status: accepted
+* Status: accepted; its per-branch `BUILD` increment is superseded by [ADR-0835](0835-the-version-changes-only-when-the-owner-asks.md)
 * Date: 2026-11-11
 
 ## Context and Problem Statement
@@ -43,4 +43,5 @@ Chosen option: "`MAJOR.MINOR.BUILD`".
 ## Links
 
 * Supersedes [ADR-0047](0047-keep-project-phase-out-of-the-version-string.md)
+* Partly superseded by [ADR-0835](0835-the-version-changes-only-when-the-owner-asks.md): the per-branch `BUILD` increment
 * [docs/versioning.md](../versioning.md)
