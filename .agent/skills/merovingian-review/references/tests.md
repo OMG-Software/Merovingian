@@ -79,7 +79,7 @@ Sources: `tests/unit/AGENTS.md#Unit vs. other test directories`, `tests/integrat
   `All tests passed (N assertions in M test cases)` with M at least 1. Empty output for a new tag means the binary
   is stale. A zero-byte binary exits 0.
 - Binaries and meson timeouts: `merovingian-unit-tests` (600 s), `merovingian-conformance-tests` (900 s),
-  `merovingian-integration-tests` (1800 s; 900 s on the BSDs), `merovingian-password-cost-tests`.
+  `merovingian-integration-tests` (1800 s per Meson test; 900 s on the BSDs; run as four shards, see docs/testing-standards.md), `merovingian-password-cost-tests`.
 - A second suite running on the same machine causes unrelated timeouts. Re-run alone; do not raise the timeout.
 - **Fails-if-reverted check:** make a worktree at the base commit, apply only the test changes
   (`git diff <base>...<head> -- tests/ | git apply`), build, run the tag. The new scenario must fail. If it
