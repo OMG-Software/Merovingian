@@ -510,8 +510,13 @@ class DependencyWrapTests(unittest.TestCase):
             "integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800",
             tests_meson,
         )
-        # AND every integration Meson test (each shard, the PostgreSQL and the serial test) keeps it.
-        self.assertEqual(tests_meson.count("timeout: integration_tests_timeout,"), 3)
+        # AND every integration Meson test keeps it: each of the shard loop, the PostgreSQL test and the serial test
+        # registrations passes the limit as its own timeout argument.
+        for name in ("integration-tests-shard-@0@-of-@1@", "integration-tests-postgresql", "integration-tests-serial"):
+            start = tests_meson.index(f"'{name}'")
+            end = re.search(r"\n {2,4}\)\n", tests_meson[start:])
+            registration = tests_meson[start : start + end.start()]
+            self.assertEqual(registration.count("timeout: integration_tests_timeout,"), 1, name)
 
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.

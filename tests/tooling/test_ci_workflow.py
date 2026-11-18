@@ -563,12 +563,12 @@ class CiWorkflowTests(unittest.TestCase):
         for name, workflow in workflows.items():
             # The list is defined once, by the step that exports NETBSD_PACKAGES to the host-side
             # package fetch and to the VM, which installs it with `install_packages $NETBSD_PACKAGES`.
-            lists = [line for line in workflow.splitlines() if "NETBSD_PACKAGES=clang" in line]
+            lists = re.findall(r"NETBSD_PACKAGES=([^\"\n]*)", workflow)
             installs = [line for line in workflow.splitlines() if "install_packages $NETBSD_PACKAGES" in line]
             self.assertEqual(len(lists), 1, f"{name}: the NetBSD package list must be defined once")
             self.assertTrue(installs, f"{name}: no NetBSD package install found")
-            for line in lists:
-                self.assertNotIn(" openssl ", f" {line.strip()} ", f"{name}: {line.strip()}")
+            self.assertTrue(lists[0].split(), f"{name}: the NetBSD package list is empty")
+            self.assertNotIn("openssl", lists[0].split(), f"{name}: {lists[0].strip()}")
             self.assertEqual(
                 workflow.count("pkg_delete openssl"),
                 len(installs),

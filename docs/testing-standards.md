@@ -106,6 +106,8 @@ returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
   in the one place `tests/meson.build` defines them; `tests/tooling/test_integration_shards.py` checks the registration.
 
 A scenario that reaches PostgreSQL must carry `[postgresql]` (below), or it would run in a shard beside the others.
+`[serial]` and `[postgresql]` are mutually exclusive under this registration: a scenario with both is selected by both
+Meson tests, twice, and `integration-shard-coverage` fails.
 Scenario files, ports and temporary paths are already per process (ADR-0753; listeners bind port 0), which is why the
 shards can run side by side. Each shard writes its own skip report (`<binary>-<pid>.xml`), which
 `check_expected_skips.py` reads with the rest. With the PostgreSQL URI set, run `[postgresql]` through the Meson test,
@@ -420,12 +422,12 @@ beside them.
 GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request. A pull
 request push starts few jobs: `ci.yml` runs only `ubuntu-build-and-test` and `freebsd-build-and-test` there, every
 other `ci.yml` job and every `packages.yml` job is skipped (a skipped job reports success), and the merge queue
-(`merge_group`), pushes to `main`, the schedule and `workflow_dispatch` run the full matrix
+(`merge_group`), pushes to `main`, `ci.yml`'s weekly schedule (`packages.yml` has none) and `workflow_dispatch` run the full matrix
 ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). A new push to a
 pull request cancels that pull request's superseded runs
 ([ADR-0842](adr/0842-a-new-push-to-a-pull-request-cancels-its-superseded-runs.md)). A push to a `claude/**` or `codex/**`
-branch no longer starts CI: open a pull request, or run the workflow by hand from the Actions tab (workflow, then Run
-workflow) ([ADR-0841](adr/0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)). Queued
+branch with no pull request still runs the documentation-site build (`pages.yml`); every other workflow needs a pull request,
+or a manual run from the Actions tab (workflow, then Run workflow) of a workflow that declares `workflow_dispatch` ([ADR-0841](adr/0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)). Queued
 jobs are not served in the order they joined, so the only lever is when a job joins the queue. Jobs join in three tiers
 ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md),
 [ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`coverage`, which also runs the Sonar scan, CodeQL, `tsan`, `asan-ubsan`, then fuzzing, clang-tidy,

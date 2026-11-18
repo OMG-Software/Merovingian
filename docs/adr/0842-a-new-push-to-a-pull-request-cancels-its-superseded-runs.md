@@ -12,7 +12,7 @@ head occupying runners until it finished, although nobody would read its result,
 ## Considered Options
 
 * No `concurrency` group.
-* One group per workflow and ref, cancelling except on `main` (as `pages.yml` does).
+* One group per workflow and ref, cancelling except on `main` (as `pages.yml` does, and still does: see below).
 * One group per workflow and pull request, used only by `pull_request` events, cancelling in progress; every other event gets
   a group of its own run.
 
@@ -40,7 +40,9 @@ Rejected:
 
 * Only a run for a commit that is no longer the pull request's head is cancelled. ADR-0511's objection to `concurrency`
   (a cancelled required check shows as failed on the commit) applies only to that superseded commit, which nobody merges.
-* `push`, `merge_group`, `schedule`, `workflow_dispatch` and `workflow_call` runs are never cancelled or held back.
+* `push`, `merge_group`, `schedule`, `workflow_dispatch` and `workflow_call` runs are never cancelled or held back, with one
+  exception: `pages.yml` groups by `github.ref` and cancels only runs that are not on `main`, so it keeps its own group scheme
+  and is not covered by "every non-pull-request run has its own group".
 
 ## Links
 

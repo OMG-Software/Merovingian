@@ -130,6 +130,8 @@ jobs:
           restore-keys: ccache-sanitizers-tsan-
 
       - name: Build and test with ThreadSanitizer
+        # bash runs with pipefail, so a failed build or test fails the step and not only tee's status.
+        shell: bash
         run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread --skip-job tsan 2>&1 | tee tsan-ci-log.txt
 
       - name: Upload TSan logs

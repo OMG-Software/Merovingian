@@ -40,7 +40,8 @@ Rejected:
 
 ## Consequences
 
-* The first run on `main` after this change fills the caches; later pull requests compile only what changed.
+* The first run on `main` after this change fills the caches. A later pull request reuses the cached results that match and
+  compiles on a cache miss; a change to a shared header misses for every file that includes it.
 * A pull request no longer writes caches. The repository's 10 GB cache budget holds one set from `main` instead of being evicted
   by every pull request run.
 * A job that adds ccache-action must also wrap `CC` and `CXX`, or the action does nothing again.

@@ -31,18 +31,28 @@ Chosen: a core gate on the pull request and the full matrix in the merge queue.
 
 On `pull_request`, `ci.yml` runs `ubuntu-build-and-test` and `freebsd-build-and-test` (and the gate they wait for), and the
 analysis workflows (sanitizers, `clang-tidy`, CodeQL, PostgreSQL, fuzz, coverage with the Sonar scan, secret scan, dependency
-triage, docs) run as before. Every other `ci.yml` job and every `packages.yml` job has `github.event_name != 'pull_request'`
+triage, docs) run as before. `dependency-review` and the SonarQube Cloud scan run only for a pull request from this repository
+(the scan also on a push to `main`). Every other `ci.yml` job and every `packages.yml` job has `github.event_name != 'pull_request'`
 in its job-level `if:`, so on a pull request it is skipped. A job skipped by its `if:` reports success, so its required check
-passes on the pull request. Every workflow that runs for a pull request also runs for `merge_group`, where nothing is skipped,
-and the merge queue merges only a commit on which every required check ran. `reproducible-build.yml` moves from a path-filtered
+passes on the pull request. Every workflow that runs for a pull request also runs for `merge_group`, where no `ci.yml` or
+`packages.yml` job is skipped for being a pull request. Two things still run only on a pull request or on `main`:
+`dependency-review`, and the SonarQube Cloud scan, which is skipped for `merge_group` and `workflow_dispatch`. The pull
+request's scan already analysed its merge with main, a scan of a `gh-readonly-queue` branch would only add a throwaway
+SonarQube Cloud branch, and the Sonar result is not a required check. The merge queue merges only a commit on which every
+required check passed. `reproducible-build.yml` moves from a path-filtered
 `pull_request` trigger to `merge_group`.
 
 `packages.yml` keeps its `pull_request` trigger although all its jobs skip there: a workflow that never starts leaves its
 required checks waiting forever, and the pull request could never merge. `tests/tooling/test_ci_tiers.py` lists the
 ruleset's required checks and fails if one stops reporting for either event; keep that list and the ruleset in step.
 
-The merge queue must be turned on in the "Protect main" ruleset. Until it is, a pull request merges after the core gate alone,
-and the full matrix runs only on the push to `main`.
+The merge queue must be turned on in the "Protect main" ruleset. Until the owner does, a pull request can merge after the
+core gate alone, and the full matrix first runs on the push to `main`.
+
+The ruleset gates the queue only on its required checks. `ubuntu-26.10-build-and-test` and `NetBSD package` are not required
+([ADR-0502](0502-every-bsd-job-is-required-and-the-netbsd-retry-cannot-rescue-it.md) for NetBSD), so their failure in the
+queue does not block a merge; it blocks staging, signing and publishing `latest`. Adding them to the ruleset is the owner's
+decision.
 
 Rejected:
 

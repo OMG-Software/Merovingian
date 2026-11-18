@@ -33,6 +33,29 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
                 self.assertIn("envs: 'NETBSD_RELEASE NETBSD_ARCH NETBSD_PACKAGES'", text)
                 self.assertIn("release: ${{ env.NETBSD_RELEASE }}", text)
 
+    def test_each_job_runs_its_steps_in_order_resolve_restore_download_save_vm(self) -> None:
+        for workflow, job in JOBS:
+            steps = re.split(r"\n      - ", job_text(workflow, job))
+            fetches = [index for index, step in enumerate(steps) if "scripts/fetch-netbsd-packages.py" in step]
+
+            def only(label: str, matches: list[int]) -> int:
+                self.assertEqual(len(matches), 1, f"{workflow} {job}: expected one {label} step, found {matches}")
+                return matches[0]
+
+            resolve = only("resolve", [i for i in fetches if "--resolve-only" in steps[i]])
+            restore = only("cache restore", [i for i, s in enumerate(steps) if "actions/cache/restore@" in s])
+            download = only("download", [i for i in fetches if "--resolve-only" not in steps[i]])
+            save = only("cache save", [i for i, s in enumerate(steps) if "actions/cache/save@" in s])
+            vm = only("VM", [i for i, s in enumerate(steps) if "uses: vmactions/netbsd-vm@" in s])
+            with self.subTest(job=job):
+                # GIVEN the job's steps. THEN the cache is restored after the set is resolved, the download fills what
+                # the cache lacks, the cache is saved from the host before the guest can empty the directory, and the
+                # VM runs last.
+                self.assertLess(resolve, restore)
+                self.assertLess(restore, download)
+                self.assertLess(download, save)
+                self.assertLess(save, vm)
+
     def test_cache_actions_are_pinned_and_keyed_on_the_lockfile(self) -> None:
         for workflow, job in JOBS:
             text = job_text(workflow, job)

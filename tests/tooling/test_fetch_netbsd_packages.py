@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import hashlib
 import http.client
@@ -96,11 +97,19 @@ class DeweyTests(unittest.TestCase):
             ("1.0rc1", "1.0"),
             ("1.0", "1.0pl1"),
             ("1.0a", "1.0b"),
+            ("1.0a", "1.0.2"),
             ("5.8.9nb2", "5.40.0"),
         ):
             with self.subTest(lower=lower, higher=higher):
                 self.assertEqual(fetch.dewey_compare(lower, higher), -1)
                 self.assertEqual(fetch.dewey_compare(higher, lower), 1)
+
+    def test_a_letter_after_digits_is_two_components(self) -> None:
+        # GIVEN NetBSD's dewey.c, where 1.0a is 1.0.0.1, which is less than 1.0.2.
+        packages = fetch.parse_summary("PKGNAME=lib-1.0a\nFILE_NAME=lib-1.0a.tgz\nFILE_SIZE=1\n")
+        # WHEN lib>=1.0.2 is matched THEN lib-1.0a is not a candidate.
+        self.assertIsNone(fetch.best_match("lib>=1.0.2", packages))
+        self.assertEqual(fetch.best_match("lib>=1.0", packages).pkgname, "lib-1.0a")
 
     def test_trailing_zeros_are_equal(self) -> None:
         self.assertEqual(fetch.dewey_compare("1.0", "1"), 0)
@@ -328,6 +337,203 @@ class HttpGetTests(unittest.TestCase):
         with mock.patch.object(fetch.time, "sleep"):
             self.assertEqual(fetch.with_retries(action, "x", 2, 0), "done")
         self.assertEqual(len(calls), 2)
+
+
+DAMAGED_GZIP = bytes([0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 3]) + b"\xff" * 16  # an invalid deflate block: zlib.error
+
+
+class ZlibErrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def test_damaged_deflate_data_fails_verification(self) -> None:
+        # GIVEN a gzip file whose deflate data is damaged, which gzip reports as zlib.error.
+        path = self.root / "x-1.tgz"
+        path.write_bytes(DAMAGED_GZIP)
+        package = fetch.Package("x-1", "x-1.tgz", len(DAMAGED_GZIP), None)
+        # WHEN it is verified THEN that is a rejection, not a crash.
+        self.assertIn("not a complete compressed archive", fetch.verify_file(path, package))
+
+    def test_damaged_cached_package_is_downloaded_again(self) -> None:
+        # GIVEN a cached package with damaged deflate data and a good download.
+        good = gzip.compress(b"payload")
+        output = self.root / "pkgs"
+        output.mkdir()
+        (output / "x-1.tgz").write_bytes(DAMAGED_GZIP)
+        package = fetch.Package("x-1", "x-1.tgz", None, None)  # no size, so only the stream check can reject it
+
+        def download(bases, package, target, attempts, timeout):  # noqa: ANN001
+            target.write_bytes(good)
+
+        # WHEN the directory is synced THEN the damaged copy is replaced.
+        with mock.patch.object(fetch, "download_package", download):
+            result = fetch.sync_directory(output, [package], [], 1, 1)
+        self.assertEqual(result, (1, 0, 0))
+        self.assertEqual((output / "x-1.tgz").read_bytes(), good)
+
+    def test_damaged_summary_makes_the_next_format_be_tried(self) -> None:
+        # GIVEN a mirror whose pkg_summary.gz is damaged and whose pkg_summary.bz2 is fine.
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            if url.endswith("pkg_summary.gz"):
+                destination.write(DAMAGED_GZIP)
+            elif url.endswith("pkg_summary.bz2"):
+                destination.write(bz2.compress(SUMMARY.encode()))
+            else:
+                raise fetch.FetchError("not found")
+
+        # WHEN the summary is fetched THEN the bz2 one is used.
+        with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+            packages = fetch.fetch_summary(["https://a/"], None, 1, 1)
+        self.assertIn("clang-21.1.8nb1", [p.pkgname for p in packages])
+
+
+class SummaryRootsTests(unittest.TestCase):
+    WITHOUT = "PKGNAME=perl-5.40.0\nFILE_NAME=perl-5.40.0.tgz\nFILE_SIZE=3\n"
+
+    def test_a_summary_without_a_required_package_is_not_kept(self) -> None:
+        # GIVEN a first mirror whose summary lacks clang and a second that has it.
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            if url == "https://a/pkg_summary.gz":
+                destination.write(gzip.compress(self.WITHOUT.encode()))
+            elif url == "https://b/pkg_summary.gz":
+                destination.write(gzip.compress(SUMMARY.encode()))
+            else:
+                raise fetch.FetchError("not found")
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary_file = Path(directory) / "summary.txt"
+            # WHEN the summary is fetched with clang required.
+            with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+                packages = fetch.fetch_summary(["https://a/", "https://b/"], summary_file, 1, 1, ["clang"])
+            # THEN the second mirror's summary is the one used and the one written.
+            self.assertIn("clang-21.1.8nb1", [p.pkgname for p in packages])
+            self.assertEqual(summary_file.read_text(encoding="utf-8"), SUMMARY)
+
+    def test_no_candidate_with_the_required_package_fails_and_writes_nothing(self) -> None:
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            if url.endswith("pkg_summary.gz"):
+                destination.write(gzip.compress(self.WITHOUT.encode()))
+            else:
+                raise fetch.FetchError("not found")
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary_file = Path(directory) / "summary.txt"
+            with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(fetch.FetchError, "required clang"):
+                    fetch.fetch_summary(["https://a/"], summary_file, 1, 1, ["clang"])
+            self.assertFalse(summary_file.exists())
+
+
+class MirrorFallbackTests(unittest.TestCase):
+    def test_a_file_that_fails_verification_moves_on_to_the_next_mirror(self) -> None:
+        # GIVEN a first mirror serving a wrong-size file and a second serving the right one.
+        good = gzip.compress(b"payload" * 10)
+        package = fetch.Package("x-1", "x-1.tgz", len(good), None)
+
+        def get(url, destination, limit, timeout, deadline=900.0):  # noqa: ANN001
+            destination.write(good + b"extra" if url.startswith("https://a/") else good)
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "x-1.tgz"
+            bases = ["https://a/", "https://b/"]
+            # WHEN the package is downloaded.
+            with mock.patch.object(fetch, "http_get", get), contextlib.redirect_stderr(io.StringIO()):
+                fetch.download_package(bases, package, target, 1, 1)
+            # THEN the second mirror's file is kept, the partial is gone and the first mirror is rotated last.
+            self.assertEqual(target.read_bytes(), good)
+            self.assertFalse(target.with_name("x-1.tgz.part").exists())
+            self.assertEqual(bases, ["https://b/", "https://a/"])
+
+
+class RunTests(unittest.TestCase):
+    DATA = gzip.compress(b"payload")
+
+    def summary(self, size: str | None = None) -> str:
+        size = str(len(self.DATA)) if size is None else size
+        size_line = f"FILE_SIZE={size}\n" if size else ""
+        return (
+            f"PKGNAME=clang-1\nDEPENDS=zlib>=1\nFILE_NAME=clang-1.tgz\n{size_line}\n"
+            f"PKGNAME=zlib-1\nFILE_NAME=zlib-1.tgz\nFILE_SIZE={len(self.DATA)}\n\n"
+            f"PKGNAME=gdb-1\nDEPENDS=zlib>=1\nDEPENDS=gdbdep>=1\nFILE_NAME=gdb-1.tgz\n{size_line}\n"
+            f"PKGNAME=gdbdep-1\nFILE_NAME=gdbdep-1.tgz\nFILE_SIZE={len(self.DATA)}\n"
+        )
+
+    def arguments(self, root: Path, *extra: str) -> list[str]:
+        return [
+            "--release", "11.0", "--arch", "amd64", "--output-dir", str(root / "out"),
+            "--lockfile", str(root / "lock"), *extra,
+        ]
+
+    def temp_root(self) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name)
+
+    def run_with(self, failing: set[str], *extra: str) -> tuple[int, str, Path]:
+        root = self.temp_root()
+
+        def download(bases, package, target, attempts, timeout):  # noqa: ANN001
+            if package.file_name in failing:
+                target.with_name(target.name + ".part").write_bytes(b"partial")
+                raise fetch.FetchError("down")
+            target.write_bytes(self.DATA)
+
+        errors = io.StringIO()
+        with (
+            mock.patch.object(fetch, "fetch_summary", return_value=fetch.parse_summary(self.summary())),
+            mock.patch.object(fetch, "download_package", download),
+            contextlib.redirect_stderr(errors),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = fetch.run(self.arguments(root, *extra))
+        return code, errors.getvalue(), root
+
+    def test_an_optional_only_failure_is_a_warning(self) -> None:
+        # GIVEN gdb optional, and a download failure for gdb's own dependency.
+        code, errors, root = self.run_with({"gdbdep-1.tgz"}, "--optional", "gdb", "clang")
+        # THEN the run succeeds, warns, and leaves no optional-only file behind.
+        self.assertEqual(code, 0)
+        self.assertIn("warning: optional package gdbdep-1.tgz", errors)
+        names = sorted(p.name for p in (root / "out").iterdir())
+        self.assertEqual(names, ["clang-1.tgz", "gdb-1.tgz", "zlib-1.tgz"])
+
+    def test_a_dependency_shared_with_the_required_closure_stays_mandatory(self) -> None:
+        # GIVEN zlib needed by both clang and the optional gdb, and zlib failing to download.
+        with self.assertRaises(fetch.FetchError):
+            self.run_with({"zlib-1.tgz"}, "--optional", "gdb", "clang")
+
+    def test_a_required_failure_is_fatal(self) -> None:
+        with self.assertRaises(fetch.FetchError):
+            self.run_with({"clang-1.tgz"}, "--optional", "gdb", "clang")
+
+    def test_a_package_without_file_size_fails_before_the_lockfile(self) -> None:
+        # GIVEN clang with no FILE_SIZE.
+        root = self.temp_root()
+        packages = fetch.parse_summary(self.summary(size=""))
+        # WHEN the run resolves THEN it fails and writes no lockfile.
+        with mock.patch.object(fetch, "fetch_summary", return_value=packages), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(fetch.FetchError, "FILE_SIZE"):
+                fetch.run(self.arguments(root, "--resolve-only", "clang"))
+        self.assertFalse((root / "lock").exists())
+
+    def test_lockfile_lines_carry_size_and_checksum(self) -> None:
+        # GIVEN one package with FILE_CKSUM and one without (NetBSD 11.0 publishes none).
+        packages = fetch.parse_summary(
+            "PKGNAME=a-1\nFILE_NAME=a-1.tgz\nFILE_SIZE=10\nFILE_CKSUM=SHA512 abcd\n\n"
+            "PKGNAME=b-1\nFILE_NAME=b-1.tgz\nFILE_SIZE=20\n"
+        )
+        # THEN each line is name, size and checksum or a dash.
+        self.assertEqual(fetch.lockfile_text(packages), "a-1.tgz 10 SHA512 abcd\nb-1.tgz 20 -\n")
+
+    def test_resolve_only_writes_the_content_lockfile(self) -> None:
+        root = self.temp_root()
+        packages = fetch.parse_summary(self.summary())
+        with mock.patch.object(fetch, "fetch_summary", return_value=packages), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(fetch.run(self.arguments(root, "--resolve-only", "clang")), 0)
+        size = len(self.DATA)
+        self.assertEqual((root / "lock").read_text(encoding="utf-8"), f"clang-1.tgz {size} -\nzlib-1.tgz {size} -\n")
 
 
 if __name__ == "__main__":

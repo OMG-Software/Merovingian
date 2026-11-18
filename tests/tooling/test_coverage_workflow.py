@@ -136,6 +136,64 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("name: coverage-${{ github.sha }}", codecov_job)
         self.assertNotIn("build-linux.sh", codecov_job)
 
+    def test_the_sonar_token_is_bound_in_the_scan_steps_own_env_and_nowhere_else(self) -> None:
+        # GIVEN the coverage workflow, split into its workflow-level text, its job-level text and its steps.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        workflow_level, jobs_text = workflow.split("\njobs:\n", 1)
+        job_level, steps = jobs_text.split("\n    steps:\n", 1)
+
+        # THEN no workflow-level `env:` block, and no job-level text, mentions the token: every step of the job would
+        # read it.
+        # (Comments may name the token; a binding is `SONAR_TOKEN:` or a reference to the secret.)
+        self.assertNotRegex(workflow_level, r"(?m)^env:")
+        for text in (workflow_level, job_level):
+            self.assertNotIn("secrets.SONAR_TOKEN", text)
+            self.assertNotRegex(text, r"(?m)^\s*SONAR_TOKEN:")
+        # AND the one binding is in the env of the SonarQube scan step itself.
+        self.assertEqual(workflow.count("secrets.SONAR_TOKEN"), 1)
+        scan = [step for step in steps.split("\n      - ") if "SonarSource/sonarqube-scan-action@" in step]
+        self.assertEqual(len(scan), 1)
+        self.assertRegex(scan[0], r"(?m)^        env:\n          SONAR_TOKEN: \$\{\{ secrets\.SONAR_TOKEN \}\}$")
+        for step in steps.split("\n      - "):
+            if "sonarqube-scan-action@" not in step:
+                self.assertNotRegex(step, r"(?m)^\s*SONAR_TOKEN:")
+
+    def test_every_action_in_the_job_that_holds_the_sonar_token_is_pinned_to_a_commit(self) -> None:
+        # GIVEN the coverage job, the one that holds SONAR_TOKEN.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        coverage_job = workflow.split("\n  codecov:\n", 1)[0]
+
+        # WHEN its `uses:` references are read, the upload step's among them.
+        uses = re.findall(r"(?m)^\s*(?:-\s*)?uses:[ \t]*(\S+)", coverage_job)
+        self.assertGreaterEqual(len(uses), 5)
+
+        # THEN each is pinned to a whole 40-hex commit: a tag can be moved after review.
+        for action in uses:
+            self.assertRegex(action, r"^[\w./-]+@[0-9a-f]{40}$", f"{action} is not pinned to a commit")
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2", coverage_job)
+
+    def test_the_codecov_job_runs_only_when_the_coverage_job_published_the_artifact(self) -> None:
+        # GIVEN the coverage workflow.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        coverage_job, codecov_job = workflow.split("\n  codecov:\n", 1)
+
+        # WHEN the coverage job uploads the reports.
+        # THEN the upload step has an id and the job exports the artifact id from it.
+        self.assertRegex(coverage_job, r"(?m)^      - name: Upload coverage artifact\n        id: upload\n")
+        self.assertRegex(coverage_job, r"(?m)^    outputs:\n      artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}$")
+        # AND the codecov job runs, even after a failed scan, only when that output is set.
+        self.assertRegex(
+            codecov_job,
+            r"(?m)^    if: \$\{\{ !cancelled\(\) && needs\.coverage\.outputs\.artifact-id != '' \}\}$",
+        )
+        # AND a failed download fails the job: the download neither continues on error nor is skipped, and the
+        # Codecov step has no condition of its own.
+        download = codecov_job.split("- name: Download coverage artifact", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("continue-on-error", download)
+        self.assertNotIn("continue-on-error", codecov_job)
+        upload = codecov_job.split("- name: Upload coverage to Codecov", 1)[1]
+        self.assertNotRegex(upload, r"(?m)^        if:")
+
     def test_one_gcovr_run_writes_the_codecov_and_the_sonarqube_reports(self) -> None:
         workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
 
@@ -215,11 +273,14 @@ class CoverageWorkflowTests(unittest.TestCase):
         return result, json.loads(database.read_text(encoding="utf-8"))
 
     def test_the_scan_reads_a_compilation_database_without_the_ccache_launcher(self) -> None:
-        # GIVEN Meson's compilation database for CC="ccache gcc-14", in both of the forms the format allows.
+        # GIVEN Meson's compilation database for CC="ccache gcc-14", in both of the forms the format allows. Meson
+        # writes the launcher as it found it on PATH (/usr/bin/ccache, which the first CI run showed), or bare.
         entries = [
-            {"directory": "b", "file": "a.cpp", "command": "ccache g++-14 -Iinclude -c a.cpp"},
-            {"directory": "b", "file": "b.c", "arguments": ["ccache", "gcc-14", "-c", "b.c"]},
+            {"directory": "b", "file": "a.cpp", "command": "/usr/bin/ccache g++-14 -Iinclude -c a.cpp"},
+            {"directory": "b", "file": "b.c", "arguments": ["/usr/bin/ccache", "gcc-14", "-c", "b.c"]},
             {"directory": "b", "file": "c.cpp", "command": "g++-14 -c c.cpp"},
+            {"directory": "b", "file": "d.cpp", "command": "ccache g++-14 -c d.cpp"},
+            {"directory": "b", "file": "e.cpp", "command": "/opt/notccache/bin/g++-14 -c e.cpp"},
         ]
 
         # WHEN the workflow's step rewrites it.
@@ -230,6 +291,9 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(rewritten[0]["command"], "g++-14 -Iinclude -c a.cpp")
         self.assertEqual(rewritten[1]["arguments"], ["gcc-14", "-c", "b.c"])
         self.assertEqual(rewritten[2]["command"], "g++-14 -c c.cpp")
+        self.assertEqual(rewritten[3]["command"], "g++-14 -c d.cpp")
+        # AND only a first word whose file name is ccache is the launcher: a directory named like it is not.
+        self.assertEqual(rewritten[4]["command"], "/opt/notccache/bin/g++-14 -c e.cpp")
         # AND the step runs after the build and before the scan.
         workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
         step = workflow.index("- name: Remove the ccache launcher from the compilation database")

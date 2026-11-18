@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - main
-  # Not a pull_request trigger (it is no required check): the merge queue runs it before a change lands on main.
+  # Not a pull_request trigger. The merge queue runs it before a change lands on main, but it blocks the merge only
+  # if the ruleset requires the check; otherwise a failure here is reported and does not stop the queue.
   merge_group:
   workflow_dispatch:
 

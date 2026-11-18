@@ -28,6 +28,9 @@ concurrency:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    # The codecov job runs only when this job published the reports, and then requires them.
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     # The instrumented build and the suites take about half an hour, the scan about as long again.
     timeout-minutes: 150
     env:
@@ -265,20 +268,28 @@ jobs:
       - name: Remove the ccache launcher from the compilation database
         run: |
           python3 - build-coverage/compile_commands.json <<'PY'
-          import json, sys
+          import json, os, sys
           path = sys.argv[1]
           with open(path, encoding="utf-8") as handle:
               entries = json.load(handle)
+          # Meson writes the launcher as it found it on PATH, usually /usr/bin/ccache, so the
+          # first word is matched by its file name, not its spelling.
+          def is_launcher(word):
+              return os.path.basename(word) == "ccache"
           changed = 0
           for entry in entries:
-              if "command" in entry and entry["command"].startswith("ccache "):
-                  entry["command"] = entry["command"][len("ccache "):]
-                  changed += 1
-              elif entry.get("arguments", [None])[0] == "ccache":
+              if "command" in entry:
+                  first, _, rest = entry["command"].partition(" ")
+                  if is_launcher(first) and rest:
+                      entry["command"] = rest
+                      changed += 1
+              elif entry.get("arguments") and is_launcher(entry["arguments"][0]):
                   entry["arguments"] = entry["arguments"][1:]
                   changed += 1
           if changed == 0:
-              sys.exit(f"{path}: no entry starts with ccache; is CC still 'ccache gcc-14'?")
+              sample = entries[0].get("command") or " ".join(entries[0].get("arguments", [])) if entries else ""
+              sys.exit(f"{path}: no entry starts with ccache (first starts {sample[:60]!r}); "
+                       "is CC still 'ccache gcc-14'?")
           with open(path, "w", encoding="utf-8") as handle:
               json.dump(entries, handle, indent=2)
           print(f"{path}: removed ccache from {changed} of {len(entries)} entries")
@@ -291,6 +302,11 @@ jobs:
       - name: SonarQube Cloud scan
         # A pull request from a fork gets no secrets, so it cannot be scanned; it is
         # scanned on main once merged. Everything above still runs for it.
+        # A merge_group or workflow_dispatch run is not scanned either. The pull request's
+        # scan already analysed its merge with main, and a scan of a gh-readonly-queue/...
+        # branch would only add a throwaway branch to SonarQube Cloud: the Sonar result is
+        # not a required check, so it gates nothing in the queue. The push to main that
+        # follows the merge is scanned (ADR-0840, ADR-0846).
         if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         # v8.3.0. Pinned to a commit because the action receives SONAR_TOKEN.
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
@@ -299,8 +315,10 @@ jobs:
 
       # After the scan, which reads the reports from the workspace; kept when the scan failed.
       - name: Upload coverage artifact
+        id: upload
         if: ${{ !cancelled() && steps.reports.outcome == 'success' }}
-        uses: actions/upload-artifact@v7
+        # v7.0.2. Pinned to a commit: this job holds SONAR_TOKEN (ADR-0250).
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ github.sha }}
           path: coverage
@@ -309,10 +327,11 @@ jobs:
 
   # Its own job, on its own runner, so the Codecov CLI never shares a job with SONAR_TOKEN
   # (ADR-0250, ADR-0846). It needs only the Cobertura report the coverage job uploaded, and
-  # runs when the scan failed, so a failed scan does not also lose the Codecov upload.
+  # runs when the scan failed, so a failed scan does not also lose the Codecov upload. It
+  # runs only when the coverage job published the artifact; a failed download then fails it.
   codecov:
     needs: coverage
-    if: ${{ !cancelled() && needs.coverage.result != 'skipped' }}
+    if: ${{ !cancelled() && needs.coverage.outputs.artifact-id != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -321,16 +340,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Download coverage artifact
-        id: download
-        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: coverage-${{ github.sha }}
           path: coverage
 
-      # No artifact means the reports step failed in the coverage job, which already fails the run.
       - name: Upload coverage to Codecov
-        if: steps.download.outcome == 'success'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           # CODECOV_TOKEN must be added as a repository secret.

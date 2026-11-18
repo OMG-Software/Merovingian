@@ -121,7 +121,32 @@ class IntegrationShardRegistrationTests(unittest.TestCase):
         self.assertIn("integration_shard_filter = '~[postgresql]~[serial]'", self.meson)
         self.assertIn("args: ['[postgresql]'],", self.meson)
         self.assertIn("args: ['[serial]'],", self.meson)
-        self.assertIn("is_parallel: false", self.meson)
+
+    def registration(self, name: str) -> str:
+        """The text of the `test(...)` call that registers `name`, or of the foreach that registers the shards."""
+        start = self.meson.index(f"'{name}'")
+        end = re.search(r"\n {2,4}\)\n", self.meson[start:])
+        self.assertIsNotNone(end, name)
+        return self.meson[start : start + end.start()]
+
+    def test_the_shards_the_postgresql_test_and_the_serial_test_each_pass_their_own_filter(self) -> None:
+        # GIVEN the three kinds of registration of the integration binary.
+        shards = self.registration("integration-tests-shard-@0@-of-@1@")
+        postgresql = self.registration("integration-tests-postgresql")
+        serial = self.registration("integration-tests-serial")
+
+        # THEN the shards take the filter that leaves the other two groups out, and the order arguments that hold the
+        # shared seed, so no shard runs a scenario another shard or the filtered tests run.
+        self.assertIn("args: [integration_shard_filter] + integration_shard_order_args + [", shards)
+        self.assertIn("integration_shard_filter = '~[postgresql]~[serial]'", self.meson)
+        self.assertRegex(self.meson, r"integration_shard_order_args = \[[^\]]*'--rng-seed', integration_shard_seed")
+        # AND the PostgreSQL scenarios run in one process, selected by their tag.
+        self.assertIn("args: ['[postgresql]'],", postgresql)
+        # AND the serial scenarios run in one process with no other test running.
+        self.assertIn("args: ['[serial]'],", serial)
+        self.assertIn("is_parallel: false", serial)
+        self.assertNotIn("is_parallel: false", shards)
+        self.assertNotIn("is_parallel: false", postgresql)
 
     def test_the_port_probing_startup_scenario_carries_the_serial_tag(self) -> None:
         # GIVEN the scenario that probes a free port and lets a spawned server bind it.
@@ -175,11 +200,15 @@ class CheckIntegrationShardsTests(unittest.TestCase):
         self.assertIn("Scenario: scenario 5", result.stderr)
 
     def test_a_scenario_selected_twice_fails(self) -> None:
-        # GIVEN a filter that selects scenarios the shards already run.
-        result = self.run_check(filters=("[postgresql]", "[serial]", "[integration]"))
+        # GIVEN a scenario tagged both [postgresql] and [serial], with the default filters: the PostgreSQL test and the
+        # serial test both select it.
+        text = scenarios().replace("scenario 5\t[integration][serial]", "scenario 5\t[integration][postgresql][serial]")
+        self.assertIn("scenario 5\t[integration][postgresql][serial]", text)
+        result = self.run_check(scenario_text=text)
 
-        # THEN the check fails rather than running a scenario twice unnoticed.
+        # THEN the check fails rather than running a scenario twice unnoticed, and names that scenario.
         self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Scenario: scenario 5", result.stderr)
 
     def test_shards_that_do_not_agree_on_the_order_fail(self) -> None:
         # GIVEN a binary that orders each process differently (no fixed seed).

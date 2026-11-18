@@ -81,6 +81,22 @@ def repository_files() -> list[str]:
     return files
 
 
+def scan_step_of(workflow: str) -> str:
+    """The step that uses the SonarQube scan action, found by its `uses:` and not by its name."""
+    steps = workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[1].split("\n      - ")
+    scans = [step for step in steps if re.search(r"(?m)^        uses: SonarSource/sonarqube-scan-action@", step)]
+    assert len(scans) == 1, "expected exactly one SonarQube scan step"
+    return scans[0]
+
+
+def step_env(step: str) -> dict[str, str]:
+    """The `name: value` pairs of the step's own `env:` mapping."""
+    match = re.search(r"(?m)^        env:\n((?:          .*(?:\n|$))+)", step)
+    assert match, "the step has no env"
+    pairs = (line.split(":", 1) for line in match.group(1).splitlines() if line.strip())
+    return {key.strip(): value.strip() for key, value in pairs}
+
+
 class SonarCloudExclusionsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.patterns = [sonar_pattern(p.strip()) for p in sonar_property("sonar.exclusions").split(",") if p.strip()]
@@ -137,7 +153,9 @@ class SonarCloudCiScanTest(unittest.TestCase):
 
     def test_given_the_workflow_when_read_then_the_scan_action_is_pinned_to_a_commit(self) -> None:
         # The action receives SONAR_TOKEN: a tag can be moved, a commit cannot.
-        self.assertRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@[0-9a-f]{40}\b")
+        self.assertRegex(
+            self.workflow, r"(?m)uses: SonarSource/sonarqube-scan-action@[0-9a-f]{40}(?:[ \t]+#.*)?$"
+        )
         self.assertNotRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@v")
 
     def test_given_the_workflow_when_read_then_the_steps_before_the_scan_are_pinned_to_a_commit(self) -> None:
@@ -148,7 +166,7 @@ class SonarCloudCiScanTest(unittest.TestCase):
         uses = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", self.workflow[:scan])
         self.assertGreaterEqual(len(uses), 3)
         for action in uses:
-            self.assertRegex(action, r"@[0-9a-f]{40}\b", f"{action} runs before the scan and is not pinned to a commit")
+            self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$", f"{action} runs before the scan and is not pinned to a commit")
 
     def test_given_the_workflow_when_read_then_it_scans_full_history_with_least_privilege(self) -> None:
         self.assertIn("fetch-depth: 0", self.workflow)
@@ -160,8 +178,8 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertEqual(self.workflow.count("secrets.SONAR_TOKEN"), 1)
         before_steps, steps = self.workflow.split("\n    steps:\n", 1)
         self.assertNotIn("secrets.SONAR_TOKEN", before_steps)
-        scan_step = steps[steps.index("      - name: SonarQube Cloud scan") :].split("\n      - name:")[0]
-        self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", scan_step)
+        # AND that step's own `env` maps the token to the secret, and binds nothing else.
+        self.assertEqual(step_env(scan_step_of(self.workflow)), {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"})
         # AND the Codecov CLI, downloaded at run time with its signature check skipped, runs after the scan.
         self.assertLess(self.workflow.index("sonarqube-scan-action@"), self.workflow.index("codecov/codecov-action@"))
 
@@ -221,8 +239,9 @@ class SonarCloudCiScanTest(unittest.TestCase):
         # upload still run for it, so the skip is the scan step's own condition and the job has none.
         condition = "if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository"
         self.assertEqual(self.workflow.count(condition), 1)
-        scan = self.workflow[self.workflow.index("- name: SonarQube Cloud scan") :]
-        self.assertLess(scan.index(condition), scan.index("uses: SonarSource/sonarqube-scan-action@"))
+        # The scan step is found by its `uses:`, and the guard is that step's own `if:`.
+        scan = scan_step_of(self.workflow)
+        self.assertRegex(scan, r"(?m)^        " + re.escape(condition) + r"$")
         job = self.workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
         self.assertNotRegex(job, r"(?m)^    if:")
 

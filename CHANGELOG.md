@@ -45,6 +45,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   mirror stall per package inside the VM (ADR-0844).
 * Coverage and the SonarQube Cloud scan share one instrumented build; Codecov uploads from a job of its own, away from
   the Sonar token (ADR-0846).
+* The ThreadSanitizer job fails when its build or tests fail: the step piped into `tee` without `pipefail`, so it
+  reported `tee`'s success.
+* The NetBSD package fetcher matches NetBSD's version order for letter suffixes, moves to the next mirror on a file that
+  fails verification, keeps `gdb` optional, and keys the cache on each package's size and checksum (ADR-0844).
 
 ## Release notes
 

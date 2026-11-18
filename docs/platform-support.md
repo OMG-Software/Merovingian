@@ -105,7 +105,8 @@ libraries and therefore has no runtime package dependencies.
 ## Tier 1 — Supported (CI-gated before every merge)
 
 Tier 1 platforms build **and run the full test suite** (unit, integration,
-conformance, smoke) in the merge queue before every merge. A pull request push runs
+conformance, smoke) in the merge queue before every merge, once the owner turns the merge queue on in the "Protect main"
+ruleset; until then a pull request can merge after the core gate alone and the full matrix first runs on the push to `main`. A pull request push runs
 only the core gate, `ubuntu-build-and-test` and `freebsd-build-and-test`; the other jobs below are skipped
 there (a job skipped by its `if:` reports success) and run in the merge queue, on pushes to `main`, on
 schedule and by hand ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)). Platform-specific runtime behaviour —
@@ -124,7 +125,7 @@ carry a job-level `continue-on-error`; a failure there fails the run
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
 | Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:45` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
-| Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (Tumbleweed), `opensuse-leap-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
+| Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (the aggregate check), with its legs `opensuse-suite (opensuse-build-and-test)` (Tumbleweed) and `opensuse-suite (opensuse-leap-build-and-test)` (Leap) | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD 15 | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm`, `release: '15'` |
 | OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
 | NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |

@@ -31,7 +31,8 @@ Rejected:
 ## Consequences
 
 * A push to an agent branch with no pull request runs only the documentation site. Open a pull request, or a draft, or start the
-  workflows from the Actions tab.
+  workflows from the Actions tab. Manual runs cover only the workflows that declare `workflow_dispatch`; `codeql.yml` does
+  not, and it never ran on agent-branch pushes, so a change that needs CodeQL opens a pull request against `main`.
 * ADR-0511's `push` branch list is superseded; its PostgreSQL decision stands.
 
 ## Links

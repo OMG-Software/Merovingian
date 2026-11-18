@@ -131,8 +131,12 @@ def jobs_that_start_at_once() -> dict[str, int]:
         if not runs_for_a_pull_request_to_main(text):
             continue
         for job_id, job in jobs(text).items():
-            if not needs(job):
-                started[f"{workflow.name}:{job_id}"] = matrix_size(job)
+            if needs(job):
+                continue
+            # A job whose own condition skips the pull_request event never takes a runner for it.
+            if NOT_A_PULL_REQUEST in (job_if(job) or ""):
+                continue
+            started[f"{workflow.name}:{job_id}"] = matrix_size(job)
     return started
 
 

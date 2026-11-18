@@ -120,8 +120,9 @@ struct TempDir final
 
 // Bind to loopback:0 to let the kernel assign a free port, then close the
 // socket. There is a small TOCTOU window, which is acceptable for test use only
-// because the scenario carries [serial]: the Meson test for that tag runs with no
-// other test running, so no other process's sockets can take the port meanwhile.
+// because the scenario carries [serial]: it keeps the other tests of the same Meson
+// run from running beside it. That narrows the race; it cannot reserve the port, so
+// a process outside the run could still take it.
 [[nodiscard]] auto probe_free_port() -> std::uint16_t
 {
     auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);

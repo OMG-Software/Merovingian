@@ -98,14 +98,28 @@ check_command() {
     if [ "$dry_run" -eq 1 ]; then
         return
     fi
-    # A compiler may be a launcher and a compiler (CC="ccache clang"). Each program word must be on PATH,
-    # so a missing compiler behind ccache fails here, not inside Meson; a word starting with - is a flag.
-    for word in $1; do
+    command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
+}
+
+# CC and CXX only. A compiler may be a launcher and a compiler (CC="ccache clang"). Each program word must be on PATH,
+# so a missing compiler behind ccache fails here, not inside Meson; a word starting with - is a flag. A value with no
+# program word (empty, or flags only) is refused: Meson would then run a flag as the compiler. The other tools go
+# through check_command, which takes one executable whose path may hold spaces.
+check_compiler() {
+    if [ "$dry_run" -eq 1 ]; then
+        return
+    fi
+    programs=0
+    for word in $2; do
         case "$word" in
             -*) ;;
-            *) command -v "$word" >/dev/null 2>&1 || fail "missing command: $word" ;;
+            *)
+                programs=$((programs + 1))
+                command -v "$word" >/dev/null 2>&1 || fail "missing command: $word"
+                ;;
         esac
     done
+    [ "$programs" -gt 0 ] || fail "$1 names no compiler program: '$2'"
 }
 
 check_pkg_config_module() {
@@ -234,8 +248,8 @@ case "$profile" in
         ;;
 esac
 
-check_command "$cc"
-check_command "$cxx"
+check_compiler CC "$cc"
+check_compiler CXX "$cxx"
 check_command meson
 check_command ninja
 check_command "$pkg_config"

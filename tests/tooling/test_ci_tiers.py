@@ -74,6 +74,15 @@ def has_trigger(text: str, trigger: str) -> bool:
     return re.search(rf"(?m)^  {trigger}:", triggers(text)) is not None
 
 
+def pull_request_admits_main(text: str) -> bool:
+    """The pull_request trigger has no `branches:` filter, or one that lists `main`."""
+    match = re.search(r"^  pull_request:[ \t]*\n((?:    .*\n|\s*\n)*)", triggers(text), flags=re.MULTILINE)
+    if match is None:
+        return False
+    body = match.group(1)
+    return "branches" not in body or re.search(r"(?m)^\s*(?:branches:.*|- )['\"\[]?main\b", body) is not None
+
+
 def jobs(text: str) -> dict[str, str]:
     if "\njobs:\n" not in text:
         return {}
@@ -102,6 +111,26 @@ def job_if(job: str) -> str:
     return value
 
 
+def matrix_rows(job: str) -> list[dict[str, str]]:
+    """The rows of the job's `matrix.include` list; a matrix without one has no row that names a job."""
+    match = re.search(r"(?m)^        include:[ \t]*\n((?:          .*\n|\s*\n)*)", job)
+    if match is None:
+        return []
+    rows = re.split(r"(?m)^          - ", "\n" + match.group(1))[1:]
+    return [
+        {key: value.strip().strip("'\"") for key, value in re.findall(r"(?m)^(?:          - )?\s*([A-Za-z0-9_-]+):[ \t]*(.*)$", "          - " + row)}
+        for row in rows
+    ]
+
+
+def rendered_names(label: str, job: str) -> list[str]:
+    """The job's `name:` once `${{ matrix.<field> }}` is replaced by each include row's value."""
+    names = []
+    for row in matrix_rows(job):
+        names.append(re.sub(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}", lambda m: row.get(m.group(1), m.group(0)), label))
+    return names
+
+
 def check_producers(name: str) -> list[tuple[str, str]]:
     """The (workflow, job id) pairs that report a check called exactly `name` for a pull request."""
     found = []
@@ -111,9 +140,9 @@ def check_producers(name: str) -> list[tuple[str, str]]:
             label = job_name(job_id, job)
             if label == name:
                 found.append((workflow.name, job_id))
-            elif "${{ matrix." in label and re.search(rf"(?m)^\s+- \w+: {re.escape(name)}$", job):
-                # A matrix leg reports the expanded name, but only when the job is not skipped: a job-level `if`
-                # that is false reports one check under the unexpanded template.
+            elif "${{ matrix." in label and name in rendered_names(label, job):
+                # A matrix leg reports its rendered name, which must be the check's own name, and only when the job is
+                # not skipped: a job-level `if` that is false reports one check under the unexpanded template.
                 if NOT_A_PULL_REQUEST not in job_if(job):
                     found.append((workflow.name, job_id))
     return found
@@ -167,6 +196,7 @@ class EveryRequiredCheckReportsForAPullRequestAndTheMergeQueue(unittest.TestCase
                 with self.subTest(check=name, workflow=workflow):
                     text = text_of(workflow)
                     self.assertTrue(has_trigger(text, "pull_request"), "never reports for a pull request")
+                    self.assertTrue(pull_request_admits_main(text), "a pull request to main never triggers it")
                     self.assertTrue(has_trigger(text, "merge_group"), "never reports in the merge queue")
 
     def test_given_a_required_check_when_a_pull_request_skips_its_job_then_the_job_is_not_a_matrix_job(self) -> None:
@@ -178,6 +208,23 @@ class EveryRequiredCheckReportsForAPullRequestAndTheMergeQueue(unittest.TestCase
                 if NOT_A_PULL_REQUEST in job_if(job):
                     with self.subTest(check=name):
                         self.assertNotRegex(job, r"(?m)^    strategy:")
+
+
+class TheAnalysisStepsFailLoudly(unittest.TestCase):
+    @staticmethod
+    def step(workflow: str, name: str) -> str:
+        steps = text_of(workflow).split("\n      - ")
+        found = [step for step in steps if step.startswith(f"name: {name}")]
+        assert len(found) == 1, f"{workflow}: expected one step named {name!r}"
+        return found[0]
+
+    def test_given_the_thread_sanitizer_step_when_read_then_tee_cannot_hide_a_failure(self) -> None:
+        # GIVEN the step that builds and tests under ThreadSanitizer and pipes its output through tee.
+        step = self.step("sanitizers.yml", "Build and test with ThreadSanitizer")
+
+        # THEN it runs under bash, whose pipefail makes a failed build or test fail the step.
+        self.assertIn("| tee tsan-ci-log.txt", step)
+        self.assertRegex(step, r"(?m)^        shell: bash$")
 
 
 class OnlyPullRequestRunsShareAConcurrencyGroup(unittest.TestCase):

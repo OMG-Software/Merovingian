@@ -28,8 +28,15 @@ names keys `actions/cache`. The guest sets `PKG_PATH` to that directory first an
 resolver missed still installs, more slowly, instead of failing. The package list, release and architecture are set once per
 job and passed to the host script, the cache key and the guest; the VM's `release:` is pinned to match.
 
+Each lockfile line is `<FILE_NAME> <FILE_SIZE> <FILE_CKSUM or ->`, so the cache key changes when a size or checksum does. A
+package with no `FILE_SIZE` is refused. A file that fails verification moves the download to the next mirror. Packages marked
+`--optional` (gdb) are best-effort: a failure to fetch one does not fail the step. HTTPS redirects to any host are followed, as
+`pkg_add` does.
+
 Only `main` saves the cache. NetBSD 11.0's repository publishes no `FILE_CKSUM`, so a restored file is checked for its size and
 stream only; with saves limited to `main`, no other ref can write an entry that `main` or the merge queue restores.
+The residual risk is a package replaced under the same name with the same size, which the cache would keep. Nothing here
+authenticates an archive beyond what `pkg_add` did before.
 
 Rejected:
 
