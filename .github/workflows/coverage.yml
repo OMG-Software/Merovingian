@@ -258,6 +258,32 @@ jobs:
             --sonarqube coverage/sonarqube.xml \
             build-coverage
 
+      # Meson writes the launcher into every compile command ("ccache gcc-14 ..."). The
+      # scan identifies the compiler from the first word of each command, so it is removed
+      # here and the scan sees gcc-14 itself, as it did before ccache (ADR-0843). Only the
+      # copy the scan reads changes; the build has finished.
+      - name: Remove the ccache launcher from the compilation database
+        run: |
+          python3 - build-coverage/compile_commands.json <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as handle:
+              entries = json.load(handle)
+          changed = 0
+          for entry in entries:
+              if "command" in entry and entry["command"].startswith("ccache "):
+                  entry["command"] = entry["command"][len("ccache "):]
+                  changed += 1
+              elif entry.get("arguments", [None])[0] == "ccache":
+                  entry["arguments"] = entry["arguments"][1:]
+                  changed += 1
+          if changed == 0:
+              sys.exit(f"{path}: no entry starts with ccache; is CC still 'ccache gcc-14'?")
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(entries, handle, indent=2)
+          print(f"{path}: removed ccache from {changed} of {len(entries)} entries")
+          PY
+
       # The only step that receives SONAR_TOKEN. The Codecov upload, whose CLI is downloaded
       # with its signature check skipped, runs in the separate `codecov` job below: a step can
       # read every secret its job uses from the runner's memory, so ordering steps within one

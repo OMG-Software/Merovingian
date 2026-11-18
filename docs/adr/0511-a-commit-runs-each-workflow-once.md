@@ -52,3 +52,5 @@ still checked, and the duplicate takes under a minute.
 * A scenario that reaches PostgreSQL must carry `[postgresql]`. Without the URI these scenarios skip, so an untagged one passes
   in CI having tested nothing. `coverage` and `sonarcloud` still run the whole suite with the URI set, so its PostgreSQL code stays
   measured.
+  *Superseded in part by [ADR-0846](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md):
+  `sonarcloud` is now a step of `coverage`, which runs the whole suite with the URI set once for both.*

@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import bz2
 import fnmatch
 import gzip
@@ -332,9 +333,14 @@ def http_get(url: str, destination: io.BufferedIOBase, limit: int, timeout: floa
     total = 0
     started = time.monotonic()
     with _OPENER.open(request, timeout=timeout) as response:
+        expected = response.headers.get("Content-Length")
         while True:
             chunk = response.read(CHUNK)
             if not chunk:
+                # http.client ends a dropped fixed-length body without raising; a short body is a failed
+                # download of this mirror, not a file for verification to reject later.
+                if expected is not None and expected.isdigit() and total != int(expected):
+                    raise FetchError(f"{url} ended after {total} of {expected} bytes")
                 return
             total += len(chunk)
             if time.monotonic() - started > deadline:
@@ -349,7 +355,7 @@ def with_retries(action, description: str, attempts: int, delay: float):  # noqa
     for attempt in range(1, attempts + 1):
         try:
             return action()
-        except (OSError, urllib.error.URLError, FetchError) as error:
+        except (OSError, http.client.HTTPException, FetchError) as error:
             last = error
             print(f"  {description}: attempt {attempt}/{attempts} failed: {error}", file=sys.stderr)
             if attempt < attempts:
@@ -401,7 +407,7 @@ def download_package(bases: list[str], package: Package, target: Path, attempts:
             try:
                 with partial.open("wb") as handle:
                     http_get(url, handle, MAX_PACKAGE_BYTES, timeout)
-            except (OSError, urllib.error.URLError, FetchError) as error:
+            except (OSError, http.client.HTTPException, FetchError) as error:
                 print(f"  {url}: round {round_number}/{attempts} failed: {error}", file=sys.stderr)
                 errors.append(f"{url}: {error}")
                 bases.remove(base)

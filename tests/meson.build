@@ -68,6 +68,24 @@ shell = find_program('sh')
   )
 
   test(
+    'integration-shards-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_integration_shards.py'],
+  )
+
+  test(
+    'fetch-netbsd-packages-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_fetch_netbsd_packages.py'],
+  )
+
+  test(
+    'netbsd-package-cache-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_netbsd_package_cache_workflow.py'],
+  )
+
+  test(
     'changelog-format-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_changelog_format.py'],

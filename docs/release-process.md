@@ -282,7 +282,7 @@ the `package.sha256` the results record, and its `/usr/bin/merovingian-server` t
 Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
 That workflow rebuilds packages for all supported platforms, replaces the
 rolling `latest` GitHub prerelease, and uploads fresh package checksums. Its jobs are skipped on a pull request
-push and build in the merge queue, on schedule and by hand, so a package that cannot build is caught before the
+push and build in the merge queue and by hand, so a package that cannot build is caught before the
 merge ([ADR-0840](adr/0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)):
 
 | Artifact | Job |

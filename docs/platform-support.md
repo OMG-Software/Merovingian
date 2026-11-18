@@ -54,12 +54,15 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 | OpenSUSE | Tumbleweed (rolling) or Leap 16.0 | current (Tumbleweed); the release's own (Leap) | zypper clang 18+ | `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD | 14.1+ (base clang ≥ 18) for a source build; 15 for the package | n/a (no glibc) | base clang | `vmactions/freebsd-vm` (`release: '15'`, the newest 15.x) |
 | OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm` (its default 7.x) |
-| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm` (its default 10.x) |
+| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm` (`release: 11.0`) |
 
 Every Linux image and the FreeBSD VM are pinned by release, never a moving tag such as
 `ubuntu:rolling` or `fedora:latest`, so the release CI tests is the release a package is
 built for; a new release is added by editing the workflows
-([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD and NetBSD VMs run each action's default release.
+([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD VM runs its action's default release. The NetBSD VM
+names 11.0, the action's own default, because its jobs fetch pkgsrc packages for that release outside the VM and cache
+them ([ADR-0844](adr/0844-the-ci-host-fetches-and-caches-netbsd-packages-and-the-vm-installs-them-locally.md)); a new NetBSD release is added by editing
+`NETBSD_RELEASE` in both workflows.
 "Build for" is the minimum version above.
 Earlier Linux releases (Ubuntu 22.04, Debian 12, RHEL 9) fail on **both** counts
 — pre-C++26 toolchain and too-old glibc — and even after installing a newer

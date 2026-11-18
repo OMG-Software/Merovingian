@@ -98,10 +98,14 @@ check_command() {
     if [ "$dry_run" -eq 1 ]; then
         return
     fi
-    # A compiler may be a launcher and a compiler (CC="ccache clang"); only the first word must be on PATH.
-    # shellcheck disable=SC2086
-    set -- $1
-    command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
+    # A compiler may be a launcher and a compiler (CC="ccache clang"). Each program word must be on PATH,
+    # so a missing compiler behind ccache fails here, not inside Meson; a word starting with - is a flag.
+    for word in $1; do
+        case "$word" in
+            -*) ;;
+            *) command -v "$word" >/dev/null 2>&1 || fail "missing command: $word" ;;
+        esac
+    done
 }
 
 check_pkg_config_module() {

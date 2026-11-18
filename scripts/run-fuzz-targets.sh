@@ -76,13 +76,14 @@ script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
 cd "$repo_root"
 
-# A compiler may be a launcher and a compiler (CC="ccache clang"); only the first word must be on PATH.
-# shellcheck disable=SC2086
-set -- $cc
-command -v "$1" >/dev/null 2>&1 || fail "missing command: $cc"
-# shellcheck disable=SC2086
-set -- $cxx
-command -v "$1" >/dev/null 2>&1 || fail "missing command: $cxx"
+# A compiler may be a launcher and a compiler (CC="ccache clang"). Each program word must be on PATH,
+# so a missing compiler behind ccache fails here, not inside Meson; a word starting with - is a flag.
+for word in $cc $cxx; do
+    case "$word" in
+        -*) ;;
+        *) command -v "$word" >/dev/null 2>&1 || fail "missing command: $word" ;;
+    esac
+done
 command -v meson >/dev/null 2>&1 || fail "missing command: meson"
 command -v ninja >/dev/null 2>&1 || fail "missing command: ninja"
 

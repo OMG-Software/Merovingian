@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -195,6 +201,48 @@ class CoverageWorkflowTests(unittest.TestCase):
         # build-linux.sh passes CC and CXX explicitly (ADR-0843).
         self.assertRegex(workflow, r"(?m)^[ \t]+CC: ccache gcc-14[ \t]*$")
         self.assertRegex(workflow, r"(?m)^[ \t]+CXX: ccache g\+\+-14[ \t]*$")
+
+    def run_launcher_strip(self, entries: list[dict[str, object]]) -> tuple[subprocess.CompletedProcess[str], object]:
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        script = textwrap.dedent(re.search(r"<<'PY'\n(?P<body>.*?)\n[ \t]+PY\n", workflow, re.DOTALL).group("body"))
+        directory = Path(tempfile.mkdtemp(prefix="compile-db-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        database = directory / "compile_commands.json"
+        database.write_text(json.dumps(entries), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(database)], check=False, text=True, capture_output=True
+        )
+        return result, json.loads(database.read_text(encoding="utf-8"))
+
+    def test_the_scan_reads_a_compilation_database_without_the_ccache_launcher(self) -> None:
+        # GIVEN Meson's compilation database for CC="ccache gcc-14", in both of the forms the format allows.
+        entries = [
+            {"directory": "b", "file": "a.cpp", "command": "ccache g++-14 -Iinclude -c a.cpp"},
+            {"directory": "b", "file": "b.c", "arguments": ["ccache", "gcc-14", "-c", "b.c"]},
+            {"directory": "b", "file": "c.cpp", "command": "g++-14 -c c.cpp"},
+        ]
+
+        # WHEN the workflow's step rewrites it.
+        result, rewritten = self.run_launcher_strip(entries)
+
+        # THEN each command starts with the compiler, which is how the scan identifies it, and nothing else changes.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(rewritten[0]["command"], "g++-14 -Iinclude -c a.cpp")
+        self.assertEqual(rewritten[1]["arguments"], ["gcc-14", "-c", "b.c"])
+        self.assertEqual(rewritten[2]["command"], "g++-14 -c c.cpp")
+        # AND the step runs after the build and before the scan.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.index("- name: Remove the ccache launcher from the compilation database")
+        self.assertLess(workflow.index("run: sh scripts/build-linux.sh"), step)
+        self.assertLess(step, workflow.index("SonarSource/sonarqube-scan-action@"))
+
+    def test_a_database_with_no_launcher_fails_the_step(self) -> None:
+        # GIVEN a database in which no command starts with ccache, as after CC stopped naming it.
+        result, _ = self.run_launcher_strip([{"directory": "b", "file": "a.c", "command": "gcc-14 -c a.c"}])
+
+        # THEN the step fails, so the step and the CC it depends on cannot drift apart unnoticed.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no entry starts with ccache", result.stderr)
 
 
 if __name__ == "__main__":

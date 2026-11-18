@@ -34,7 +34,7 @@ Rejected:
 
 * **Changing `build-linux.sh` to add ccache itself.** Developer, CodeQL and package builds that call it would start using
   ccache silently, including the ones above that must not. The script only learned to accept a launcher in `CC`: it checks
-  that the first word is on `PATH`.
+  that every word not starting with `-` is on `PATH`, so a missing compiler behind `ccache` fails before Meson runs.
 * **`create-symlink`.** It wraps whichever compiler is found by name in `PATH`, and the container jobs (Fedora, AlmaLinux,
   openSUSE) keep their links in different places; an explicit `CC` is the same everywhere and visible in the job.
 
@@ -44,3 +44,5 @@ Rejected:
 * A pull request no longer writes caches. The repository's 10 GB cache budget holds one set from `main` instead of being evicted
   by every pull request run.
 * A job that adds ccache-action must also wrap `CC` and `CXX`, or the action does nothing again.
+* The compilation database the SonarQube Cloud scan reads names `ccache` before the compiler. `coverage.yml` removes it before
+  the scan, and fails if no entry starts with it, so the step cannot outlive the `CC` it undoes.

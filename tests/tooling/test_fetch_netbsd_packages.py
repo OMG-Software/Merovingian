@@ -5,7 +5,9 @@ from __future__ import annotations
 import bz2
 import gzip
 import hashlib
+import http.client
 import importlib.util
+import io
 import lzma
 import sys
 import tempfile
@@ -278,6 +280,54 @@ class RefusalTests(unittest.TestCase):
     def test_non_https_url_is_refused(self) -> None:
         with self.assertRaises(fetch.FetchError):
             fetch.http_get("http://cdn.netbsd.org/x", mock.Mock(), 10, 1)
+
+
+class _FakeResponse(io.BytesIO):
+    def __init__(self, body: bytes, length: str | None) -> None:
+        super().__init__(body)
+        self.headers = {} if length is None else {"Content-Length": length}
+
+
+class HttpGetTests(unittest.TestCase):
+    def get(self, body: bytes, length: str | None) -> bytes:
+        opener = mock.Mock()
+        opener.open.return_value = _FakeResponse(body, length)
+        destination = io.BytesIO()
+        with mock.patch.object(fetch, "_OPENER", opener):
+            fetch.http_get("https://cdn.netbsd.org/x", destination, 1024, 1)
+        return destination.getvalue()
+
+    def test_a_body_of_the_announced_length_is_kept(self) -> None:
+        # GIVEN a response whose body matches its Content-Length.
+        # THEN every byte is written.
+        self.assertEqual(self.get(b"abcdef", "6"), b"abcdef")
+
+    def test_a_body_without_a_length_is_kept(self) -> None:
+        # GIVEN a chunked response, which announces no length.
+        # THEN the body is written; verification against pkg_summary still checks it.
+        self.assertEqual(self.get(b"abc", None), b"abc")
+
+    def test_a_body_shorter_than_its_content_length_fails(self) -> None:
+        # GIVEN a connection that drops after part of a fixed-length body, which http.client
+        # reports as a normal end of stream.
+        # THEN the download fails, so the caller tries the next mirror.
+        with self.assertRaisesRegex(fetch.FetchError, "ended after 3 of 6 bytes"):
+            self.get(b"abc", "6")
+
+    def test_an_http_protocol_error_is_retried(self) -> None:
+        # GIVEN an action that raises http.client's own exception type, which is not an OSError.
+        calls: list[int] = []
+
+        def action() -> str:
+            calls.append(1)
+            if len(calls) == 1:
+                raise http.client.IncompleteRead(b"")
+            return "done"
+
+        # THEN with_retries treats it as a failed attempt, not a crash.
+        with mock.patch.object(fetch.time, "sleep"):
+            self.assertEqual(fetch.with_retries(action, "x", 2, 0), "done")
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":
