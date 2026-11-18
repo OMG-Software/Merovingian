@@ -221,10 +221,14 @@ SCENARIO("A local state write cannot land inside a federated state event's commi
         auto const room_id = *string_member(parse_object(create.response.body), "room_id");
 
         auto const alice = std::string{"@alice:remote.example.org"};
-        auto const power_levels =
-            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
-        auto const join_rules =
-            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.join_rules", "");
+        auto const found_power_levels =
+            merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
+        auto const found_join_rules =
+            merovingian::database::find_current_state_event_id(store, room_id, "m.room.join_rules", "");
+        REQUIRE(found_power_levels.has_value());
+        REQUIRE(found_join_rules.has_value());
+        auto const power_levels = found_power_levels.value_or(std::string{});
+        auto const join_rules = found_join_rules.value_or(std::string{});
         auto tips = merovingian::database::find_forward_extremities(store, room_id);
         auto join_content = merovingian::canonicaljson::Object{};
         join_content.push_back(merovingian::canonicaljson::make_member(
@@ -337,10 +341,14 @@ SCENARIO("PDU ingestion refuses a caller that holds runtime.mutex", "[integratio
         auto const room_id = *string_member(parse_object(create.response.body), "room_id");
 
         auto const alice = std::string{"@alice:remote.example.org"};
-        auto const power_levels =
-            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
-        auto const join_rules =
-            *merovingian::database::find_current_state_event_id(store, room_id, "m.room.join_rules", "");
+        auto const found_power_levels =
+            merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
+        auto const found_join_rules =
+            merovingian::database::find_current_state_event_id(store, room_id, "m.room.join_rules", "");
+        REQUIRE(found_power_levels.has_value());
+        REQUIRE(found_join_rules.has_value());
+        auto const power_levels = found_power_levels.value_or(std::string{});
+        auto const join_rules = found_join_rules.value_or(std::string{});
         auto const tips = merovingian::database::find_forward_extremities(store, room_id);
         auto join_content = merovingian::canonicaljson::Object{};
         join_content.push_back(merovingian::canonicaljson::make_member(

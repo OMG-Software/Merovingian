@@ -1229,9 +1229,6 @@ struct InviteeServer final
 {
     InvitingServer peer;
     std::vector<std::string> captured{};
-    // Why the responder could not answer, empty when it could. Written on the mock thread and read by finish()
-    // after the join, so the scenario asserts on it from the main thread.
-    std::string failure{};
     std::thread thread{};
 
     InviteeServer(merovingian::homeserver::ClientServerRuntime& runtime,
@@ -1298,6 +1295,11 @@ struct InviteeServer final
     auto operator=(InviteeServer const&) -> InviteeServer& = delete;
     InviteeServer(InviteeServer&&) = delete;
     auto operator=(InviteeServer&&) -> InviteeServer& = delete;
+
+private:
+    // Why the responder could not answer, empty when it could. Written on the mock thread and read only by
+    // finish(), after the join, so the scenario asserts on it from the main thread.
+    std::string failure{};
 };
 
 // How the invited user's server answers an invite it is sent.
