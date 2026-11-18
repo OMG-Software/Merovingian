@@ -421,7 +421,7 @@ jobs:
             --summary-file "$RUNNER_TEMP/netbsd-pkg-summary" $NETBSD_PACKAGES
 
       - name: Save the NetBSD package cache
-        if: steps.netbsd-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.netbsd-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: netbsd-packages

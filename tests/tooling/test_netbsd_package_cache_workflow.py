@@ -42,6 +42,12 @@ class NetbsdPackageCacheWorkflowTests(unittest.TestCase):
                 self.assertIn("restore-keys: netbsd-packages-${{ env.NETBSD_RELEASE }}-${{ env.NETBSD_ARCH }}-", text)
                 # The cache is saved before the VM runs, so removing the directory in the guest cannot empty it.
                 self.assertLess(text.index("actions/cache/save@"), text.index("uses: vmactions/netbsd-vm@"))
+                # AND only main writes it, as with ccache (ADR-0843, ADR-0844): the repository publishes no package
+                # checksums, so a restored file is checked for size and a whole stream only, and no other ref may
+                # write an entry that main or the merge queue would restore.
+                self.assertIn(
+                    "if: github.ref == 'refs/heads/main' && steps.netbsd-cache.outputs.cache-hit != 'true'", text
+                )
 
     def test_the_vm_reads_the_local_directory_first_and_keeps_the_mirrors(self) -> None:
         for workflow, job in JOBS:

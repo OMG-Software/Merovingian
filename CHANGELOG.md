@@ -7,7 +7,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Features
 
-* None.
+* A pull request runs a core CI gate (Ubuntu, FreeBSD and the analyses); the other platforms and every package run
+  in the merge queue before a merge, as skipped checks on the pull request (ADR-0840).
+* A new push to a pull request cancels the runs for its previous head; other events are never cancelled (ADR-0842).
+* The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
+  and a check that the shards together run every scenario once (ADR-0845).
+* CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
 
 ## Security Fixes
 
@@ -15,11 +20,18 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
-* None.
+* ccache now caches compiles in CI: the jobs restored a cache but compiled without it, so it stayed empty; only `main`
+  writes the cache (ADR-0843).
+* `claude/**` and `codex/**` pushes no longer run every workflow a second time beside their pull request (ADR-0841).
+* The NetBSD jobs fetch and verify their packages on the CI host and cache them, instead of paying a three-minute
+  mirror stall per package inside the VM (ADR-0844).
+* Coverage and the SonarQube Cloud scan share one instrumented build; Codecov uploads from a job of its own, away from
+  the Sonar token (ADR-0846).
 
 ## Release notes
 
-Placeholder.
+A CI-only release: the server, its configuration and its packages are unchanged. Before merging it, turn on the merge
+queue in the "Protect main" ruleset, or pull requests will merge after the core gate alone.
 
 # Version 1.1.2
 

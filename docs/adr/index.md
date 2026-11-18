@@ -709,5 +709,6 @@
 * [0841 - Agent branches run CI through a pull request or by hand](0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)
 * [0842 - A new push to a pull request cancels its superseded runs](0842-a-new-push-to-a-pull-request-cancels-its-superseded-runs.md)
 * [0843 - CI wraps the compiler in ccache, and only main writes the cache](0843-ci-wraps-the-compiler-in-ccache-and-only-main-writes-the-cache.md)
+* [0844 - The CI host fetches and caches NetBSD packages, and the VM installs them locally](0844-the-ci-host-fetches-and-caches-netbsd-packages-and-the-vm-installs-them-locally.md)
 * [0845 - The integration binary runs as four Catch2 shards with one fixed seed](0845-the-integration-binary-runs-as-four-catch2-shards-with-one-fixed-seed.md)
 * [0846 - One coverage build feeds the Sonar scan, and Codecov uploads from its own job](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)
