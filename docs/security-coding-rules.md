@@ -856,6 +856,28 @@ quickly finding everything a given `AGENTS.md` file contributed.
   invalidate what they were reading and crash the server (CWE-362; PR #546 review).
   Source: `src/homeserver/AGENTS.md`.
 
+- **The lock order is the room stripe, then `runtime.mutex`, and PDU ingestion refuses a caller
+  that holds `runtime.mutex`.** `ingest_pdu_event` returns `internal_error`, does nothing and logs
+  an error when the calling thread holds `runtime.mutex` at any level. Call it, or
+  `federation.pdu_sink`, inside a `homeserver::RuntimeLockRelease` scope, and never make it release
+  the caller's lock itself.
+  Why: ingestion releases and re-takes `runtime.mutex` with the stripe held, so a caller holding
+  `runtime.mutex` takes the stripe under it, in the reverse order. That can deadlock against an
+  ingest of the same room, and a remote server chooses which rooms its PDUs name (CWE-833;
+  ADR-0848).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **An SRV lookup never calls a resolver function that keeps process-wide state.** On NetBSD and
+  glibc each lookup owns its resolver state. On glibc, `res_ninit` and `res_nclose` run under
+  `resolver_configuration_mutex` and `res_nquery` runs outside it. Never move the query under a
+  lock, and never suppress a resolver report in `tsan.supp`.
+  Why: on NetBSD the shared state has no lock, and a thread could block reading a socket another
+  thread is closing, past any budget or request to stop. On glibc, `res_ninit`/`res_nclose`
+  change a configuration array every thread shares (CWE-362). A lock around the query would let
+  one slow name server, chosen by a remote operator, hold every other lookup (CWE-400; ADR-0355,
+  ADR-0849).
+  Source: `src/federation/AGENTS.md`.
+
 - **Every outbound destination holds a bounded share of the dispatch queue, and every queued
   transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
