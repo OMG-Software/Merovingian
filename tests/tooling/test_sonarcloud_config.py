@@ -84,7 +84,11 @@ def repository_files() -> list[str]:
 def job_text(workflow: str, job: str) -> str:
     """The text of one job: from its `  <job>:` line under `jobs:` to the next job or the end of the file."""
     section = workflow.split("\njobs:\n", 1)[1]
-    match = re.search(rf"(?m)^  {re.escape(job)}:[ \t]*\n(.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*$|\Z)", section, re.DOTALL)
+    # A job's header may carry a trailing comment (`  codecov: # upload job`); it still starts that job.
+    header = r"[ \t]*(?:#[^\n]*)?"
+    match = re.search(
+        rf"(?m)^  {re.escape(job)}:{header}\n(.*?)(?=^  [A-Za-z0-9_-]+:{header}$|\Z)", section, re.DOTALL
+    )
     assert match, f"the workflow has no job {job}"
     return match.group(1)
 
@@ -186,6 +190,21 @@ class ScanStepLookupTest(unittest.TestCase):
         # THEN jobs.coverage has none, so the lookup fails instead of finding the later job's step.
         with self.assertRaises(AssertionError):
             scan_step_of(text)
+
+    def test_given_a_later_job_header_with_a_comment_when_the_step_is_looked_up_then_it_is_not_found(self) -> None:
+        # GIVEN the same workflow, but the later job's header and the coverage job's header carry comments.
+        text = (
+            "name: x\njobs:\n  coverage: # instrumented build\n    steps:\n      - name: other\n        run: true\n"
+            "  codecov: # upload job\n    steps:\n      - uses: SonarSource/sonarqube-scan-action@abc\n"
+            "        env:\n          SONAR_TOKEN: t\n"
+        )
+
+        # WHEN the scan step is looked up.
+        # THEN the commented header still ends jobs.coverage, so the later job's step is not found.
+        with self.assertRaises(AssertionError):
+            scan_step_of(text)
+        self.assertNotIn("sonarqube-scan-action", job_text(text, "coverage"))
+        self.assertIn("sonarqube-scan-action", job_text(text, "codecov"))
 
 
 class JobScopedReadersTest(unittest.TestCase):

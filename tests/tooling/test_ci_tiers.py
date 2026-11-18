@@ -86,10 +86,51 @@ def pull_request_admits_main(text: str) -> bool:
         return False
     body = match.group(1)
     ignored = branch_filter(body, "branches-ignore")
-    if ignored is not None and "main" in ignored:
-        return False
+    if ignored is not None:
+        if any(pattern.startswith("!") for pattern in ignored):
+            raise ValueError("branches-ignore cannot hold a ! pattern")
+        if any(branch_pattern_matches(pattern, "main") for pattern in ignored):
+            return False
     allowed = branch_filter(body, "branches")
-    return allowed is None or "main" in allowed
+    if allowed is None:
+        return True
+    # GitHub reads the patterns in order: a positive one that matches includes the branch, a later `!` one excludes it.
+    admitted = False
+    for pattern in allowed:
+        if pattern.startswith("!"):
+            admitted = admitted and not branch_pattern_matches(pattern[1:], "main")
+        elif branch_pattern_matches(pattern, "main"):
+            admitted = True
+    return admitted
+
+
+def branch_pattern_matches(pattern: str, branch: str) -> bool:
+    """GitHub's filter pattern syntax: `*` (not `/`), `**` (anything), `?` and `+` (zero-or-one and one-or-more of the
+    preceding character) and `[...]`; every other character is literal. A pattern it cannot read is an error."""
+    regex = ""
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**", index):
+            regex += ".*"
+            index += 2
+            continue
+        if char == "*":
+            regex += "[^/]*"
+        elif char in "?+":
+            if not regex or regex.endswith(("*", "?", "+")):
+                raise ValueError(f"branch pattern {pattern!r} has {char!r} with nothing to repeat")
+            regex += char
+        elif char == "[":
+            end = pattern.find("]", index + 1)
+            if end == -1:
+                raise ValueError(f"branch pattern {pattern!r} has an unclosed '['")
+            regex += "[" + pattern[index + 1 : end].replace("\\", "\\\\") + "]"
+            index = end
+        else:
+            regex += re.escape(char)
+        index += 1
+    return re.fullmatch(regex, branch) is not None
 
 
 def branch_filter(body: str, key: str) -> list[str] | None:
@@ -274,6 +315,16 @@ class TheCheckHelpersRejectWhatTheyShouldNot(unittest.TestCase):
             "ignore main block": ("    branches-ignore:\n      - main\n", False),
             "ignore others inline": ("    branches-ignore: [release]\n", True),
             "ignore others block": ("    branches-ignore:\n      - release\n", True),
+            "ignore a glob matching main": ("    branches-ignore: ['m*']\n", False),
+            "ignore a double-star glob": ("    branches-ignore:\n      - '**'\n", False),
+            "ignore a class matching main": ("    branches-ignore: ['[lm]ain']\n", False),
+            "ignore a glob not matching main": ("    branches-ignore: ['release/*']\n", True),
+            "ignore a slash glob": ("    branches-ignore: ['*/main']\n", True),
+            "allow a glob matching main": ("    branches: ['ma*']\n", True),
+            "allow a glob then negate main": ("    branches: ['**', '!main']\n", False),
+            "negate main then allow a glob": ("    branches: ['!main', 'm*']\n", True),
+            "allow a one-or-more repeat": ("    branches: ['mai+n']\n", True),
+            "allow an optional character": ("    branches: ['mains?']\n", True),
         }
         for label, (body, admits) in cases.items():
             with self.subTest(case=label):
