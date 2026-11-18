@@ -14,8 +14,9 @@ INTEGRATION_TESTS = REPO_ROOT / "tests" / "integration"
 # The documentation site builds strictly on every branch by design (test_docs_site.py), and that takes under a minute.
 RUNS_ON_EVERY_PUSH_BY_DESIGN = {"pages.yml"}
 
-# Names only ever pushed by an automated agent, which may not open a pull request.
-PUSH_BRANCHES_WITHOUT_A_PULL_REQUEST = {"main", "master", "claude/**", "codex/**", "alpha-release"}
+# Branches that never have a pull request. Agent branches (claude/**, codex/**) no longer push-trigger CI: a pull request
+# or a manual workflow_dispatch starts it, which keeps a branch from running every workflow twice and queueing for hours.
+PUSH_BRANCHES_WITHOUT_A_PULL_REQUEST = {"main", "master", "alpha-release"}
 
 USES_POSTGRESQL = re.compile(
     r"POSTGRESQL_URI|postgresql_uri|open_postgresql_persistent_store|ScratchPostgresql\w*|database\.backend\s*=\s*\"postgresql"

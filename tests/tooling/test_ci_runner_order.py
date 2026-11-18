@@ -39,6 +39,7 @@ ANALYSES = (
 )
 # The package gate's delay, in seconds: long enough for the build and test gates to finish and their jobs to queue.
 MINIMUM_PACKAGE_DELAY = 30
+NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
 
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*$", re.MULTILINE)
 
@@ -175,7 +176,9 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                     # AND one that waits for the gate still runs if the gate fails: a job skipped because what it
                     # needs failed reports a skipped check, and a skipped required check counts as passed.
                     if gate in needs(job):
-                        self.assertEqual(job_if(job), "${{ !cancelled() }}")
+                        # A slower tier also skips the pull_request event, which runs only the jobs the merge
+                        # queue repeats (ADR-0743); that clause is the only addition allowed.
+                        self.assertEqual(job_if(job).replace(" && " + NOT_A_PULL_REQUEST, ""), "${{ !cancelled() }}")
 
     def test_given_a_job_behind_the_gate_through_another_when_its_condition_is_read_then_it_ignores_the_gate(
         self,
@@ -213,8 +216,12 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                 gate = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))[gate_id]
 
                 # WHEN its definition is read.
-                # THEN it has no condition and no dependency, so it runs on every event the workflow runs on.
-                self.assertIsNone(job_if(gate))
+                # THEN it has no dependency, and no condition other than the pull_request one above, so it runs on every event the workflow runs on.
+                # AND the package gate may skip a pull_request, where no package job runs, instead of sleeping.
+                if gate_id == BUILD_AND_TEST_GATE:
+                    self.assertIsNone(job_if(gate))
+                else:
+                    self.assertIn(job_if(gate), (None, "${{ " + NOT_A_PULL_REQUEST + " }}"))
                 self.assertEqual(needs(gate), [])
                 # AND it checks nothing out and holds no permission: it only orders the queue.
                 self.assertIn("permissions: {}", gate)

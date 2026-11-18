@@ -4,14 +4,19 @@ on:
     branches:
       - main
       - master
-      - 'claude/**'
-      - 'codex/**'
   pull_request:
     branches:
       - main
       - master
+  merge_group:
   schedule:
     - cron: "47 2 * * 1"
+  workflow_dispatch:
+
+# Only pull_request runs share a group, so a new push cancels the superseded run of that PR; every other event gets a unique group and is never cancelled.
+concurrency:
+  group: postgres-integration-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ADR-0580, ADR-0743: a build and test job, so it joins the runner queue after the analyses, as ci.yml's do.

@@ -76,8 +76,13 @@ script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
 cd "$repo_root"
 
-command -v "$cc" >/dev/null 2>&1 || fail "missing command: $cc"
-command -v "$cxx" >/dev/null 2>&1 || fail "missing command: $cxx"
+# A compiler may be a launcher and a compiler (CC="ccache clang"); only the first word must be on PATH.
+# shellcheck disable=SC2086
+set -- $cc
+command -v "$1" >/dev/null 2>&1 || fail "missing command: $cc"
+# shellcheck disable=SC2086
+set -- $cxx
+command -v "$1" >/dev/null 2>&1 || fail "missing command: $cxx"
 command -v meson >/dev/null 2>&1 || fail "missing command: meson"
 command -v ninja >/dev/null 2>&1 || fail "missing command: ninja"
 
