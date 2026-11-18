@@ -30,10 +30,13 @@ How should the decoder's filter be tested under ThreadSanitizer?
 Chosen option: "Skip the decoder's forked children under ThreadSanitizer", because the other jobs run the same children
 on the same filter and kernel, and nothing about the filter changes to suit a test.
 
-`child_survives` and `terminal_ioctl_outcome` call `skip_decoder_child_under_tsan` before they fork. Both scenarios that
-use them are in the `tsan` group of `tests/expected_skips.json`. Their worker and no-filter children still run under
-TSan: the worker allowlist holds both sleeps. The `sqlite-mode` and `umask` scenarios keep their decoder children,
-because those expect a kill, which a kill by the background thread cannot turn into a pass of a refused call.
+Each section that forks decoder children calls `skip_decoder_children_under_tsan` as a statement at its top: the decoder
+`WHEN` of the signal-command and terminal scenarios, and the `GIVEN` of the decoder stat scenario. Never call it from a
+helper an assertion calls, such as `child_survives`: Catch2 reports a `SKIP` thrown inside a `REQUIRE` expression as an
+unexpected exception, so every check fails instead of skipping. The three scenarios are in the `tsan` group of
+`tests/expected_skips.json`. Their worker and no-filter children still run under TSan: the worker allowlist holds both
+sleeps. The `sqlite-mode` and `umask` scenarios keep their decoder children, because those expect a kill, which a kill
+by the background thread cannot turn into a pass of a refused call.
 
 ### Positive Consequences
 

@@ -423,7 +423,9 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
   a forked child's task count, since TSan starts its background thread
   again in the child, and a forked child under the decoder seccomp filter,
   which covers that thread and refuses its sleep (ADR-0852). Never widen a
-  filter to let a sanitizer's thread through.
+  filter to let a sanitizer's thread through. Call `SKIP` as a statement at
+  the top of a section, never from a helper an assertion calls: Catch2 reports
+  a `SKIP` thrown inside a `REQUIRE` expression as an unexpected exception.
 - A test calls `homeserver::ingest_pdu_event` with `runtime.mutex` released at
   every level: it refuses a caller that holds it (ADR-0848). Read the store under
   a `RuntimeLock`, then call ingestion inside a `RuntimeLockRelease` scope.

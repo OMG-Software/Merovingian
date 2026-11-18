@@ -933,9 +933,11 @@ enum class FilterProfile
 // the decoder filter covers that thread too. Its sleep (nanosleep) is not on the decoder allowlist: when the thread is
 // scheduled after the filter is in place, seccomp kills a child that made only allowed calls. The decoder's children
 // are left to the other jobs, which run them on the real filter; the main and worker allowlists both permit the sleep.
-auto skip_decoder_child_under_tsan(FilterProfile profile) -> void
+// Call it as a statement at the top of a section that forks decoder children (ADR-0852): Catch2 reports a SKIP thrown
+// from inside a REQUIRE expression as an unexpected exception, so it must never run from a helper an assertion calls.
+auto skip_decoder_children_under_tsan() -> void
 {
-    if (tsan_build && profile == FilterProfile::decoder)
+    if (tsan_build)
     {
         SKIP("ThreadSanitizer's background thread runs under the decoder filter in a forked child");
     }
@@ -946,7 +948,6 @@ auto skip_decoder_child_under_tsan(FilterProfile profile) -> void
 template <typename Call>
 [[nodiscard]] auto child_survives(FilterProfile profile, Call call) -> bool
 {
-    skip_decoder_child_under_tsan(profile);
     auto pipe_ends = std::array<int, 2>{-1, -1};
     REQUIRE(::pipe(pipe_ends.data()) == 0);
     auto const pid = ::fork();
@@ -1062,6 +1063,8 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 
         WHEN("the decoder filter is installed")
         {
+            skip_decoder_children_under_tsan();
+
             THEN("each signalling command is killed by seccomp")
             {
                 for (auto const& [name, call] : unsafe_calls)
@@ -1169,7 +1172,6 @@ constexpr auto no_terminal_exit = 40;
 // installs `profile` and makes ioctl(slave, request, &byte), the call TIOCSTI takes. Reports whether seccomp killed it.
 [[nodiscard]] auto terminal_ioctl_outcome(FilterProfile profile, unsigned long request) -> TerminalCallOutcome
 {
-    skip_decoder_child_under_tsan(profile);
     auto const pid = ::fork();
     REQUIRE(pid >= 0);
     if (pid == 0)
@@ -1257,6 +1259,8 @@ SCENARIO("The worker and decoder seccomp filters refuse to push input into a ter
 
         WHEN("the decoder filter is installed")
         {
+            skip_decoder_children_under_tsan();
+
             THEN("both are killed by its allowlist")
             {
                 REQUIRE(terminal_ioctl_outcome(FilterProfile::decoder, TIOCSTI) == TerminalCallOutcome::killed);
@@ -1271,6 +1275,8 @@ SCENARIO("The decoder seccomp filter can stat only a descriptor", "[platform][se
 {
     GIVEN("a forked child on a pipe that installs the decoder filter before the call")
     {
+        skip_decoder_children_under_tsan();
+
         WHEN("it asks for the status of a path")
         {
             THEN("newfstatat and statx are killed by seccomp, and an AT_EMPTY_PATH form is no exception")
