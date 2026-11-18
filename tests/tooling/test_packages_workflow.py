@@ -84,11 +84,21 @@ def write_fake_gh(path: Path) -> None:
         "#!/bin/sh\n"
         'printf \'%s\\n\' "$*" >> "$GH_LOG"\n'
         'case "$1 $2" in\n'
-        '  "release view") [ "$FAKE_EXISTS" = 1 ] ;;\n'
         '  "release delete"|"release create") exit 0 ;;\n'
+        '  "api -X") [ "$3 $4" = "DELETE repos/owner/repo/git/refs/tags/latest" ] || exit 98 ;;\n'
+        '  "api repos/"*/releases/tags/latest)\n'
+        '    case "$FAKE_RELEASE" in\n'
+        "      1) echo 42 ;;\n"
+        '      0) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
+        '      *) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1 ;;\n'
+        "    esac ;;\n"
+        '  "api repos/"*/git/matching-refs/tags/latest)\n'
+        '    [ "$FAKE_TAG" = FAIL ] && exit 1\n'
+        '    printf \'%s\\n\' "$FAKE_TAG" ;;\n'
         '  "api repos/"*/commits/latest)\n'
         '    [ "$FAKE_COMMIT" = FAIL ] && exit 1\n'
         '    printf \'%s\\n\' "$FAKE_COMMIT" ;;\n'
+        '  "api repos/"*/compare/*...main) printf \'%s\\n\' "$FAKE_ON_MAIN" ;;\n'
         '  "api repos/"*/compare/*) printf \'%s\\n\' "$FAKE_STATUS" ;;\n'
         "  *) echo \"unexpected gh call: $*\" >&2; exit 99 ;;\n"
         "esac\n",
@@ -189,8 +199,12 @@ class PackagesWorkflowTests(unittest.TestCase):
         # checkout state, and the release is tagged at the commit it was built from.
         self.assertIn("REPOSITORY: ${{ github.repository }}", job)
         commands = re.sub(r"\\\n\s*", " ", job)
-        for verb in ("view", "delete", "create"):
+        for verb in ("delete", "create"):
             self.assertRegex(commands, rf'gh release {verb} latest[^\n]*--repo "\$\{{REPOSITORY\}}"')
+        api_paths = re.findall(r'gh api (?:-X [A-Z]+ )?"([^"]*)"', commands)
+        self.assertTrue(api_paths, "the publish step makes no gh api call")
+        for path in api_paths:
+            self.assertTrue(path.startswith("repos/${REPOSITORY}/"), path)
         self.assertRegex(commands, r'gh release create latest[^\n]*--target "\$\{GITHUB_SHA\}"')
 
     def test_every_publish_of_latest_waits_for_the_one_before_it(self) -> None:
@@ -214,17 +228,26 @@ class PackagesWorkflowTests(unittest.TestCase):
         run = publish_latest_script()
         this_commit = "b" * 40
         published = "a" * 40
+        # Each case: release ("1" exists, "0" a 404, "ERR" another failure), tag ("1", "0" or "FAIL"), the
+        # commit the tag names ("FAIL" a failed call), its comparison with this run and with main, then the
+        # exit status and what the step may do: publish, delete the release, delete a leftover tag.
         cases = (
-            # (release exists, gh api answers, compare status, exit, published?)
-            ("no release yet", False, "", "", 0, True),
-            ("this run is newer", True, published, "ahead", 0, True),
-            ("a re-run of the same commit", True, published, "identical", 0, True),
-            ("this run is older", True, published, "behind", 0, False),
-            ("histories diverged", True, published, "diverged", 1, False),
-            ("published commit unreadable", True, "", "ahead", 1, False),
-            ("gh api fails", True, "FAIL", "ahead", 1, False),
+            ("nothing published yet", "0", "0", "", "", "", 0, "publish"),
+            ("this run is newer", "1", "1", published, "ahead", "", 0, "publish delete-release"),
+            ("a re-run of the same commit", "1", "1", published, "identical", "", 0, "publish delete-release"),
+            ("this run is older, main holds the newer", "1", "1", published, "behind", "ahead", 0, ""),
+            ("this run is older, main is at the newer", "1", "1", published, "behind", "identical", 0, ""),
+            ("main was reset behind the published commit", "1", "1", published, "behind", "behind", 1, ""),
+            ("histories diverged", "1", "1", published, "diverged", "", 1, ""),
+            ("published commit unreadable", "1", "1", "", "ahead", "", 1, ""),
+            ("published commit lookup fails", "1", "1", "FAIL", "ahead", "", 1, ""),
+            ("a leftover tag, this run newer", "0", "1", published, "ahead", "", 0, "publish delete-tag"),
+            ("a leftover tag, this run older", "0", "1", published, "behind", "ahead", 0, ""),
+            ("a release without its tag", "1", "0", "", "", "", 1, ""),
+            ("release lookup fails", "ERR", "0", "", "", "", 1, ""),
+            ("tag lookup fails", "1", "FAIL", published, "ahead", "", 1, ""),
         )
-        for name, exists, commits_answer, status, want_exit, want_publish in cases:
+        for name, release, tag, commit, status, on_main, want_exit, want in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 log = tmp_path / "gh.log"
@@ -232,11 +255,14 @@ class PackagesWorkflowTests(unittest.TestCase):
                 env = {
                     "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
                     "GITHUB_SHA": this_commit,
+                    "GITHUB_REF_NAME": "main",
                     "REPOSITORY": "owner/repo",
                     "GH_LOG": str(log),
-                    "FAKE_EXISTS": "1" if exists else "0",
-                    "FAKE_COMMIT": commits_answer,
+                    "FAKE_RELEASE": release,
+                    "FAKE_TAG": tag,
+                    "FAKE_COMMIT": commit,
                     "FAKE_STATUS": status,
+                    "FAKE_ON_MAIN": on_main,
                 }
 
                 # WHEN the step runs.
@@ -244,21 +270,22 @@ class PackagesWorkflowTests(unittest.TestCase):
                     [bash, "-c", run], cwd=tmp, env=env, capture_output=True, text=True, check=False
                 )
 
-                # THEN it publishes only over the same commit or an ancestor, and
-                # anything it cannot prove stops the job without deleting anything.
+                # THEN it publishes only over a tag at the same commit or an ancestor whose
+                # build main still holds, and anything it cannot prove stops the job before
+                # anything is deleted.
                 calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
                 self.assertEqual(result.returncode, want_exit, result.stdout + result.stderr)
                 created = [call for call in calls if call.startswith("release create latest")]
-                deleted = [call for call in calls if call.startswith("release delete latest")]
-                self.assertEqual(bool(created), want_publish, calls)
-                if want_publish:
+                done = set()
+                if created:
+                    done.add("publish")
                     self.assertIn(f"--target {this_commit}", created[0])
-                    self.assertEqual(bool(deleted), exists, calls)
-                else:
-                    self.assertEqual(deleted, [], "a refused publish must not delete latest")
-                if exists:
-                    self.assertIn("api repos/owner/repo/commits/latest --jq .sha", calls)
-                if exists and commits_answer not in ("", "FAIL"):
+                if any(call.startswith("release delete latest") for call in calls):
+                    done.add("delete-release")
+                if "api -X DELETE repos/owner/repo/git/refs/tags/latest" in calls:
+                    done.add("delete-tag")
+                self.assertEqual(done, set(want.split()), calls)
+                if tag == "1" and commit not in ("", "FAIL"):
                     self.assertIn(
                         f"api repos/owner/repo/compare/{published}...{this_commit} --jq .status", calls
                     )

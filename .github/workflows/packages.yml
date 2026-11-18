@@ -987,7 +987,22 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view latest --repo "${REPOSITORY}" >/dev/null 2>&1; then
+          # Whether the release exists: a 404 says no; any other failure stops
+          # the job rather than being read as "no release".
+          if answer="$(gh api "repos/${REPOSITORY}/releases/tags/latest" --jq .id 2>&1)"; then
+            release=true
+          elif printf '%s' "${answer}" | grep -q 'HTTP 404'; then
+            release=false
+          else
+            echo "::error::cannot tell whether the latest release exists: ${answer}"
+            exit 1
+          fi
+          # The tag is checked on its own: gh release create reuses an existing
+          # tag whatever --target says, so a tag left without its release
+          # still records which build is published.
+          tags="$(gh api "repos/${REPOSITORY}/git/matching-refs/tags/latest" \
+            --jq '[.[] | select(.ref == "refs/tags/latest")] | length')"
+          if [ "${tags}" != 0 ]; then
             # The tag points at the commit the published packages were built
             # from (--target below). Replace it only with the same commit or a
             # descendant; anything else, or an answer we cannot read, stops.
@@ -1000,18 +1015,38 @@ jobs:
             case "${status}" in
               ahead|identical) ;;
               behind)
-                echo "::notice::latest is built from ${published}, newer than ${GITHUB_SHA}; leaving it"
-                exit 0
+                # Newer than this run, but only a build that main still holds
+                # may stay: after a reset of main, the published commit is gone.
+                on_main="$(gh api "repos/${REPOSITORY}/compare/${published}...${GITHUB_REF_NAME}" --jq .status)"
+                case "${on_main}" in
+                  ahead|identical)
+                    echo "::notice::latest is built from ${published}, newer than ${GITHUB_SHA}; leaving it"
+                    exit 0
+                    ;;
+                  *)
+                    echo "::error::latest is built from ${published}, which ${GITHUB_REF_NAME} no longer holds"
+                    exit 1
+                    ;;
+                esac
                 ;;
               *)
                 echo "::error::latest (${published}) and ${GITHUB_SHA} compare as '${status}'; not replacing it"
                 exit 1
                 ;;
             esac
+          elif [ "${release}" = true ]; then
+            echo "::error::the latest release has no tag, so the commit it was built from is unknown"
+            exit 1
+          fi
+          if [ "${release}" = true ]; then
             gh release delete latest \
               --repo "${REPOSITORY}" \
               --yes \
               --cleanup-tag
+          elif [ "${tags}" != 0 ]; then
+            # A tag left without its release, already shown to be this run's
+            # commit or older: remove it, or the new release would reuse it.
+            gh api -X DELETE "repos/${REPOSITORY}/git/refs/tags/latest"
           fi
           gh release create latest \
             --repo "${REPOSITORY}" \

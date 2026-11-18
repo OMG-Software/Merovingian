@@ -372,11 +372,25 @@ with `--target` set to the commit the packages were built from, so the `latest`
 tag names that commit. Publishes run one at a time in the
 `packages-publish-latest` concurrency group, and before deleting anything the
 step compares the tag's commit with its own: it publishes when its commit is the
-same or newer, leaves `latest` alone when the published build is newer, and
-fails without deleting anything when the two have diverged or the published
-commit cannot be read. After a force-push to `main` rewrote the published
-commit, delete `latest` (`gh release delete latest --cleanup-tag`) and re-run
-the newest run's `publish-latest`
+same or newer, leaves `latest` alone when the published build is newer and still
+on `main`, and fails without deleting anything when the two have diverged,
+`main` no longer holds the published commit, or anything about the release or
+its tag cannot be read. It looks the tag up on its own, because `gh release
+create` would reuse a tag left behind by a deleted release; such a tag is
+compared like any other and removed before the new release is created.
+
+A publish that a later one cancelled while it waited can leave `latest` behind
+`main`'s newest build; re-run that run's `publish-latest`, or let the next push
+publish. After a force-push or a reset of `main` that removed the published
+commit, every publish fails until you recover it:
+
+1. Cancel every `packages.yml` run of the old history that has not finished.
+2. Wait for any `publish-latest` job in progress to finish.
+3. Delete `latest`: `gh release delete latest --cleanup-tag`.
+4. Re-run the newest run's `publish-latest`.
+
+Skipping the first two steps lets an old run publish after the deletion, and
+the newest run fails again
 ([ADR-0848](adr/0848-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
 
 The static Linux fallback artifact is built on Alpine/musl with `-static-pie`
