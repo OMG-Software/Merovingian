@@ -49,6 +49,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   reported `tee`'s success.
 * clang-tidy runs on pull requests: a failed diff on the shallow checkout read as no changed files. It now checks the
   lines a change adds or edits, and a push to main checks the commits it added (ADR-0847).
+* clang-tidy gets 15 minutes per file and 60 for the job: the largest test files outran the first limit of two
+  minutes on a busy runner, and a file the timeout killed failed the check with no finding (ADR-0847).
 * The NetBSD package fetcher matches NetBSD's version order, uses only a summary holding every required package and
   moves to the next mirror on a bad file; the guest tries the cached packages alone before any mirror (ADR-0844).
 * A failed Codecov upload fails the `codecov` job instead of the required `coverage` check; its report is kept 30 days

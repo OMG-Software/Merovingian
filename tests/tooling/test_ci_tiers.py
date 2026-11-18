@@ -434,6 +434,10 @@ class TheAnalysisStepsFailLoudly(unittest.TestCase):
         self.assertIn('base="$(git rev-parse HEAD^)"', active)
         # AND nothing turns a failure into success.
         self.assertNotIn("|| true", active)
+        # AND each file may take long enough for the largest test files on a busy runner, while the job stays bounded:
+        # a run killed by the per-file timeout fails the gate.
+        self.assertIn('-j "$(nproc)" -timeout 900', active)
+        self.assertRegex(text_of("static-analysis.yml"), r"(?m)^  clang-tidy:\n(?:    .*\n)*?    timeout-minutes: 60$")
 
     def test_given_the_tests_clang_tidy_config_when_read_then_only_the_catch2_tripped_check_is_added_off(self) -> None:
         # GIVEN both clang-tidy configurations.

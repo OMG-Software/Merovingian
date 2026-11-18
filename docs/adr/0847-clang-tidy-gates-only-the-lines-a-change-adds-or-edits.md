@@ -47,6 +47,9 @@ Rejected:
 * Editing a line that already has a finding makes the pull request fix it.
 * A diagnostic that clang-tidy reports on an unchanged line because of a changed line elsewhere (for example a changed
   declaration) is filtered out; the line filter cannot see that link.
+* Each file gets 15 minutes and the job 60. With every core busy, a 3700-line test file passed the first limit of two
+  minutes, and a file the timeout kills fails the gate as a finding would. Never lower the limit to save time: a
+  clang-tidy run that is cut short has checked nothing.
 
 ## Links
 

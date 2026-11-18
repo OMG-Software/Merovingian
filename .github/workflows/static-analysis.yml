@@ -18,6 +18,8 @@ concurrency:
 jobs:
   clang-tidy:
     runs-on: ubuntu-latest
+    # Bounds the whole step: each file has its own timeout below.
+    timeout-minutes: 60
     env:
       CC: clang
       CXX: clang++
@@ -83,7 +85,9 @@ jobs:
           # clang-tidy-diff runs clang-tidy on each changed translation unit with a line
           # filter, so only diagnostics on added or changed lines count: code that predates
           # the gate is not failed by an unrelated edit to the same file (ADR-0847).
-          # It exits 1 when any run reports an error or is killed by the timeout.
+          # It exits 1 when any run reports an error or is killed by the timeout. The
+          # largest test files take over two minutes each with every core busy, so the
+          # per-file timeout is 15 minutes; a file killed by it fails the gate, never passes.
           # Use the script of the same LLVM release as the clang-tidy it drives.
           clang_tidy="$(command -v clang-tidy)"
           major="$("${clang_tidy}" --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
@@ -95,7 +99,7 @@ jobs:
 
           git diff -U0 --diff-filter=d FETCH_HEAD HEAD -- src tests | \
             python3 "${clang_tidy_diff}" -p1 -path build -iregex '.*\.cpp' \
-              -clang-tidy-binary "${clang_tidy}" -j "$(nproc)" -timeout 120
+              -clang-tidy-binary "${clang_tidy}" -j "$(nproc)" -timeout 900
 
       - name: Run unsafe source gates
         run: bash scripts/reject-unsafe.sh
