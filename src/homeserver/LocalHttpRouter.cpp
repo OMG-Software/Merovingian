@@ -6410,6 +6410,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 return {403U,
                         decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary};
             }
+            // As on the production path (handle_federation_http_request), the federation core runs without
+            // runtime.mutex: its providers take the lock themselves, and its PDU sink, ingest_pdu_event, refuses a
+            // caller that holds it (ADR-0848). Nothing read under the lock above is used after the call.
+            auto const released = RuntimeLockRelease{guard};
             return federation::handle_inbound_federation_request(runtime.federation, *signed_request);
         }();
         log_diagnostic("federation.dispatched",
