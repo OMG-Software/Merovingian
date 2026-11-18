@@ -33,7 +33,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the
   first's lock by polling, lost to its back-to-back commits and was refused after 5 s, failing the write (ADR-0834).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`: publishes run one at a time,
-  and the `latest` tag names its build commit, which a publish must equal or descend from (ADR-0848).
+  and the `latest` tag names its build commit, which a publish must equal or descend from (ADR-0850).
 
 ## Release notes
 

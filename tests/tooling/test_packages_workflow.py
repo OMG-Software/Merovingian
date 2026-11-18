@@ -213,7 +213,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # WHEN two pushes to main reach it at once.
         # THEN one fixed group holds them in turn, and a publish already deleting
-        # the old release is never cancelled before it creates the new one (ADR-0848).
+        # the old release is never cancelled before it creates the new one (ADR-0850).
         concurrency = re.search(r"(?m)^    concurrency:\n((?:^      .*\n)+)", job)
         self.assertIsNotNone(concurrency, "publish-latest has no job-level concurrency group")
         self.assertIn("group: packages-publish-latest\n", concurrency.group(1))

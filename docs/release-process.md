@@ -391,7 +391,7 @@ commit, every publish fails until you recover it:
 
 Skipping the first two steps lets an old run publish after the deletion, and
 the newest run fails again
-([ADR-0848](adr/0848-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
+([ADR-0850](adr/0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)).
 
 The static Linux fallback artifact is built on Alpine/musl with `-static-pie`
 and packaged as `merovingian-<version>-linux-static-x86_64.tar.gz`. It is a

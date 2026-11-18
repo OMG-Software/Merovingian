@@ -970,7 +970,7 @@ jobs:
     # Two pushes to main build at once, and the slower run used to delete and
     # recreate `latest` over the newer one. One group serialises every publish,
     # and the step below refuses to replace a release built from a newer commit
-    # (ADR-0848). Never cancel in progress: a run cancelled between the delete
+    # (ADR-0850). Never cancel in progress: a run cancelled between the delete
     # and the create would leave no `latest` at all.
     concurrency:
       group: packages-publish-latest
