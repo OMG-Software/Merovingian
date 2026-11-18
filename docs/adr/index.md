@@ -198,7 +198,7 @@
 * [0226 - CodeQL drops cpp/unused-static-function on Catch2 tests before upload, and nowhere else](0226-codeql-drops-unused-static-function-on-catch2-tests-before-upload.md)
 * [0227 - A scenario that asserts on every store write runs on a PostgreSQL database of its own](0227-a-scenario-that-asserts-on-every-store-write-runs-on-its-own-postgresql-database.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
-* [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md) — Refined by ADR-0313: every workflow, not only the SonarQube Cloud job, installs its Python tools from hash-locked wheels
+* [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md) — Refined by ADR-0313: every workflow, not only the SonarQube Cloud job, installs its Python tools from hash-locked wheels; superseded in part by ADR-0846: the scan runs in the one coverage build, and Codecov uploads from a job of its own
 * [0230 - Unknown client-server endpoints answer 404 M_UNRECOGNIZED before authentication](0230-unknown-client-endpoints-answer-404-before-authentication.md)
 * [0231 - Federation may reach operator-named private networks, and nothing else](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
 * [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
@@ -453,7 +453,7 @@
 * [0497 - The greatest `origin_server_ts` of a room's events is kept in the event table](0497-the-newest-origin-server-ts-of-a-room-is-kept-in-the-event-table.md)
 * [0460 - One listing and one strict request reader serve every published room directory endpoint](0460-one-listing-and-one-strict-reader-serve-the-published-room-directory.md)
 * [0461 - A federation worker relays the published room directory to main](0461-a-federation-worker-relays-the-published-room-directory-to-main.md)
-* [0511 - A commit runs each workflow once](0511-a-commit-runs-each-workflow-once.md)
+* [0511 - A commit runs each workflow once](0511-a-commit-runs-each-workflow-once.md) — Superseded in part by ADR-0841: `claude/**` and `codex/**` no longer trigger `push`
 * [0510 - The test binaries hash passwords at minimum cost](0510-the-test-binaries-hash-passwords-at-minimum-cost.md)
 * [0462 - Use std::invoke for callable dispatch and immediate lambdas](0462-use-std-invoke-for-callable-dispatch-and-immediate-lambdas.md)
 * [0463 - Confine unavoidable C API pointers to RAII wrappers](0463-confine-unavoidable-c-api-pointers-to-raii-wrappers.md)
@@ -625,7 +625,7 @@
 * [0740 - The changelog starts at 1.0.0, and the pre-release entries are a frozen record](0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)
 * [0741 - Each changelog version has Features, Security Fixes, Bug fixes and Release notes](0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)
 * [0742 - Fixed build-and-test and package platform lists, and a tag ships what latest ships](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)
-* [0743 - Analyses, then build and test jobs, then packages take runners](0743-analyses-then-build-and-test-then-packages-take-runners.md)
+* [0743 - Analyses, then build and test jobs, then packages take runners](0743-analyses-then-build-and-test-then-packages-take-runners.md) — Refined by ADR-0840: a pull request runs a core gate, and the merge queue runs the rest
 * [0744 - The Complement blocker is also waived for 1.0.1](0744-the-complement-blocker-is-also-waived-for-1-0-1.md)
 * [0745 - A first join into a restricted room stores the resident's verified co-signature](0745-a-first-restricted-join-stores-the-residents-verified-co-signature.md)
 * [0746 - A threaded receipt may name any event whose relation chain reaches the thread root](0746-a-threaded-receipt-may-name-any-event-whose-relation-chain-reaches-the-root.md)
@@ -705,3 +705,9 @@
 * [0824 - A delayed event is a stored row that is kept after it is finalised, bounded per user, and deleted with the account](0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md)
 * [0825 - A due delayed event is sent by one job through the ordinary send path, never early and at least once](0825-a-due-delayed-event-is-sent-by-one-job-through-the-ordinary-send-path-never-early-and-at-least-once.md)
 * [0826 - Delayed events are on by default, with a maximum delay, per-user caps and per-user rate limits](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md)
+* [0840 - A pull request runs a core gate, and the merge queue runs the full matrix](0840-a-pull-request-runs-a-core-gate-and-the-merge-queue-runs-the-full-matrix.md)
+* [0841 - Agent branches run CI through a pull request or by hand](0841-agent-branches-run-ci-through-a-pull-request-or-by-hand.md)
+* [0842 - A new push to a pull request cancels its superseded runs](0842-a-new-push-to-a-pull-request-cancels-its-superseded-runs.md)
+* [0843 - CI wraps the compiler in ccache, and only main writes the cache](0843-ci-wraps-the-compiler-in-ccache-and-only-main-writes-the-cache.md)
+* [0845 - The integration binary runs as four Catch2 shards with one fixed seed](0845-the-integration-binary-runs-as-four-catch2-shards-with-one-fixed-seed.md)
+* [0846 - One coverage build feeds the Sonar scan, and Codecov uploads from its own job](0846-one-coverage-build-feeds-the-sonar-scan-and-codecov-uploads-from-its-own-job.md)
