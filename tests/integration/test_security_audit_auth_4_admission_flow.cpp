@@ -14,6 +14,7 @@
 // scenario asserts from a worker thread: results are read after join.
 
 #include "../support/JoiningThreads.hpp"
+#include "../support/PasswordHashPause.hpp"
 #include "../support/RealPasswordHashCost.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/MasterKey.hpp"
@@ -44,6 +45,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -57,6 +59,9 @@ namespace
 {
 
 namespace hs = merovingian::homeserver;
+
+// How long a scenario waits for the request under test to reach its password hash before it fails.
+constexpr auto hash_pause_timeout = std::chrono::milliseconds{30'000};
 
 [[nodiscard]] auto token_registration_config() -> merovingian::config::Config
 {
@@ -117,8 +122,6 @@ auto replace_stored_hash(hs::HomeserverRuntime& runtime, std::string const& user
 SCENARIO("Registration does not hold the runtime mutex while it hashes the password",
          "[integration][auth][security][audit][auth-4]")
 {
-    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
-    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("a runtime")
     {
         REQUIRE(sodium_init() >= 0);
@@ -126,30 +129,35 @@ SCENARIO("Registration does not hold the runtime mutex while it hashes the passw
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto request_started = std::binary_semaphore{0};
+        // The registration's hash stops until the competing request is done, so it lands inside the window
+        // the lock is released for every time (ADR-0851). The pause outlives no thread: it is destroyed, and
+        // so released, before the worker is joined.
+        auto worker = merovingian::tests::JoiningThreads{};
+        auto const pause = merovingian::tests::PasswordHashPause{};
         auto registration_done = std::atomic<bool>{false};
         auto registration = hs::OperationResult{};
-        auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
-            request_started.release();
             registration = hs::register_appservice_user(runtime, "bridge_carol");
             registration_done.store(true, std::memory_order_release);
         });
 
         WHEN("another request needs the runtime mutex while the registration is hashing")
         {
-            request_started.acquire();
+            auto const hashing = pause.wait_until_hashing(hash_pause_timeout);
             auto overlapped = false;
+            if (hashing)
             {
                 auto guard = hs::RuntimeLock{runtime.mutex};
                 overlapped = !registration_done.load(std::memory_order_acquire);
             }
+            pause.release();
             worker.join();
 
             THEN("it gets the mutex before the hash has finished, and the registration then completes")
             {
+                REQUIRE(hashing);
                 REQUIRE(overlapped);
                 REQUIRE(registration.ok);
                 REQUIRE(count_users(runtime, "@bridge_carol:example.org") == 1U);
@@ -225,8 +233,6 @@ SCENARIO("Two concurrent registrations of one username produce exactly one accou
 SCENARIO("A password change that races another password change is refused, not overwritten",
          "[integration][auth][security][audit][auth-4]")
 {
-    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
-    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("alice is signed in and a replacement hash is prepared for the competing change")
     {
         REQUIRE(sodium_init() >= 0);
@@ -244,32 +250,35 @@ SCENARIO("A password change that races another password change is refused, not o
         auto const signed_in = hs::login_local_user(runtime, registered.value, alice_password, "DEV1");
         REQUIRE(signed_in.ok);
 
-        auto request_started = std::binary_semaphore{0};
+        // Armed after the setup's own hashes, so the later change's hash is the one that stops (ADR-0851).
+        auto worker = merovingian::tests::JoiningThreads{};
+        auto const pause = merovingian::tests::PasswordHashPause{};
         auto change_done = std::atomic<bool>{false};
         auto change = hs::OperationResult{};
-        auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
-            request_started.release();
             change = hs::change_local_user_password(runtime, signed_in.value, "LaterChange99!z");
             change_done.store(true, std::memory_order_release);
         });
 
         WHEN("the competing change lands while the later one is hashing")
         {
-            request_started.acquire();
+            auto const hashing = pause.wait_until_hashing(hash_pause_timeout);
             auto overlapped = false;
             auto replaced = false;
+            if (hashing)
             {
                 auto guard = hs::RuntimeLock{runtime.mutex};
                 overlapped = !change_done.load(std::memory_order_acquire);
                 replaced = replace_stored_hash(runtime, registered.value, *competing_hash);
             }
+            pause.release();
             worker.join();
 
             THEN("the later change is refused and the competing password survives")
             {
+                REQUIRE(hashing);
                 REQUIRE(overlapped);
                 REQUIRE(replaced);
                 REQUIRE_FALSE(change.ok);
@@ -283,8 +292,6 @@ SCENARIO("A password change that races another password change is refused, not o
 SCENARIO("A password change races a logout of the session that authorised it",
          "[integration][auth][security][audit][auth-4]")
 {
-    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
-    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("alice is signed in on one device")
     {
         REQUIRE(sodium_init() >= 0);
@@ -300,28 +307,32 @@ SCENARIO("A password change races a logout of the session that authorised it",
         REQUIRE(signed_in.ok);
         auto const hash_before = stored_hash_of(runtime, registered.value);
 
-        auto request_started = std::binary_semaphore{0};
-        auto change = hs::OperationResult{};
+        // Armed after the setup's own hashes, so the change's hash is the one that stops (ADR-0851). Without it
+        // the deletion could land after the change had finished, and the scenario would test nothing.
         auto worker = merovingian::tests::JoiningThreads{};
+        auto const pause = merovingian::tests::PasswordHashPause{};
+        auto change = hs::OperationResult{};
         worker.emplace_back([&] {
             auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
-            request_started.release();
             change = hs::change_local_user_password(runtime, signed_in.value, "LaterChange99!z");
         });
 
         WHEN("the device is deleted while the new password is hashing")
         {
-            request_started.acquire();
+            auto const hashing = pause.wait_until_hashing(hash_pause_timeout);
             auto deleted = false;
+            if (hashing)
             {
                 auto guard = hs::RuntimeLock{runtime.mutex};
                 deleted = hs::delete_local_device(runtime, registered.value, "DEV1").ok;
             }
+            pause.release();
             worker.join();
 
             THEN("the revoked session cannot change the password")
             {
+                REQUIRE(hashing);
                 REQUIRE(deleted);
                 REQUIRE_FALSE(change.ok);
                 REQUIRE(stored_hash_of(runtime, registered.value) == hash_before);

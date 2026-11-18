@@ -63,6 +63,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   TSan's own interceptor and background thread make what they check unobservable.
 * A slower package run of an older `main` commit no longer replaces a newer `latest`: publishes run one at a time,
   and the `latest` tag names its build commit, which a publish must equal or descend from (ADR-0850).
+* The scenarios that race a request against a password hash pause the hash until the other request is made, so a slow
+  runner can no longer make them fail, or pass without testing the race (ADR-0851).
 
 ## Release notes
 

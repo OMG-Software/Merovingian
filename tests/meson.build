@@ -309,6 +309,7 @@ shell = find_program('sh')
     sources: files(
       'unit/test_main.cpp',
       'support/RealPasswordHashCost.cpp',
+      'support/PasswordHashPause.cpp',
       'unit/test_password_hash_cost.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_alias_table.cpp',
@@ -690,6 +691,7 @@ shell = find_program('sh')
     sources: files(
       'conformance/test_main.cpp',
       'support/RealPasswordHashCost.cpp',
+      'support/PasswordHashPause.cpp',
       'conformance/test_account_data_conformance.cpp',
       'conformance/test_appservice_conformance.cpp',
       'conformance/test_appservice_assertion_conformance.cpp',
@@ -842,6 +844,7 @@ shell = find_program('sh')
     sources: files(
       'integration/test_main.cpp',
       'support/RealPasswordHashCost.cpp',
+      'support/PasswordHashPause.cpp',
       'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_registration_flow.cpp',
       'integration/test_appservice_wave3_flow.cpp',

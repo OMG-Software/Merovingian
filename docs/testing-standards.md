@@ -67,11 +67,18 @@ production code's call to `tests/support/RealPasswordHashCost.cpp`, so no produc
 - The override refuses any cost but the one production asks for, so a downgrade in `src/auth/Password.cpp` makes every
   registration and login fail rather than go unnoticed.
 - `merovingian-password-cost-tests` is linked without the override and proves what the shipped code does.
-- A scenario that needs the hash to take real time holds `merovingian::tests::RealPasswordHashCost` from its first line. That
-  means any scenario racing another request against the window in which the runtime lock is released around Argon2id: at
-  minimum cost that window is too short for the other thread to land in, and the scenario fails intermittently, or
-  passes without exercising the race. Verifying costs whatever the stored hash was made with, so a guard taken after the
-  user registered is too late.
+- A scenario that races another request against a password hash (the window in which the runtime lock is released around
+  `crypto_pwhash_str`) pauses the hash with `merovingian::tests::PasswordHashPause`, never by timing it
+  ([ADR-0851](adr/0851-a-scenario-that-races-a-password-hash-pauses-the-hash-instead-of-timing-it.md)):
+  - arm the pause after the setup's own hashes, with the worker thread declared before it;
+  - `REQUIRE` that `wait_until_hashing(timeout)` returned true;
+  - make the competing request, then `release()` and join.
+
+  A window of real cost is not a guarantee: on a loaded sanitizer runner the competing request landed after the change
+  had committed, and the scenario failed while testing nothing.
+- A scenario that races password *verification* (`crypto_pwhash_str_verify`, which the wrapper does not reach) holds
+  `merovingian::tests::RealPasswordHashCost` from its first line. Verifying costs whatever the stored hash was made
+  with, so a guard taken after the user registered is too late.
 - Do not add a new test binary that registers users without the same link argument and support file, unless it exists to
   see the real cost.
 
