@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Sticky events (MSC4354, ADR-0853, ADR-0854): the client send path. Every request goes through
-// `handle_client_server_request` on a real runtime. No scenario sleeps: time is `test_frozen_event_clock_ms` (the stamp),
-// `PersistentStore::test_sticky_clock_ms` (what the readers and the prune judge expiry against) and
+// `handle_client_server_request` on a real runtime. No scenario sleeps: time is `test_frozen_event_clock_ms` (the
+// stamp), `PersistentStore::test_sticky_clock_ms` (what the readers and the prune judge expiry against) and
 // `test_delayed_event_clock_ms` (the delayed events' job). The feature is not in the Matrix v1.19 specification, so
 // there is no conformance scenario.
 
@@ -99,13 +99,13 @@ public:
         : m_started{hs::start_client_server(memory_config())}
     {
         REQUIRE(m_started.started);
-        alice_token = sign_in("alice", "D1");
-        bob_token = sign_in("bob", "D2");
+        m_alice_token = sign_in("alice", "D1");
+        m_bob_token = sign_in("bob", "D2");
         auto const created =
-            request(runtime(), "POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})");
+            request(runtime(), "POST", "/_matrix/client/v3/createRoom", m_alice_token, R"({"preset":"public_chat"})");
         REQUIRE(created.status == 200U);
-        room_id = *string_member(parse_object(created.body), "room_id");
-        REQUIRE(request(runtime(), "POST", "/_matrix/client/v3/join/" + room_id, bob_token, "{}").status == 200U);
+        m_room_id = *string_member(parse_object(created.body), "room_id");
+        REQUIRE(request(runtime(), "POST", "/_matrix/client/v3/join/" + m_room_id, m_bob_token, "{}").status == 200U);
         set_time(t0);
     }
 
@@ -121,7 +121,7 @@ public:
 
     [[nodiscard]] auto room_path() const -> std::string
     {
-        return "/_matrix/client/v3/rooms/" + room_id;
+        return "/_matrix/client/v3/rooms/" + m_room_id;
     }
 
     auto set_time(std::int64_t now_ms) -> void
@@ -132,13 +132,13 @@ public:
     }
 
     // PUT .../send/m.test.sticky/{txn}?{query}; alice's token.
-    [[nodiscard]] auto put_send(std::string_view txn, std::string_view query,
-                                std::string body = R"({"body":"hello"})") -> hs::LocalHttpResponse
+    [[nodiscard]] auto put_send(std::string_view txn, std::string_view query, std::string body = R"({"body":"hello"})")
+        -> hs::LocalHttpResponse
     {
         return request(runtime(), "PUT",
                        room_path() + "/send/m.test.sticky/" + std::string{txn} +
                            (query.empty() ? "" : "?" + std::string{query}),
-                       alice_token, std::move(body));
+                       m_alice_token, std::move(body));
     }
 
     [[nodiscard]] auto event_count() noexcept -> std::size_t
@@ -158,25 +158,40 @@ public:
     [[nodiscard]] auto served(std::string const& event_id, std::string const& token = {}) -> cj::Object
     {
         auto const response =
-            request(runtime(), "GET", room_path() + "/event/" + event_id, token.empty() ? alice_token : token);
+            request(runtime(), "GET", room_path() + "/event/" + event_id, token.empty() ? m_alice_token : token);
         REQUIRE(response.status == 200U);
         return parse_object(response.body);
     }
 
-    std::string alice_token{};
-    std::string bob_token{};
-    std::string room_id{};
+    [[nodiscard]] auto alice_token() const noexcept -> std::string const&
+    {
+        return m_alice_token;
+    }
+
+    [[nodiscard]] auto bob_token() const noexcept -> std::string const&
+    {
+        return m_bob_token;
+    }
+
+    [[nodiscard]] auto room_id() const noexcept -> std::string const&
+    {
+        return m_room_id;
+    }
 
 private:
+    std::string m_alice_token{};
+    std::string m_bob_token{};
+    std::string m_room_id{};
+
     [[nodiscard]] auto sign_in(std::string const& name, std::string const& device) -> std::string
     {
-        REQUIRE(request(runtime(), "POST", "/_matrix/client/v3/register", {}, registration_json(name, password))
-                    .status == 200U);
-        auto const login =
-            request(runtime(), "POST", "/_matrix/client/v3/login", {},
-                    R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + name +
-                        R"(:example.org"},"password":")" + std::string{password} + R"(","device_id":")" + device +
-                        R"("})");
+        REQUIRE(
+            request(runtime(), "POST", "/_matrix/client/v3/register", {}, registration_json(name, password)).status ==
+            200U);
+        auto const login = request(runtime(), "POST", "/_matrix/client/v3/login", {},
+                                   R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + name +
+                                       R"(:example.org"},"password":")" + std::string{password} + R"(","device_id":")" +
+                                       device + R"("})");
         REQUIRE(login.status == 200U);
         auto const login_body = parse_object(login.body);
         auto const* token = string_member(login_body, "access_token");
@@ -288,13 +303,12 @@ SCENARIO("A sticky parameter that is not a single whole number of at least 1 is 
     GIVEN("alice in a room")
     {
         auto fixture = Fixture{};
-        auto const query = GENERATE(as<std::string>{}, "sticky_duration_ms=0", "sticky_duration_ms=-1",
-                                    "sticky_duration_ms=9007199254740992", "sticky_duration_ms=1.5",
-                                    "sticky_duration_ms=", "sticky_duration_ms=abc", "sticky_duration_ms",
-                                    "sticky_duration_ms=5&sticky_duration_ms=6",
-                                    "sticky_duration_ms=5&org.matrix.msc4354.sticky_duration_ms=5",
-                                    "org.matrix.msc4354.sticky_duration_ms=5&org.matrix.msc4354.sticky_duration_ms=5",
-                                    "org.matrix.msc4354.sticky_duration_%6Ds=0");
+        auto const query = GENERATE(
+            as<std::string>{}, "sticky_duration_ms=0", "sticky_duration_ms=-1", "sticky_duration_ms=9007199254740992",
+            "sticky_duration_ms=1.5", "sticky_duration_ms=", "sticky_duration_ms=abc", "sticky_duration_ms",
+            "sticky_duration_ms=5&sticky_duration_ms=6", "sticky_duration_ms=5&org.matrix.msc4354.sticky_duration_ms=5",
+            "org.matrix.msc4354.sticky_duration_ms=5&org.matrix.msc4354.sticky_duration_ms=5",
+            "org.matrix.msc4354.sticky_duration_%6Ds=0");
         auto const before = fixture.event_count();
 
         WHEN("alice sends a message with it")
@@ -332,15 +346,17 @@ SCENARIO("The largest duration canonical JSON allows is accepted and kept as giv
     }
 }
 
-SCENARIO("With sticky events disabled the parameter is 403 and the event is never sent", "[sticky-events][integration][send]")
+SCENARIO("With sticky events disabled the parameter is 403 and the event is never sent",
+         "[sticky-events][integration][send]")
 {
     GIVEN("a server with sticky events off")
     {
         auto fixture = Fixture{};
         fixture.runtime().limits.sticky_events_enabled = false;
         auto const before = fixture.event_count();
-        auto const query = GENERATE(as<std::string>{}, "sticky_duration_ms=5000", "org.matrix.msc4354.sticky_duration_ms=5000",
-                                    "sticky_duration_ms=0", "sticky_duration_ms=5000&org.matrix.msc4140.delay=60000");
+        auto const query =
+            GENERATE(as<std::string>{}, "sticky_duration_ms=5000", "org.matrix.msc4354.sticky_duration_ms=5000",
+                     "sticky_duration_ms=0", "sticky_duration_ms=5000&org.matrix.msc4140.delay=60000");
 
         WHEN("alice sends with the parameter")
         {
@@ -357,7 +373,7 @@ SCENARIO("With sticky events disabled the parameter is 403 and the event is neve
         {
             auto const response =
                 request(fixture.runtime(), "PUT", fixture.room_path() + "/delayed_event/m.test.sticky/t2",
-                        fixture.alice_token, R"({"delay_ms":1000,"content":{"a":1},"sticky_duration_ms":5000})");
+                        fixture.alice_token(), R"({"delay_ms":1000,"content":{"a":1},"sticky_duration_ms":5000})");
             THEN("the answer is 403 M_FORBIDDEN")
             {
                 REQUIRE(response.status == 403U);
@@ -389,12 +405,12 @@ SCENARIO("A sticky parameter on a state, POST send or redact request is refused"
 
         WHEN("it is given to a state route")
         {
-            auto const target_path = GENERATE(as<std::string>{}, "/state/m.test.state/key", "/state/m.test.state/",
-                                              "/state/m.test.state");
+            auto const target_path =
+                GENERATE(as<std::string>{}, "/state/m.test.state/key", "/state/m.test.state/", "/state/m.test.state");
             auto const response = request(fixture.runtime(), "PUT",
                                           fixture.room_path() + target_path + "?" + name + "=5000" +
                                               GENERATE(as<std::string>{}, "", "&org.matrix.msc4140.delay=1000"),
-                                          fixture.alice_token, R"({"v":1})");
+                                          fixture.alice_token(), R"({"v":1})");
             THEN("it is 400 M_INVALID_PARAM and nothing is stored or scheduled")
             {
                 REQUIRE(response.status == 400U);
@@ -405,9 +421,8 @@ SCENARIO("A sticky parameter on a state, POST send or redact request is refused"
         }
         AND_WHEN("it is given to POST /send")
         {
-            auto const response =
-                request(fixture.runtime(), "POST", fixture.room_path() + "/send?" + name + "=5000", fixture.alice_token,
-                        R"({"type":"m.test.sticky","content":{"a":1}})");
+            auto const response = request(fixture.runtime(), "POST", fixture.room_path() + "/send?" + name + "=5000",
+                                          fixture.alice_token(), R"({"type":"m.test.sticky","content":{"a":1}})");
             THEN("it is 400 M_INVALID_PARAM")
             {
                 REQUIRE(response.status == 400U);
@@ -417,9 +432,9 @@ SCENARIO("A sticky parameter on a state, POST send or redact request is refused"
         }
         AND_WHEN("it is given to a redaction")
         {
-            auto const response = request(fixture.runtime(), "PUT",
-                                          fixture.room_path() + "/redact/" + target + "/r1?" + name + "=5000",
-                                          fixture.alice_token, "{}");
+            auto const response =
+                request(fixture.runtime(), "PUT", fixture.room_path() + "/redact/" + target + "/r1?" + name + "=5000",
+                        fixture.alice_token(), "{}");
             THEN("it is 400 M_INVALID_PARAM and the target is not redacted")
             {
                 REQUIRE(response.status == 400U);
@@ -457,17 +472,17 @@ SCENARIO("A sticky event is served with its remaining time, capped at an hour, u
             }
             AND_THEN("/messages and /context serve the same fields")
             {
-                auto const messages = request(fixture.runtime(), "GET", fixture.room_path() + "/messages?dir=b&limit=20",
-                                              fixture.alice_token);
+                auto const messages = request(fixture.runtime(), "GET",
+                                              fixture.room_path() + "/messages?dir=b&limit=20", fixture.alice_token());
                 REQUIRE(messages.status == 200U);
                 REQUIRE(messages.body.find("sticky_duration_remaining_ms") != std::string::npos);
                 REQUIRE(messages.body.find("msc4354_sticky_duration_ttl_ms") != std::string::npos);
                 auto const context =
                     request(fixture.runtime(), "GET", fixture.room_path() + "/context/" + short_id + "?limit=2",
-                            fixture.alice_token);
+                            fixture.alice_token());
                 REQUIRE(context.status == 200U);
                 REQUIRE(context.body.find("sticky_duration_remaining_ms") != std::string::npos);
-                auto const sync = request(fixture.runtime(), "GET", "/_matrix/client/v3/sync", fixture.alice_token);
+                auto const sync = request(fixture.runtime(), "GET", "/_matrix/client/v3/sync", fixture.alice_token());
                 REQUIRE(sync.status == 200U);
                 REQUIRE(sync.body.find("sticky_duration_remaining_ms") != std::string::npos);
             }
@@ -508,7 +523,7 @@ SCENARIO("Redacting a sticky event removes its row and its fields", "[sticky-eve
         WHEN("alice redacts it")
         {
             REQUIRE(request(fixture.runtime(), "PUT", fixture.room_path() + "/redact/" + event_id + "/r1",
-                            fixture.alice_token, "{}")
+                            fixture.alice_token(), "{}")
                         .status == 200U);
             THEN("the row is gone and the stored and served events carry neither field")
             {
@@ -534,13 +549,13 @@ SCENARIO("Deactivating an account removes its sticky events and no one else's",
         auto const alices = event_id_of(fixture.put_send("t1", "sticky_duration_ms=1800000"));
         auto const bobs = event_id_of(request(fixture.runtime(), "PUT",
                                               fixture.room_path() + "/send/m.test.sticky/b1?sticky_duration_ms=1800000",
-                                              fixture.bob_token, R"({"body":"hello"})"));
+                                              fixture.bob_token(), R"({"body":"hello"})"));
         REQUIRE(fixture.store().sticky_events.size() == 2U);
 
         WHEN("alice deactivates her account")
         {
             auto const deactivated =
-                request(fixture.runtime(), "POST", "/_matrix/client/v3/account/deactivate", fixture.alice_token,
+                request(fixture.runtime(), "POST", "/_matrix/client/v3/account/deactivate", fixture.alice_token(),
                         R"({"auth":{"type":"m.login.password","password":")" + std::string{password} + R"("}})");
 
             THEN("her row is gone, bob's stays, and her event is no longer served as sticky")
@@ -549,8 +564,8 @@ SCENARIO("Deactivating an account removes its sticky events and no one else's",
                 REQUIRE(fixture.store().sticky_events.find(alices, t0) == nullptr);
                 REQUIRE(fixture.store().sticky_events.find(bobs, t0) != nullptr);
                 REQUIRE(fixture.store().sticky_events.size() == 1U);
-                REQUIRE_FALSE(remaining_of(fixture.served(alices, fixture.bob_token)).stable.has_value());
-                REQUIRE(remaining_of(fixture.served(bobs, fixture.bob_token)).stable.has_value());
+                REQUIRE_FALSE(remaining_of(fixture.served(alices, fixture.bob_token())).stable.has_value());
+                REQUIRE(remaining_of(fixture.served(bobs, fixture.bob_token())).stable.has_value());
             }
         }
     }
@@ -598,17 +613,16 @@ SCENARIO("A room holds at most the configured number of unexpired sticky events,
         WHEN("bob, of the same server, sends one")
         {
             fixture.set_time(t0 + 2'000);
-            auto const bobs = event_id_of(request(fixture.runtime(), "PUT",
-                                                  fixture.room_path() +
-                                                      "/send/m.test.sticky/b1?sticky_duration_ms=1800000",
-                                                  fixture.bob_token, R"({"body":"hello"})"));
+            auto const bobs = event_id_of(request(
+                fixture.runtime(), "PUT", fixture.room_path() + "/send/m.test.sticky/b1?sticky_duration_ms=1800000",
+                fixture.bob_token(), R"({"body":"hello"})"));
             THEN("the send succeeded, the room's oldest stopped being sticky and the other two are")
             {
                 auto const now = t0 + 2'000;
                 REQUIRE(fixture.store().sticky_events.find(first, now) == nullptr);
                 REQUIRE(fixture.store().sticky_events.find(second, now) != nullptr);
                 REQUIRE(fixture.store().sticky_events.find(bobs, now) != nullptr);
-                REQUIRE(fixture.store().sticky_events.unexpired_of_room(fixture.room_id, now).size() == 2U);
+                REQUIRE(fixture.store().sticky_events.unexpired_of_room(fixture.room_id(), now).size() == 2U);
             }
         }
     }
@@ -625,13 +639,15 @@ SCENARIO("A delayed sticky event is sent sticky and its lifetime starts when it 
         WHEN("she schedules a sticky message")
         {
             auto const scheduled =
-                via_query ? fixture.put_send("t1", "org.matrix.msc4140.delay=60000&" + std::string{unstable_name} +
-                                                       "=1800000")
-                          : request(fixture.runtime(), "PUT",
-                                    "/_matrix/client/unstable/org.matrix.msc4140/rooms/" + fixture.room_id +
-                                        "/delayed_event/m.test.sticky/t1",
-                                    fixture.alice_token,
-                                    R"({"delay_ms":60000,"content":{"body":"later"},"org.matrix.msc4354.sticky_duration_ms":1800000})");
+                via_query
+                    ? fixture.put_send("t1",
+                                       "org.matrix.msc4140.delay=60000&" + std::string{unstable_name} + "=1800000")
+                    : request(
+                          fixture.runtime(), "PUT",
+                          "/_matrix/client/unstable/org.matrix.msc4140/rooms/" + fixture.room_id() +
+                              "/delayed_event/m.test.sticky/t1",
+                          fixture.alice_token(),
+                          R"({"delay_ms":60000,"content":{"body":"later"},"org.matrix.msc4354.sticky_duration_ms":1800000})");
             REQUIRE(scheduled.status == 200U);
             auto const before = fixture.event_count();
             THEN("nothing is sent and no sticky row exists yet")
@@ -642,15 +658,15 @@ SCENARIO("A delayed sticky event is sent sticky and its lifetime starts when it 
             AND_WHEN("the job runs at the due time")
             {
                 fixture.set_time(t0 + 60'000);
-                std::ignore = hs::send_due_delayed_events(fixture.runtime(),
-                                                          static_cast<std::uint64_t>(t0 + 60'000), hs::StopFlag{});
+                std::ignore = hs::send_due_delayed_events(fixture.runtime(), static_cast<std::uint64_t>(t0 + 60'000),
+                                                          hs::StopFlag{});
                 THEN("the event is sticky, stamped when it was sent, and expires from then")
                 {
                     REQUIRE(fixture.event_count() == before + 1U);
                     REQUIRE(fixture.store().sticky_events.size() == 1U);
                     auto const* delayed = fixture.store().delayed_events.earliest_due();
                     REQUIRE(delayed == nullptr);
-                    auto const rows = fixture.store().sticky_events.unexpired_of_room(fixture.room_id, t0 + 60'000);
+                    auto const rows = fixture.store().sticky_events.unexpired_of_room(fixture.room_id(), t0 + 60'000);
                     REQUIRE(rows.size() == 1U);
                     REQUIRE(rows.front()->received_at_ms == t0 + 60'000);
                     REQUIRE(rows.front()->expires_at_ms == t0 + 60'000 + 1'800'000);
@@ -665,14 +681,15 @@ SCENARIO("A delayed sticky event is sent sticky and its lifetime starts when it 
     }
 }
 
-SCENARIO("The dedicated delayed-event routes read the sticky duration from the body", "[sticky-events][integration][delayed]")
+SCENARIO("The dedicated delayed-event routes read the sticky duration from the body",
+         "[sticky-events][integration][delayed]")
 {
     GIVEN("alice in a room")
     {
         auto fixture = Fixture{};
         auto const stable_route = GENERATE(true, false);
         auto const path = (stable_route ? fixture.room_path()
-                                        : "/_matrix/client/unstable/org.matrix.msc4140/rooms/" + fixture.room_id) +
+                                        : "/_matrix/client/unstable/org.matrix.msc4140/rooms/" + fixture.room_id()) +
                           "/delayed_event/m.test.sticky/";
         auto const body = GENERATE(
             as<std::string>{},
@@ -684,7 +701,7 @@ SCENARIO("The dedicated delayed-event routes read the sticky duration from the b
 
         WHEN("the body is invalid or names a state key")
         {
-            auto const response = request(fixture.runtime(), "PUT", path + "t1", fixture.alice_token, body);
+            auto const response = request(fixture.runtime(), "PUT", path + "t1", fixture.alice_token(), body);
             THEN("it is 400 M_INVALID_PARAM and nothing is scheduled")
             {
                 REQUIRE(response.status == 400U);
@@ -695,9 +712,8 @@ SCENARIO("The dedicated delayed-event routes read the sticky duration from the b
         AND_WHEN("the body gives one valid duration under either name")
         {
             auto const name = GENERATE(std::string{stable_name}, std::string{unstable_name});
-            auto const response =
-                request(fixture.runtime(), "PUT", path + "t2", fixture.alice_token,
-                        R"({"delay_ms":1000,"content":{"a":1},")" + name + R"(":7000})");
+            auto const response = request(fixture.runtime(), "PUT", path + "t2", fixture.alice_token(),
+                                          R"({"delay_ms":1000,"content":{"a":1},")" + name + R"(":7000})");
             THEN("it is scheduled with the duration kept")
             {
                 REQUIRE(response.status == 200U);

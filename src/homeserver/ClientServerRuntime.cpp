@@ -8463,7 +8463,7 @@ namespace
                 {
                     auto sticky_rooms = std::vector<std::string>{};
                     auto const named = !sticky_request->rooms.empty() &&
-                                       !(sticky_request->rooms.size() == 1U && sticky_request->rooms.front() == "*");
+                                       (sticky_request->rooms.size() != 1U || sticky_request->rooms.front() != "*");
                     if (named)
                     {
                         sticky_rooms = sticky_request->rooms;

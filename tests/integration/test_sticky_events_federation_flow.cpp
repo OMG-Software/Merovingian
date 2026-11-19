@@ -154,11 +154,11 @@ public:
                     R"("password":")" +
                         std::string{password} + R"(","device_id":"D1"})");
         REQUIRE(login.status == 200U);
-        alice_token = *string_member(parse_object(login.body), "access_token");
+        m_alice_token = *string_member(parse_object(login.body), "access_token");
         auto const created =
-            request(runtime(), "POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})");
+            request(runtime(), "POST", "/_matrix/client/v3/createRoom", m_alice_token, R"({"preset":"public_chat"})");
         REQUIRE(created.status == 200U);
-        room_id = *string_member(parse_object(created.body), "room_id");
+        m_room_id = *string_member(parse_object(created.body), "room_id");
         set_time(t0);
     }
 
@@ -187,9 +187,9 @@ public:
     [[nodiscard]] auto alice_sends_sticky(std::string const& txn, std::int64_t duration_ms) -> std::string
     {
         auto const response = request(runtime(), "PUT",
-                                      "/_matrix/client/v3/rooms/" + room_id + "/send/m.test.sticky/" + txn +
+                                      "/_matrix/client/v3/rooms/" + m_room_id + "/send/m.test.sticky/" + txn +
                                           "?sticky_duration_ms=" + std::to_string(duration_ms),
-                                      alice_token, R"({"body":"hello"})");
+                                      m_alice_token, R"({"body":"hello"})");
         REQUIRE(response.status == 200U);
         return *string_member(parse_object(response.body), "event_id");
     }
@@ -197,8 +197,8 @@ public:
     [[nodiscard]] auto alice_sends_plain(std::string const& txn) -> std::string
     {
         auto const response =
-            request(runtime(), "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.test.sticky/" + txn, alice_token,
-                    R"({"body":"plain"})");
+            request(runtime(), "PUT", "/_matrix/client/v3/rooms/" + m_room_id + "/send/m.test.sticky/" + txn,
+                    m_alice_token, R"({"body":"plain"})");
         REQUIRE(response.status == 200U);
         return *string_member(parse_object(response.body), "event_id");
     }
@@ -209,19 +209,19 @@ public:
     {
         auto envelope = fed::InboundPduEnvelope{};
         envelope.event_id = event_id;
-        envelope.room_id = room_id;
+        envelope.room_id = m_room_id;
         envelope.sender = std::string{user_id};
         envelope.event_type = "m.room.member";
         envelope.state_key = std::string{user_id};
         envelope.depth = depth;
         envelope.origin = std::string{user_id.substr(user_id.find(':') + 1U)};
-        envelope.prev_event_ids = fixture_prev_event_ids(store(), room_id);
-        envelope.auth_event_ids = fixture_auth_event_ids(store(), room_id, user_id, true);
+        envelope.prev_event_ids = fixture_prev_event_ids(store(), m_room_id);
+        envelope.auth_event_ids = fixture_auth_event_ids(store(), m_room_id, user_id, true);
         if (membership == "leave")
         {
             for (auto const& entry : store().state)
             {
-                if (entry.room_id == room_id && entry.event_type == "m.room.join_rules")
+                if (entry.room_id == m_room_id && entry.event_type == "m.room.join_rules")
                 {
                     std::erase(envelope.auth_event_ids, entry.event_id);
                 }
@@ -230,7 +230,7 @@ public:
         envelope.json = "{\"auth_events\":" + quoted_list(envelope.auth_event_ids) + ",\"content\":{\"membership\":\"" +
                         std::string{membership} + "\"},\"depth\":" + std::to_string(depth) +
                         ",\"origin_server_ts\":1,\"prev_events\":" + quoted_list(envelope.prev_event_ids) +
-                        ",\"room_id\":\"" + room_id + "\",\"sender\":\"" + std::string{user_id} +
+                        ",\"room_id\":\"" + m_room_id + "\",\"sender\":\"" + std::string{user_id} +
                         "\",\"state_key\":\"" + std::string{user_id} + "\",\"type\":\"m.room.member\"}";
         return envelope;
     }
@@ -238,8 +238,9 @@ public:
     // The remote user joins through send_join, as the resident accepts it.
     auto join(std::string_view user_id, std::string const& event_id) -> void
     {
-        auto const result = homeserver().federation.membership_acceptor(
-            fed::FederationEndpoint::send_join, room_id, event_id, membership_envelope(user_id, "join", event_id, 10U));
+        auto const result =
+            homeserver().federation.membership_acceptor(fed::FederationEndpoint::send_join, m_room_id, event_id,
+                                                        membership_envelope(user_id, "join", event_id, 10U));
         REQUIRE(result.accepted);
     }
 
@@ -248,17 +249,17 @@ public:
     {
         auto envelope = fed::InboundPduEnvelope{};
         envelope.event_id = pdu.event_id;
-        envelope.room_id = room_id;
+        envelope.room_id = m_room_id;
         envelope.sender = pdu.sender;
         envelope.event_type = pdu.type;
         envelope.depth = depth;
         envelope.origin = pdu.sender.substr(pdu.sender.find(':') + 1U);
-        envelope.prev_event_ids = fixture_prev_event_ids(store(), room_id);
-        envelope.auth_event_ids = fixture_auth_event_ids(store(), room_id, pdu.sender, true);
+        envelope.prev_event_ids = fixture_prev_event_ids(store(), m_room_id);
+        envelope.auth_event_ids = fixture_auth_event_ids(store(), m_room_id, pdu.sender, true);
         // Spec, "Auth events selection": the join rules are named only by a join, invite or knock.
         for (auto const& entry : store().state)
         {
-            if (entry.room_id == room_id && entry.event_type == "m.room.join_rules")
+            if (entry.room_id == m_room_id && entry.event_type == "m.room.join_rules")
             {
                 std::erase(envelope.auth_event_ids, entry.event_id);
             }
@@ -274,7 +275,7 @@ public:
         }
         auto object = cj::Object{};
         object.push_back(cj::make_member("type", cj::Value{pdu.type}));
-        object.push_back(cj::make_member("room_id", cj::Value{room_id}));
+        object.push_back(cj::make_member("room_id", cj::Value{m_room_id}));
         object.push_back(cj::make_member("sender", cj::Value{pdu.sender}));
         object.push_back(cj::make_member("content", cj::Value{std::move(content)}));
         object.push_back(cj::make_member("origin_server_ts", cj::Value{pdu.origin_server_ts}));
@@ -358,10 +359,20 @@ public:
         return store().sticky_events.find(event_id, t0 - 10 * one_hour);
     }
 
-    std::string alice_token{};
-    std::string room_id{};
+    [[nodiscard]] auto alice_token() const noexcept -> std::string const&
+    {
+        return m_alice_token;
+    }
+
+    [[nodiscard]] auto room_id() const noexcept -> std::string const&
+    {
+        return m_room_id;
+    }
 
 private:
+    std::string m_alice_token{};
+    std::string m_room_id{};
+
     hs::ClientServerStartResult m_started;
 };
 
@@ -391,7 +402,7 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
                 auto const* row = fixture.row("$equal:c.example.org");
                 REQUIRE(row != nullptr);
                 REQUIRE(row->sender == carol);
-                REQUIRE(row->room_id == fixture.room_id);
+                REQUIRE(row->room_id == fixture.room_id());
                 REQUIRE(row->received_at_ms == t0);
                 REQUIRE(row->expires_at_ms == t0 + one_minute);
             }

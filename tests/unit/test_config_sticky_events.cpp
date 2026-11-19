@@ -175,8 +175,8 @@ SCENARIO("server.sticky_events.max_per_sender accepts 1 to 1000", "[config][stic
 
     GIVEN("values outside the range, or not an unsigned integer")
     {
-        auto const values = std::vector<std::string>{"0",  "1001", "1000000", "4294967296", "-1", "-60",
-                                                     "",   "abc",  "1.5",     "+60",        "1e2"};
+        auto const values =
+            std::vector<std::string>{"0", "1001", "1000000", "4294967296", "-1", "-60", "", "abc", "1.5", "+60", "1e2"};
 
         WHEN("each is parsed")
         {

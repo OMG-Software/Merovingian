@@ -5507,39 +5507,39 @@ namespace
         return federation::PduIngestionResult{federation::PduIngestionStatus::accepted, {}};
     }
 
-} // namespace
+    // MSC4354 (ADR-0854, ADR-0856): records a federated PDU as a sticky event once it is accepted and stored as a
+    // timeline event. The caller has judged the PDU `accepted` (never rejected, soft-failed or an outlier) and holds
+    // the room stripe and `runtime.mutex`. A state event is never sticky. The received time is this process's clock
+    // now, never a time the sender supplied; the stored copy is read back, so an event a redaction already reached (it
+    // arrived after its redaction) is judged in its redacted form and gets no row. The worker decides nothing here.
+    auto record_sticky_event_of_accepted_pdu(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+        -> void
+    {
+        if (!runtime.config.server().sticky_events.enabled || envelope.state_key.has_value())
+        {
+            return;
+        }
+        auto& store = runtime.database.persistent_store;
+        auto const stored = store.events.find(envelope.event_id);
+        if (stored == store.events.end() || stored->room_id != envelope.room_id || stored->status != "accepted")
+        {
+            return;
+        }
+        auto const now_ms = database::sticky_clock_now_ms(store);
+        if (!record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
+                                        database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
+                                                                  runtime.config.server().sticky_events.max_per_room},
+                                        now_ms))
+        {
+            log_diagnostic("sticky_event.record_failed",
+                           {
+                               {"room_id",  envelope.room_id,  false},
+                               {"event_id", envelope.event_id, false}
+            });
+        }
+    }
 
-// MSC4354 (ADR-0854, ADR-0856): records a federated PDU as a sticky event once it is accepted and stored as a timeline
-// event. The caller has judged the PDU `accepted` (never rejected, soft-failed or an outlier) and holds the room stripe
-// and `runtime.mutex`. A state event is never sticky. The received time is this process's clock now, never a time the
-// sender supplied; the stored copy is read back, so an event a redaction already reached (it arrived after its
-// redaction) is judged in its redacted form and gets no row. The worker decides nothing here.
-static auto record_sticky_event_of_accepted_pdu(HomeserverRuntime& runtime,
-                                                federation::InboundPduEnvelope const& envelope) -> void
-{
-    if (!runtime.config.server().sticky_events.enabled || envelope.state_key.has_value())
-    {
-        return;
-    }
-    auto& store = runtime.database.persistent_store;
-    auto const stored = store.events.find(envelope.event_id);
-    if (stored == store.events.end() || stored->room_id != envelope.room_id || stored->status != "accepted")
-    {
-        return;
-    }
-    auto const now_ms = database::sticky_clock_now_ms(store);
-    if (!record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
-                                    database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
-                                                              runtime.config.server().sticky_events.max_per_room},
-                                    now_ms))
-    {
-        log_diagnostic("sticky_event.record_failed",
-                       {
-                           {"room_id",  envelope.room_id,  false},
-                           {"event_id", envelope.event_id, false}
-        });
-    }
-}
+} // namespace
 
 // The body of ingest_pdu_event; the public function below adds what must happen
 // after this one has released its locks. File-local, but deliberately `static`

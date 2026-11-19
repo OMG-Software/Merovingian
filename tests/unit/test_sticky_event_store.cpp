@@ -81,7 +81,9 @@ auto record_all(db::PersistentStore& store, std::vector<PersistentStickyEvent> r
 {
     for (auto& row : rows)
     {
-        REQUIRE(db::record_sticky_event(store, std::move(row), caps, now_ms));
+        // Moved outside REQUIRE, whose expansion repeats its expression.
+        auto const recorded = db::record_sticky_event(store, std::move(row), caps, now_ms);
+        REQUIRE(recorded);
     }
 }
 
@@ -655,8 +657,9 @@ SCENARIO("Pruning deletes every expired sticky event and the orphaned sticky dur
             THEN("the rows expiring at or before 5000 are gone from memory and the file, the rest stay")
             {
                 REQUIRE(pruned);
-                REQUIRE(sqlite_first_text(path, "SELECT group_concat(event_id) FROM (SELECT event_id FROM sticky_events "
-                                                "ORDER BY event_id)") == "$file-long,$live");
+                REQUIRE(sqlite_first_text(path,
+                                          "SELECT group_concat(event_id) FROM (SELECT event_id FROM sticky_events "
+                                          "ORDER BY event_id)") == "$file-long,$live");
                 REQUIRE(store.sticky_events.size() == 1U);
                 REQUIRE(store.sticky_events.contains("$live"));
             }
@@ -689,7 +692,8 @@ SCENARIO("A delayed event keeps its sticky duration in a side row for as long as
         REQUIRE(db::store_delayed_event(store, delayed("d-fail", 90'000)));
         auto other = delayed("d-bob", 5000);
         other.user_id = bob;
-        REQUIRE(db::store_delayed_event(store, std::move(other)));
+        auto const stored_other = db::store_delayed_event(store, std::move(other));
+        REQUIRE(stored_other);
 
         WHEN("the rows are inspected")
         {
@@ -866,8 +870,7 @@ SCENARIO("The strict readers of a sticky row and a sticky duration accept digits
             {
                 REQUIRE(db::parse_sticky_duration_ms("1") == std::optional<std::int64_t>{1});
                 REQUIRE(db::parse_sticky_duration_ms("3600000") == std::optional<std::int64_t>{3'600'000});
-                REQUIRE(db::parse_sticky_duration_ms("9223372036854775807") ==
-                        std::optional<std::int64_t>{INT64_MAX});
+                REQUIRE(db::parse_sticky_duration_ms("9223372036854775807") == std::optional<std::int64_t>{INT64_MAX});
                 REQUIRE_FALSE(db::parse_sticky_duration_ms("").has_value());
                 REQUIRE_FALSE(db::parse_sticky_duration_ms("0").has_value());
                 REQUIRE_FALSE(db::parse_sticky_duration_ms("-1").has_value());

@@ -88,12 +88,13 @@ namespace
     {
         std::vector<std::pair<std::int64_t, std::string_view>> rows{};
         std::size_t taken{0U};
-
-        [[nodiscard]] auto held() const noexcept -> std::size_t
-        {
-            return rows.size() - taken;
-        }
     };
+
+    // The rows `share` still holds: those not yet taken.
+    [[nodiscard]] auto held(ServerShare const& share) noexcept -> std::size_t
+    {
+        return share.rows.size() - share.taken;
+    }
 
     // The server whose row the next room eviction takes (ADR-0857): the one holding the most rows; among those tied,
     // `newcomer` (the new row's server) when it is one of them, else the smallest server name (the map's order).
@@ -103,12 +104,12 @@ namespace
         auto* chosen = &shares.begin()->second;
         for (auto& [server, share] : shares)
         {
-            if (share.held() > chosen->held())
+            if (held(share) > held(*chosen))
             {
                 chosen = &share;
             }
         }
-        if (auto const own = shares.find(newcomer); own != shares.end() && own->second.held() == chosen->held())
+        if (auto const own = shares.find(newcomer); own != shares.end() && held(own->second) == held(*chosen))
         {
             chosen = &own->second;
         }

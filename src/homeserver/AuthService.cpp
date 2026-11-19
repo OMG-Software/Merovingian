@@ -1624,6 +1624,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 // here -- this function trusts that `user_id` is already verified and only
 // answers "should this account be allowed a new session, and if so, issue
 // one."
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
                             bool with_ttl, std::string_view display_name) -> OperationResult
 {
