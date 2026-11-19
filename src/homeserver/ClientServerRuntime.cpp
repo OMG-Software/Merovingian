@@ -8101,6 +8101,30 @@ namespace
         });
     }
 
+    // Whether any of a sliding-sync request's lists filters on `is_dm` or `is_favourite`, which the user's own
+    // `m.direct` and `m.tag` account data decide.
+    [[nodiscard]] auto lists_filter_on_account_data(std::map<std::string, sync::SlidingSyncList> const& lists) -> bool
+    {
+        return std::ranges::any_of(lists, [](auto const& entry) {
+            auto const& filters = entry.second.filters;
+            return filters.has_value() && (filters->is_dm.has_value() || filters->is_favourite.has_value());
+        });
+    }
+
+    // Whether the user's global `m.direct` or a room's `m.tag` has changed since `since_sync_stream_id`. Read through
+    // the per-user account-data index: the cost is the user's own rows (ADR-0440, ADR-0861).
+    [[nodiscard]] auto own_list_filter_data_moved(database::PersistentStore const& store, std::string_view user,
+                                                  std::uint64_t since_sync_stream_id) -> bool
+    {
+        auto moved = false;
+        database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& row) {
+            bool const decides_filter = (row.room_id.empty() && row.event_type == "m.direct") ||
+                                        (!row.room_id.empty() && row.event_type == "m.tag");
+            moved = moved || (decides_filter && row.stream_id > since_sync_stream_id);
+        });
+        return moved;
+    }
+
     using StickyIdsByRoom = std::unordered_map<std::string, std::unordered_set<std::string>>;
 
     // What the sticky_events extension adds to one sliding sync response (ADR-0855).
@@ -8581,8 +8605,13 @@ namespace
                 bool const has_reordering_receipt =
                     lists_sort_by_notification_count(ssreq.lists) &&
                     own_receipt_moved_in_any(store, joined_rooms, user, since_sync_stream_id);
+                // Likewise the user's own `m.tag` or `m.direct` can move a room into or out of a list filtered on
+                // `is_favourite` or `is_dm`, which leaves the saved windows above stale; the answer rebuilds them.
+                bool const has_refiltering_account_data = lists_filter_on_account_data(ssreq.lists) &&
+                                                          own_list_filter_data_moved(store, user, since_sync_stream_id);
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
-                    !has_relevant_typing && !has_relevant_sticky && !has_reordering_receipt)
+                    !has_relevant_typing && !has_relevant_sticky && !has_reordering_receipt &&
+                    !has_refiltering_account_data)
                 {
                     // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.

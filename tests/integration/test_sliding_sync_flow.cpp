@@ -3491,3 +3491,76 @@ SCENARIO("a sliding sync long-poll wakes when the user's own receipt reorders a 
         }
     }
 }
+
+namespace
+{
+
+// A sliding sync request whose list `favourites` holds the user's rooms tagged `m.favourite`, with `extension` enabled
+// over every list.
+[[nodiscard]] auto favourites_request(std::string_view conn_id, std::string_view extension) -> std::string
+{
+    return std::string{R"({"conn_id":")"} + std::string{conn_id} +
+           R"(","lists":{"favourites":{"ranges":[[0,9]],"filters":{"is_favourite":true},"required_state":[],)" +
+           R"("timeline_limit":0}},"extensions":{")" + std::string{extension} + R"(":{"enabled":true}}})";
+}
+
+} // namespace
+
+// A list filtered on `is_favourite` or `is_dm` holds the rooms the user's own `m.tag` and `m.direct` decide. A change
+// to either can bring a room into the window the poll saved, so it wakes the poll whatever the extensions ask for, and
+// the answer carries the typing and receipts of the room it brought in (ADR-0861).
+SCENARIO("a sliding sync long-poll wakes when the user's own tag moves a room into a filtered list",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice and bob in two rooms, and alice's list of favourites, which holds none of them")
+    {
+        auto const extension = std::string{GENERATE(R"(typing)", R"(receipts)")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        auto const poll_after = [&](std::string_view conn_id, bool alice_tags_first) {
+            auto const body = favourites_request(conn_id, extension);
+            auto const first = sliding_sync(rt, rooms.alice_token, body);
+            REQUIRE(first.response.status == 200U);
+            REQUIRE(rooms_object(first.response.body).empty());
+            if (alice_tags_first)
+            {
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            rt, {"PUT",
+                                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + rooms.first +
+                                     "/tags/m.favourite",
+                                 rooms.alice_token, "{}"})
+                            .response.status == 200U);
+            }
+            bob_acts_in(rt, rooms, extension, rooms.first, rooms.first_message);
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" +
+                                sliding_sync_pos(first.response.body);
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, rooms.alice_token, body},
+                                                                         /*can_wait=*/true);
+        };
+
+        WHEN("alice tags the first room a favourite, from another device, and bob acts in it")
+        {
+            auto const result = poll_after("tagged", true);
+            THEN("the poll is answered with the first room and bob's action in it")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                auto const synced = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(synced, rooms.first) != nullptr);
+                REQUIRE(extension_room_ids(result.response.body, extension) == std::vector<std::string>{rooms.first});
+            }
+        }
+
+        WHEN("bob acts in the first room, which alice has not tagged")
+        {
+            auto const result = poll_after("untagged", false);
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}

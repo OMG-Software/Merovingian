@@ -57,12 +57,17 @@ Chosen option: the second.
   receipt changes the room's unread count, so a room outside the window can move another into it. The old
   every-joined-room receipt check caught this only while the receipts extension was on; scoping it would have lost
   it, so it is its own check now, and the payloads stay scoped to the resulting windows.
+* In the same way, a connection with a list filtered on `is_favourite` or `is_dm` is woken by a change to the user's own
+  `m.tag` (any room) or global `m.direct` (`own_list_filter_data_moved`, through the per-user account-data index). That
+  change can bring a room into a window the poll saved, where a typing or receipt change would otherwise wait for the
+  timeout; the old every-joined-room checks woke for it only by chance, and only with the extension on.
 
 ### Positive Consequences
 
 * `{"lists": [...], "rooms": [...]}` means one scope for typing, receipts and sticky events.
 * A connection scoped to its subscriptions, or to a visible-rooms list, is not woken for typing in its other rooms.
 * A list sorted by notification count is re-ranked when the user reads a room, with or without the receipts extension.
+* A list filtered on favourites or DMs follows the user's tag and `m.direct` changes, with or without `account_data`.
 
 ### Negative Consequences
 
