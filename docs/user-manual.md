@@ -897,7 +897,7 @@ service, because the older clients that read it expect `lk-jwt-service`'s OpenID
 ##### Running LiveKit beside Merovingian
 
 The Linux packages (`.deb` and `.rpm`) set up a LiveKit SFU on the same host as the server, for the built-in token
-service (ADR-0859). They do not ship LiveKit itself: you install `livekit-server` from LiveKit, and the packages give
+service (ADR-0860). They do not ship LiveKit itself: you install `livekit-server` from LiveKit, and the packages give
 you the rest.
 
 - a `merovingian-livekit` system account, created on install, that the SFU runs as. It is never the `merovingian`

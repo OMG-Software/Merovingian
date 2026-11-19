@@ -1,4 +1,4 @@
-# LiveKit SFU beside the Merovingian homeserver (ADR-0859). Installed disabled:
+# LiveKit SFU beside the Merovingian homeserver (ADR-0860). Installed disabled:
 # install livekit-server, run merovingian-livekit-setup, copy
 # /etc/merovingian/livekit.yaml.example to /etc/merovingian/livekit.yaml, then
 # `systemctl enable --now merovingian-livekit`. A livekit-server elsewhere than

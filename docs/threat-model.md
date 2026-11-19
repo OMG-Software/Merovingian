@@ -3444,7 +3444,7 @@ depends on LiveKit's view of the call, so a LiveKit that keeps reporting a vanis
 alive; the relay, the inbound route, the delegation job and the webhook have been tested only against this server and
 a local stand-in for LiveKit, never another implementation or a real LiveKit.
 
-### A LiveKit SFU on the same host (1.1.3, ADR-0859)
+### A LiveKit SFU on the same host (1.1.3, ADR-0860)
 
 New surface: the Linux packages set up an operator-installed `livekit-server` beside the server. It is a third-party
 process on the same host that takes WebRTC media from anyone holding a token, and holds the same API secret as this

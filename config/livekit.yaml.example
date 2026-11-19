@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # LiveKit SFU configuration for running LiveKit beside Merovingian on one host
-# (ADR-0859). Copy it to /etc/merovingian/livekit.yaml; the merovingian-livekit
+# (ADR-0860). Copy it to /etc/merovingian/livekit.yaml; the merovingian-livekit
 # service reads it from there. Install livekit-server yourself (see the user
 # manual, "Running LiveKit beside Merovingian"); the packages do not ship it.
 #

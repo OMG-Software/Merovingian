@@ -911,7 +911,7 @@ worker where the server looks for it. Its decisions are covered by
 ### The LiveKit SFU beside the server
 
 The Linux packages install `packaging/systemd/merovingian-livekit.service`
-disabled, for an operator-installed `livekit-server` (ADR-0859). LiveKit is a
+disabled, for an operator-installed `livekit-server` (ADR-0860). LiveKit is a
 third-party Go binary that takes media from the internet, so it gets none of the
 server's in-process hardening. The isolation is the service manager's and the
 file system's:

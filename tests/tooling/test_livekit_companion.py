@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The LiveKit SFU the packages set up beside Merovingian (ADR-0859).
+"""The LiveKit SFU the packages set up beside Merovingian (ADR-0860).
 
 The service unit, the OpenRC script, the sample livekit.yaml, the key setup
 helper and the package scripts name the same account, paths and port, so a

@@ -3,7 +3,7 @@
 #
 # merovingian-livekit-setup: create the API key and secret that Merovingian's
 # built-in LiveKit token service and a LiveKit SFU on the same host share
-# (ADR-0859). It writes two files holding the same secret, each readable only
+# (ADR-0860). It writes two files holding the same secret, each readable only
 # by the account that uses it:
 #
 #   <config dir>/livekit-secret     the secret alone, for merovingian

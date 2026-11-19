@@ -1,7 +1,7 @@
 #!/sbin/openrc-run
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# LiveKit SFU beside the Merovingian homeserver (ADR-0859). Install
+# LiveKit SFU beside the Merovingian homeserver (ADR-0860). Install
 # livekit-server, run merovingian-livekit-setup and copy
 # /etc/merovingian/livekit.yaml.example to /etc/merovingian/livekit.yaml first.
 # Set livekit_command in /etc/conf.d/merovingian-livekit for a livekit-server

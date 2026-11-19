@@ -59,7 +59,7 @@ install -D -m 0644 packaging/systemd/merovingian.service \
 install -d -m 0755 %{buildroot}%{_sysconfdir}/merovingian
 install -m 0644 config/merovingian.conf.example \
     %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
-# LiveKit beside Merovingian (ADR-0859): unit installed disabled, key setup helper,
+# LiveKit beside Merovingian (ADR-0860): unit installed disabled, key setup helper,
 # sample LiveKit configuration. livekit-server itself is not shipped.
 install -D -m 0644 packaging/systemd/merovingian-livekit.service \
     %{buildroot}%{_unitdir}/merovingian-livekit.service
@@ -80,7 +80,7 @@ if ! getent passwd merovingian >/dev/null 2>&1; then
             -c "Merovingian homeserver" \
             merovingian
 fi
-# The LiveKit SFU's own account (ADR-0859): it never shares merovingian's.
+# The LiveKit SFU's own account (ADR-0860): it never shares merovingian's.
 if ! getent group merovingian-livekit >/dev/null 2>&1; then
     groupadd -r merovingian-livekit
 fi
@@ -93,7 +93,7 @@ fi
 
 %post
 # Not merovingian-livekit.service: %%systemd_post applies the host's preset policy, which
-# could enable it before the operator has run merovingian-livekit-setup (ADR-0859).
+# could enable it before the operator has run merovingian-livekit-setup (ADR-0860).
 %systemd_post merovingian.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian

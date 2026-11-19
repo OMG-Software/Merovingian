@@ -9,7 +9,7 @@ case "$1" in
                     --gecos "Merovingian homeserver" \
                     merovingian
         fi
-        # The LiveKit SFU's own account (ADR-0859): it never shares merovingian's.
+        # The LiveKit SFU's own account (ADR-0860): it never shares merovingian's.
         if ! getent passwd merovingian-livekit > /dev/null 2>&1; then
             adduser --system --group --no-create-home \
                     --home /nonexistent \
