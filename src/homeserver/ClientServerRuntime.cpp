@@ -6993,10 +6993,15 @@ namespace
         return database::sticky_clock_now_ms(runtime.database.persistent_store);
     }
 
+    // At most this many sticky events go in one room's `sticky` section of one classic /sync response, the newest by
+    // stream ordering (MSC4354 suggests 100). Classic /sync has no cursor for the older ones left out, so a client is
+    // never sent them: the newest are the ones it can act on (ADR-0857).
+    constexpr auto max_classic_sticky_events_per_room = std::size_t{100U};
+
     // The sticky events of a joined room that `rooms.join.{roomId}.sticky` carries (ADR-0855), oldest first: the room's
     // unexpired ones up to `upper_bound` from a sender the user does not ignore, those after `after` unless the room is
-    // sent in full (`after` empty), and none that this response's timeline carries. Uncapped: classic /sync has no cursor
-    // for what a cap would leave out.
+    // sent in full (`after` empty), and none that this response's timeline carries; of those, the newest
+    // `max_classic_sticky_events_per_room`.
     [[nodiscard]] auto classic_sticky_events(database::PersistentStore const& store, std::string_view room_id,
                                              std::int64_t now_ms, std::uint64_t upper_bound,
                                              std::optional<std::uint64_t> after,
@@ -7012,7 +7017,9 @@ namespace
         }
         auto const choice = sync::select_sticky_for_sync(candidates, upper_bound, after, ignored_senders, timeline_ids,
                                                          std::numeric_limits<std::size_t>::max());
-        for (auto const& event_id : choice.event_ids)
+        auto const chosen = choice.event_ids.size();
+        auto const skipped = chosen - std::min(chosen, max_classic_sticky_events_per_room);
+        for (auto const& event_id : choice.event_ids | std::views::drop(skipped))
         {
             auto const found = store.events.find_in_room(room_id, event_id);
             if (found != store.events.end())
@@ -15979,6 +15986,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_finalised_delayed_events_per_user = config.server().delayed_events.max_finalised_per_user;
     rt.limits.sticky_events_enabled = config.server().sticky_events.enabled;
     rt.limits.max_sticky_events_per_sender = config.server().sticky_events.max_per_sender;
+    rt.limits.max_sticky_events_per_room = config.server().sticky_events.max_per_room;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
@@ -21763,7 +21771,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (sticky.duration_ms.has_value())
                 {
                     rewritten.sticky = StickySendOptions{
-                        *sticky.duration_ms, static_cast<std::size_t>(rt.limits.max_sticky_events_per_sender)};
+                        *sticky.duration_ms,
+                        database::StickyEventCaps{rt.limits.max_sticky_events_per_sender,
+                                                  rt.limits.max_sticky_events_per_room}};
                 }
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",

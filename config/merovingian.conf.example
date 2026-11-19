@@ -159,6 +159,9 @@ server.http.ipv6_client_prefix_length=64
 # server.sticky_events.enabled=true
 # Unexpired sticky events one sender may hold across all rooms: 1..1000. The oldest expires first.
 # server.sticky_events.max_per_sender=60
+# Unexpired sticky events one room may hold, all senders together: 1..10000. One more expires the oldest of the
+# server holding the most in the room, so one server cannot push the others out.
+# server.sticky_events.max_per_room=1000
 
 # Listener exposure
 # Keep TLS disabled only on loopback binds behind a declared reverse proxy.

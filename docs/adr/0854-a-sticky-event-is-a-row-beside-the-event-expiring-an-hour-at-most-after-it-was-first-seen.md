@@ -69,3 +69,4 @@ sticky sends and stops serving the `/sync` sections and the extension; it does n
 
 * Related: [ADR-0853](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)
 * Related: [ADR-0824](0824-a-delayed-event-is-a-stored-row-kept-after-it-is-finalised-bounded-per-user-and-deleted-with-the-account.md)
+* Refined by [ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)

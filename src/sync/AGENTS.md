@@ -417,7 +417,8 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   response's position from unignored senders; an initial sync, `full_state` or a room joined after `since` gets all of
   them, otherwise those after `since`. An event in this response's `timeline.events` is left out, and the timeline
   filter is applied first; the `state` and `timeline` filters do not touch the section. No history-visibility check,
-  no cap (classic `/sync` has no cursor for what a cap would leave), joined rooms only. A room with only a sticky
+  at most the newest `max_classic_sticky_events_per_room` (100) by stream ordering, the older ones never sent later
+  (classic `/sync` has no cursor for them; ADR-0857), joined rooms only. A room with only a sticky
   event is not suppressed as empty, and a sticky sender is a lazy-loaded sender. `StreamToken` has no sticky
   component: do not add one.
 - **Sliding sync** (`sticky_events` or `org.matrix.msc4354.sticky_events`; both names in one request are one request

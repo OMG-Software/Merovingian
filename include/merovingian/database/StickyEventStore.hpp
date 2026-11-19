@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentStickyEvent.hpp"
+#include "merovingian/database/StickyEventCaps.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -20,12 +21,14 @@ struct PersistentStore;
 
 // Records `row` as a sticky event of its sender. In one transaction the row is inserted and the sender's oldest
 // unexpired rows (earliest `expires_at_ms`, ties by event ID) are deleted so that afterwards the sender holds at most
-// `max_per_sender` unexpired rows. The new row takes part in that ordering: when it is itself the oldest it is not
-// stored and the sender's other rows are kept. True when the row is recorded, and also when nothing is to be written:
-// a row with the same event ID is already held (a no-op), or `row.expires_at_ms <= now_ms` (an expired event is not
-// sticky, ADR-0854). False, writing nothing, when the row is not storable (`sticky_event_is_storable`),
-// `max_per_sender` is 0, or the commit fails, with memory unchanged.
-[[nodiscard]] auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, std::size_t max_per_sender,
+// `caps.max_per_sender` unexpired rows; then, while the room would hold more than `caps.max_per_room`, the oldest row
+// of the server holding the most rows in the room is deleted (the new row's server when it is tied for most, else the
+// smallest server name; ADR-0857). The new row takes part in both orderings: when it is itself the one chosen it is
+// not stored and the other rows are kept. True when the row is recorded, and also when nothing is to be written:
+// `row.expires_at_ms <= now_ms` (an expired event is not sticky, ADR-0854; judged first) or a row with the same event
+// ID is already held (a no-op). False, writing nothing, when the row is not storable (`sticky_event_is_storable`), a
+// cap is 0, or the commit fails, with memory unchanged.
+[[nodiscard]] auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, StickyEventCaps caps,
                                        std::int64_t now_ms) -> bool;
 
 // Deletes the row of `event_id` (the event was redacted). True when the row is gone, also when there was none; false

@@ -29,8 +29,10 @@ sticky event the filter removed from the timeline is in the section. The `state`
 to the section. Events are ordered oldest first. History visibility is not applied, as MSC4354 says, and there is no
 section for invited, knocked or left rooms.
 
-The section has no per-response cap. A cap needs a cursor that classic `/sync` does not have: events left over would
-be skipped by `next_batch`. The size is bounded instead by the one-hour lifetime and the per-sender cap.
+The section has no cursor: classic `/sync` has none, so events left out would be skipped by `next_batch`. It carries the
+newest 100 a response chooses
+([ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)), and the room cap
+bounds what a room holds.
 
 A room whose only news is sticky events is not suppressed as empty. With `lazy_load_members`, a sticky event's sender
 gets their membership event as a timeline sender does. A new sticky event wakes a long poll as any new event does; an
@@ -54,8 +56,8 @@ So:
 
 ## Consequences
 
-* Classic `/sync` can return more than the 100 events MSC4354 suggests as a cap for a busy room. That is allowed: the
-  cap is a MAY.
+* Classic `/sync` carries at most the newest 100 sticky events of a room, the cap MSC4354 suggests (ADR-0857); a client
+  that needs more uses sliding sync.
 * The unstable and stable `/sync` keys carry the same array
   ([ADR-0853](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)).
 
@@ -63,3 +65,4 @@ So:
 
 * Related: [ADR-0853](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)
 * Related: [ADR-0854](0854-a-sticky-event-is-a-row-beside-the-event-expiring-an-hour-at-most-after-it-was-first-seen.md)
+* Amended by [ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)

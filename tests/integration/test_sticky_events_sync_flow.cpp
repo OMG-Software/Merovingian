@@ -138,7 +138,7 @@ public:
     {
         auto const event_id = plain_message(text);
         auto& store = runtime().homeserver.database.persistent_store;
-        REQUIRE(db::record_sticky_event(store, {event_id, room_id, std::string{alice}, t0, expires_at_ms}, 60U, t0));
+        REQUIRE(db::record_sticky_event(store, {event_id, room_id, std::string{alice}, t0, expires_at_ms}, {200U}, t0));
         return event_id;
     }
 
@@ -261,6 +261,32 @@ SCENARIO("a joined room's sticky section holds the sticky events its timeline do
                                             fixture.room_id) != nullptr);
                 REQUIRE(sticky_of(fixture, body).empty());
                 REQUIRE(sticky_of(fixture, body, "msc4354_sticky").empty());
+            }
+        }
+    }
+}
+
+SCENARIO("a room's sticky section holds at most its newest 100 sticky events", "[sticky-events][integration]")
+{
+    GIVEN("alice's room with 101 sticky messages and bob joined before them")
+    {
+        auto fixture = Fixture{};
+        fixture.bob_joins();
+        auto sent = std::vector<std::string>{};
+        for (auto index = 0; index < 101; ++index)
+        {
+            sent.push_back(fixture.sticky_message("cap-" + std::to_string(index)));
+        }
+
+        WHEN("bob's initial sync has no timeline")
+        {
+            auto const body = fixture.filtered_sync(fixture.bob_token, no_timeline_filter);
+
+            THEN("the section holds the newest 100, oldest first, under both names, and the first message is left out")
+            {
+                auto const newest = std::vector<std::string>{std::next(sent.begin()), sent.end()};
+                REQUIRE(sticky_of(fixture, body) == newest);
+                REQUIRE(sticky_of(fixture, body, "msc4354_sticky") == newest);
             }
         }
     }

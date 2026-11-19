@@ -23,7 +23,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `LiveKitDelegationStore.cpp` | `store_livekit_delegation` (one transaction replaces the row of the same key and of the same delay ID), `delete_livekit_delegation`, `delete_livekit_delegations_of_user` (always runs the DELETE, so a row hydration skipped goes too) |
 | `LiveKitDelegationRowText.cpp` | `parse_livekit_delegation_row`, the strict reading of a stored row both loaders use; a bad row is skipped and counted (`livekit_delegation_rows_skipped_at_load`), never repaired |
 | `StickyEventTable.cpp` | `StickyEventTable`, the in-memory copy of `sticky_events` (migration 005, ADR-0854): by event ID, by room and by sender (each ordered by expiry, then event ID) and by expiry; every reader takes `now_ms` and never returns an expired row; `rows_examined`; the cap `max_sticky_event_field_bytes` 255 and `sticky_event_is_storable` |
-| `StickyEventStore.cpp` | `record_sticky_event` (one transaction inserts the row and expires the sender's oldest unexpired rows past `max_per_sender`), `delete_sticky_event`, `delete_sticky_events_of_user` (always runs the DELETE) and `prune_expired_sticky_events` (also deletes orphaned `delayed_event_sticky_durations` rows) |
+| `StickyEventStore.cpp` | `record_sticky_event` (one transaction inserts the row and expires the sender's oldest unexpired rows past `max_per_sender`, then the room's fair-share victims past `max_per_room`, ADR-0857), `delete_sticky_event`, `delete_sticky_events_of_user` (always runs the DELETE) and `prune_expired_sticky_events` (also deletes orphaned `delayed_event_sticky_durations` rows) |
 | `StickyEventView.cpp` | `attach_sticky_remaining` (adds `sticky_duration_remaining_ms` and `msc4354_sticky_duration_ttl_ms` to an unexpired sticky event's `unsigned`, called by `client_event_with_id`) and `sticky_clock_now_ms` (the clock the sticky readers judge against; `PersistentStore::test_sticky_clock_ms` overrides it in tests) |
 | `StickyEventRowText.cpp` | `parse_sticky_event_row` and `parse_sticky_duration_ms`, the strict readings both loaders use; a bad row is skipped and counted (`sticky_event_rows_skipped_at_load`), never repaired |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
@@ -249,20 +249,22 @@ only after `commit_persistent_transaction` returns true. The federation worker's
 
 `PersistentStore::sticky_events` is a `StickyEventTable`: write it only through `StickyEventStore.hpp` (hydration uses
 `insert`). It owns the rows and keeps every index right, so never loop it: ask by `find`, `unexpired_of_room`,
-`unexpired_count_of_sender` and `oldest_unexpired_of_sender`, each of which takes the clock and never returns an
-expired row; tests prove cost with `rows_examined`. The store functions change memory only after
-`commit_persistent_transaction` returns true. `record_sticky_event` inserts and expires the sender's oldest unexpired
-rows in ONE transaction (the new row takes part in the ordering, so a row that is itself the oldest is not stored); an
-event ID already held or an expiry at or before `now_ms` is a successful no-op. **Every path that deactivates an
-account calls `delete_sticky_events_of_user`** beside `delete_delayed_events_of_user`, and a redaction calls
+`unexpired_count_of_sender` and `oldest_unexpired_of_sender`, each of which takes the clock and never returns an expired
+row; tests prove cost with `rows_examined`. The store functions change memory only after `commit_persistent_transaction`
+returns true. `record_sticky_event` inserts and expires the sender's oldest unexpired rows and then, while the room is
+over `max_per_room`, the oldest row of the server holding the most rows in the room, in ONE transaction (the new row
+takes part in both orderings, so a row that is itself chosen is not stored; ADR-0857). Never evict the room's globally
+oldest row instead: a flooding server would push out every other server's call memberships. An expiry at or before
+`now_ms` (judged first) or an event ID already held is a successful no-op. **Every path that deactivates an account
+calls `delete_sticky_events_of_user`** beside `delete_delayed_events_of_user`, and a redaction calls
 `delete_sticky_event`. The prune compares the TEXT expiry as decimal text (length, then lexically), never with a cast,
 which would make PostgreSQL fail the whole statement on one bad row. `delayed_event_sticky_durations` holds a scheduled
-delayed event's sticky duration (`PersistentDelayedEvent::sticky_duration_ms`); **every path that finalises, deletes
-or prunes a delayed event deletes the side row in the same transaction** (`cancel_delayed_event`,
+delayed event's sticky duration (`PersistentDelayedEvent::sticky_duration_ms`); **every path that finalises, deletes or
+prunes a delayed event deletes the side row in the same transaction** (`cancel_delayed_event`,
 `record_delayed_event_outcome`, `delete_delayed_events_of_user`; an eviction or age prune deletes finalised rows, which
-have none), and the prune job also deletes side rows of missing or finalised rows. Hydration loads neither table for
-the worker profile, does not load an expired row (not counted), and counts every row it cannot read exactly, and a
-malformed duration, in `PersistentStore::sticky_event_rows_skipped_at_load`, logged once by `main.cpp` as
+have none), and the prune job also deletes side rows of missing or finalised rows. Hydration loads neither table for the
+worker profile, does not load an expired row (not counted), and counts every row it cannot read exactly, and a malformed
+duration, in `PersistentStore::sticky_event_rows_skipped_at_load`, logged once by `main.cpp` as
 `sticky_events.rows_skipped_at_load`. The federation worker never reads either table.
 
 ## Delayed events (migration 003, ADR-0824)

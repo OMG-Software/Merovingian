@@ -150,10 +150,12 @@ value. Test fixtures that do not exercise persistence select it through
     duration is one or more decimal digits, at least 1, fitting 63 bits. A row outside them is refused, never
     truncated.
   - Writes (`StickyEventStore.hpp`, bound parameters only, memory changed only after the commit returns true):
-    `record_sticky_event(store, row, max_per_sender, now_ms)` inserts the row and deletes the sender's oldest unexpired
-    rows (earliest `expires_at_ms`, ties by event ID) in one transaction so the sender holds at most `max_per_sender`
-    unexpired rows afterwards; the new row takes part in the ordering, so a row that is itself the oldest is not
-    stored; a row with an event ID already held, or one expiring at or before `now_ms`, writes nothing and succeeds.
+    `record_sticky_event(store, row, caps, now_ms)` inserts the row and deletes the sender's oldest unexpired rows
+    (earliest `expires_at_ms`, ties by event ID) in one transaction so the sender holds at most `caps.max_per_sender`
+    unexpired rows afterwards; then, while the room would hold more than `caps.max_per_room`, the oldest row of the
+    server holding the most rows in the room (the new row's server when tied for most, else the smallest name;
+    ADR-0857). The new row takes part in both orderings, so a row that is itself chosen is not stored; a row expiring
+    at or before `now_ms` (judged first), or with an event ID already held, writes nothing and succeeds.
     `delete_sticky_event` (a redaction), `delete_sticky_events_of_user` (account deactivation, beside
     `delete_delayed_events_of_user`; always runs the `DELETE` so a row hydration skipped goes too) and
     `prune_expired_sticky_events(store, now_ms)`, which deletes every row expiring at or before `now_ms`, in memory or

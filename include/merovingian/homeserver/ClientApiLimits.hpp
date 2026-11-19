@@ -96,6 +96,7 @@ struct ClientApiLimits final
     bool sticky_events_enabled{true};
     // The unexpired sticky events one sender may hold; recording one more expires the sender's oldest.
     std::uint32_t max_sticky_events_per_sender{60U};
+    std::uint32_t max_sticky_events_per_room{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

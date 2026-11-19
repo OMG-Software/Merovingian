@@ -39,6 +39,8 @@ inline constexpr std::uint32_t max_delayed_events_per_user = 1'000U;
 
 // server.sticky_events.max_per_sender range (ADR-0854).
 inline constexpr std::uint32_t max_sticky_events_per_sender = 1'000U;
+// server.sticky_events.max_per_room range (ADR-0857).
+inline constexpr std::uint32_t max_sticky_events_per_room = 10'000U;
 
 // server.rtc.livekit.token_lifetime range (ADR-0829).
 inline constexpr std::uint32_t min_livekit_token_lifetime_seconds = 60U;

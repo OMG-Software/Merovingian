@@ -154,10 +154,11 @@ public:
         return parse_object(found->json);
     }
 
-    // GET .../event/{eventId} as alice, parsed.
-    [[nodiscard]] auto served(std::string const& event_id) -> cj::Object
+    // GET .../event/{eventId} as alice, or as the holder of `token` when given, parsed.
+    [[nodiscard]] auto served(std::string const& event_id, std::string const& token = {}) -> cj::Object
     {
-        auto const response = request(runtime(), "GET", room_path() + "/event/" + event_id, alice_token);
+        auto const response =
+            request(runtime(), "GET", room_path() + "/event/" + event_id, token.empty() ? alice_token : token);
         REQUIRE(response.status == 200U);
         return parse_object(response.body);
     }
@@ -524,6 +525,37 @@ SCENARIO("Redacting a sticky event removes its row and its fields", "[sticky-eve
     }
 }
 
+SCENARIO("Deactivating an account removes its sticky events and no one else's",
+         "[sticky-events][integration][deactivate]")
+{
+    GIVEN("a sticky event of alice and one of bob")
+    {
+        auto fixture = Fixture{};
+        auto const alices = event_id_of(fixture.put_send("t1", "sticky_duration_ms=1800000"));
+        auto const bobs = event_id_of(request(fixture.runtime(), "PUT",
+                                              fixture.room_path() + "/send/m.test.sticky/b1?sticky_duration_ms=1800000",
+                                              fixture.bob_token, R"({"body":"hello"})"));
+        REQUIRE(fixture.store().sticky_events.size() == 2U);
+
+        WHEN("alice deactivates her account")
+        {
+            auto const deactivated =
+                request(fixture.runtime(), "POST", "/_matrix/client/v3/account/deactivate", fixture.alice_token,
+                        R"({"auth":{"type":"m.login.password","password":")" + std::string{password} + R"("}})");
+
+            THEN("her row is gone, bob's stays, and her event is no longer served as sticky")
+            {
+                REQUIRE(deactivated.status == 200U);
+                REQUIRE(fixture.store().sticky_events.find(alices, t0) == nullptr);
+                REQUIRE(fixture.store().sticky_events.find(bobs, t0) != nullptr);
+                REQUIRE(fixture.store().sticky_events.size() == 1U);
+                REQUIRE_FALSE(remaining_of(fixture.served(alices, fixture.bob_token)).stable.has_value());
+                REQUIRE(remaining_of(fixture.served(bobs, fixture.bob_token)).stable.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("A sender holds at most the configured number of unexpired sticky events, the oldest giving way",
          "[sticky-events][integration][cap]")
 {
@@ -547,6 +579,36 @@ SCENARIO("A sender holds at most the configured number of unexpired sticky event
                 REQUIRE(fixture.store().sticky_events.find(third, now) != nullptr);
                 REQUIRE_FALSE(remaining_of(fixture.served(first)).stable.has_value());
                 REQUIRE(remaining_of(fixture.served(third)).stable.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A room holds at most the configured number of unexpired sticky events, the oldest giving way",
+         "[sticky-events][integration][cap]")
+{
+    GIVEN("a server that allows two sticky events per room, and two of alice's in the room")
+    {
+        auto fixture = Fixture{};
+        fixture.runtime().limits.max_sticky_events_per_room = 2U;
+        auto const first = event_id_of(fixture.put_send("t1", "sticky_duration_ms=1800000"));
+        fixture.set_time(t0 + 1'000);
+        auto const second = event_id_of(fixture.put_send("t2", "sticky_duration_ms=1800000"));
+
+        WHEN("bob, of the same server, sends one")
+        {
+            fixture.set_time(t0 + 2'000);
+            auto const bobs = event_id_of(request(fixture.runtime(), "PUT",
+                                                  fixture.room_path() +
+                                                      "/send/m.test.sticky/b1?sticky_duration_ms=1800000",
+                                                  fixture.bob_token, R"({"body":"hello"})"));
+            THEN("the send succeeded, the room's oldest stopped being sticky and the other two are")
+            {
+                auto const now = t0 + 2'000;
+                REQUIRE(fixture.store().sticky_events.find(first, now) == nullptr);
+                REQUIRE(fixture.store().sticky_events.find(second, now) != nullptr);
+                REQUIRE(fixture.store().sticky_events.find(bobs, now) != nullptr);
+                REQUIRE(fixture.store().sticky_events.unexpired_of_room(fixture.room_id, now).size() == 2U);
             }
         }
     }

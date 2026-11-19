@@ -21,14 +21,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
   and a check that the shards together run every scenario once (ADR-0845).
 * CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
-* Sticky events (MSC4354): `PUT /send` and the delayed-event routes take `org.matrix.msc4354.sticky_duration_ms` (or
-  `sticky_duration_ms`), and the event is kept sticky for up to an hour; `/versions` lists `org.matrix.msc4354` (ADR-0853).
-* `/sync` carries a joined room's sticky events in `sticky` and `msc4354_sticky`, and sliding sync in the `sticky_events`
-  extension (MSC4480), each once per connection, with `unsigned.sticky_duration_remaining_ms` (ADR-0855).
+* Sticky events (MSC4354): `PUT /send` and delayed events take `org.matrix.msc4354.sticky_duration_ms` (or
+  `sticky_duration_ms`), sticky for up to an hour; `/versions` lists `org.matrix.msc4354` (ADR-0853).
+* `/sync` serves a room's newest 100 sticky events in `sticky` and `msc4354_sticky`, sliding sync in the
+  `sticky_events` extension (MSC4480), each once per connection (ADR-0855, ADR-0857).
 * A server that joins a room is sent this server's unexpired sticky events in it, and accepted sticky events from other
   servers are served like local ones (ADR-0856).
-* `server.sticky_events.enabled` (default on) and `server.sticky_events.max_per_sender` (default 60) configure them;
-  migration 005 adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854).
+* `server.sticky_events.enabled` (on), `max_per_sender` (60) and `max_per_room` (1000) configure them; migration 005
+  adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854, ADR-0857).
 
 ## Security Fixes
 
@@ -43,6 +43,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   server nor an application service's `?ts=` can extend it (ADR-0854).
 * A sender, local or remote, keeps at most `max_per_sender` unexpired sticky events; one more expires their oldest, so
   one user cannot grow the table or every room's sync without bound (ADR-0854).
+* A room keeps at most `max_per_room` unexpired sticky events; one more expires the oldest of the server holding the
+  most, so a server flooding a room displaces only its own, never another server's call memberships (ADR-0857).
 * A client's sticky duration above 2^53-1 is refused, so a composed event stays canonical JSON (ADR-0853).
 
 ## Bug fixes

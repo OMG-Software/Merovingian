@@ -5529,7 +5529,8 @@ static auto record_sticky_event_of_accepted_pdu(HomeserverRuntime& runtime,
     }
     auto const now_ms = database::sticky_clock_now_ms(store);
     if (!record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
-                                    static_cast<std::size_t>(runtime.config.server().sticky_events.max_per_sender),
+                                    database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
+                                                              runtime.config.server().sticky_events.max_per_room},
                                     now_ms))
     {
         log_diagnostic("sticky_event.record_failed",

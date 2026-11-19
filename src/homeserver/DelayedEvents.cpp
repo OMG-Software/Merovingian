@@ -278,7 +278,8 @@ namespace
         if (row.sticky_duration_ms.has_value() && !row.is_state)
         {
             sticky = StickySendOptions{*row.sticky_duration_ms,
-                                       static_cast<std::size_t>(runtime.limits.max_sticky_events_per_sender)};
+                                       database::StickyEventCaps{runtime.limits.max_sticky_events_per_sender,
+                                                                 runtime.limits.max_sticky_events_per_room}};
         }
         return send_event_as_resolved_user(runtime.homeserver, row.user_id, row.room_id, *body, row.via_appservice,
                                            sticky);

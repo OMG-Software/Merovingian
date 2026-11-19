@@ -154,7 +154,7 @@ flowchart TB
     federation --> crypto & canonicaljson & events & rooms & config
     auth --> crypto & canonicaljson
     oauth --> auth & crypto & canonicaljson & core
-    database --> canonicaljson
+    database --> canonicaljson & auth
     sync --> canonicaljson
     services --> observability
     homeserver --> config

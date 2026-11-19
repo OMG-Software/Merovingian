@@ -637,6 +637,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.sticky_events.max_per_sender");
     }
+    if (current.server().sticky_events.max_per_room != next.server().sticky_events.max_per_room)
+    {
+        add_change(plan, "server.sticky_events.max_per_room");
+    }
 
     // The OAuth 2.0 API: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
     if (current.server().oauth.enabled != next.server().oauth.enabled)

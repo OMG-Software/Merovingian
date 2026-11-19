@@ -35,7 +35,8 @@ namespace
 } // namespace
 
 auto record_sticky_event_of_pdu(database::PersistentStore& store, std::string_view pdu_json, std::string_view event_id,
-                                std::int64_t received_at_ms, std::size_t max_per_sender, std::int64_t now_ms) -> bool
+                                std::int64_t received_at_ms, database::StickyEventCaps caps, std::int64_t now_ms)
+    -> bool
 {
     auto const parsed = canonicaljson::parse_lossless(pdu_json);
     if (parsed.error != canonicaljson::ParseError::none)
@@ -72,7 +73,7 @@ auto record_sticky_event_of_pdu(database::PersistentStore& store, std::string_vi
     row.sender = *sender_text;
     row.received_at_ms = received_at_ms;
     row.expires_at_ms = events::sticky_expiry_ms(*origin_ts, received_at_ms, *duration);
-    return database::record_sticky_event(store, std::move(row), max_per_sender, now_ms);
+    return database::record_sticky_event(store, std::move(row), caps, now_ms);
 }
 
 } // namespace merovingian::homeserver

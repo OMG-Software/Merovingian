@@ -9803,7 +9803,7 @@ namespace
         {
             auto const received_ms = event_clock_now_ms(runtime);
             if (!record_sticky_event_of_pdu(runtime.database.persistent_store, composed->json, composed->event_id,
-                                            received_ms, sticky->max_per_sender, received_ms))
+                                            received_ms, sticky->caps, received_ms))
             {
                 log_diagnostic("sticky_event.record_failed", {
                                                                  {"room_id",  std::string{room_id}, false},

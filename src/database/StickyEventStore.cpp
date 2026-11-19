@@ -3,6 +3,7 @@
 
 #include "merovingian/database/StickyEventStore.hpp"
 
+#include "merovingian/auth/Identity.hpp"
 #include "merovingian/database/BoundValue.hpp"
 #include "merovingian/database/DelayedEventStatus.hpp"
 #include "merovingian/database/DelayedEventStatusText.hpp"
@@ -11,7 +12,9 @@
 #include "merovingian/database/StickyEventTable.hpp"
 
 #include <algorithm>
+#include <map>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -79,20 +82,108 @@ namespace
         return doomed;
     }
 
+    // One server's rows of a room in the fair-share eviction below: its rows by (expiry, event ID), oldest first, and
+    // how many of them have been taken.
+    struct ServerShare final
+    {
+        std::vector<std::pair<std::int64_t, std::string_view>> rows{};
+        std::size_t taken{0U};
+
+        [[nodiscard]] auto held() const noexcept -> std::size_t
+        {
+            return rows.size() - taken;
+        }
+    };
+
+    // The server whose row the next room eviction takes (ADR-0857): the one holding the most rows; among those tied,
+    // `newcomer` (the new row's server) when it is one of them, else the smallest server name (the map's order).
+    [[nodiscard]] auto largest_share(std::map<std::string_view, ServerShare>& shares, std::string_view newcomer)
+        -> ServerShare&
+    {
+        auto* chosen = &shares.begin()->second;
+        for (auto& [server, share] : shares)
+        {
+            if (share.held() > chosen->held())
+            {
+                chosen = &share;
+            }
+        }
+        if (auto const own = shares.find(newcomer); own != shares.end() && own->second.held() == chosen->held())
+        {
+            chosen = &own->second;
+        }
+        return *chosen;
+    }
+
+    // The event IDs to delete so that, once `row` is recorded and `doomed` deleted, its room holds at most
+    // `max_per_room` unexpired rows (ADR-0857). Each eviction takes the oldest row, by (expiry, event ID), of the
+    // server holding the most rows in the room, the new row included, so a server that floods a room expires only its
+    // own rows and every other server keeps a fair share. The new row may be the one taken. The walk is over the
+    // room's unexpired rows, at most `max_per_room` of them once the cap holds.
+    [[nodiscard]] auto room_victims_for(StickyEventTable const& table, PersistentStickyEvent const& row,
+                                        std::vector<std::string> const& doomed, std::size_t max_per_room,
+                                        std::int64_t now_ms) -> std::vector<std::string>
+    {
+        if (std::ranges::find(doomed, row.event_id) != doomed.end())
+        {
+            return {};
+        }
+        auto shares = std::map<std::string_view, ServerShare>{};
+        auto total = std::size_t{1U};
+        for (auto const* const existing : table.unexpired_of_room(row.room_id, now_ms))
+        {
+            if (std::ranges::find(doomed, existing->event_id) == doomed.end())
+            {
+                shares[auth::user_id_server_name(existing->sender)].rows.emplace_back(existing->expires_at_ms,
+                                                                                      existing->event_id);
+                ++total;
+            }
+        }
+        if (total <= max_per_room)
+        {
+            return {};
+        }
+        auto const newcomer = auth::user_id_server_name(row.sender);
+        shares[newcomer].rows.emplace_back(row.expires_at_ms, row.event_id);
+        for (auto& [server, share] : shares)
+        {
+            std::ranges::sort(share.rows);
+        }
+        auto victims = std::vector<std::string>{};
+        while (total > max_per_room)
+        {
+            auto& share = largest_share(shares, newcomer);
+            victims.emplace_back(share.rows[share.taken].second);
+            ++share.taken;
+            --total;
+        }
+        return victims;
+    }
+
 } // namespace
 
-auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, std::size_t max_per_sender,
-                         std::int64_t now_ms) -> bool
+auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, StickyEventCaps caps, std::int64_t now_ms)
+    -> bool
 {
-    if (!sticky_event_is_storable(row) || max_per_sender == 0U)
-    {
-        return false;
-    }
-    if (row.expires_at_ms <= now_ms || store.sticky_events.contains(row.event_id))
+    // An event already expired when it arrives (a negative or past `origin_server_ts` included) is not sticky: nothing
+    // to write, and not a failure (ADR-0854).
+    if (row.expires_at_ms <= now_ms)
     {
         return true;
     }
-    auto const doomed = victims_for(store.sticky_events, row, max_per_sender, now_ms);
+    if (!sticky_event_is_storable(row) || caps.max_per_sender == 0U || caps.max_per_room == 0U)
+    {
+        return false;
+    }
+    if (store.sticky_events.contains(row.event_id))
+    {
+        return true;
+    }
+    auto doomed = victims_for(store.sticky_events, row, caps.max_per_sender, now_ms);
+    for (auto& event_id : room_victims_for(store.sticky_events, row, doomed, caps.max_per_room, now_ms))
+    {
+        doomed.push_back(std::move(event_id));
+    }
     auto const keeps_row = std::ranges::find(doomed, row.event_id) == doomed.end();
     auto existing_victims = std::vector<std::string>{};
     for (auto const& event_id : doomed)

@@ -1066,6 +1066,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
             }
         }
+        else if (key == "server.sticky_events.max_per_room")
+        {
+            if (!parse_u32_value(value, server.sticky_events.max_per_room))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
+            }
+        }
         else if (key == "server.turn.username")
         {
             server.turn.username = std::string{value};

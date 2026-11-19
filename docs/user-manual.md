@@ -923,12 +923,13 @@ start-up; anything outside the range, or not a boolean or unsigned integer, refu
 
 Sticky events (MSC4354) are message events that a server keeps delivering to clients, and to other servers, until
 they expire, for at most one hour. Element Call's `matrix_2_0` mode needs them for call membership; its default
-`compatibility` mode does not. Both keys require a restart and are checked at start-up (ADR-0854).
+`compatibility` mode does not. All three keys require a restart and are checked at start-up (ADR-0854).
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
 | `server.sticky_events.enabled` | `true` | `true` or `false` | `false` refuses a sticky send with 403 and stops serving the sticky sections; events already stored are unchanged. |
 | `server.sticky_events.max_per_sender` | `60` | `1` to `1000` | Unexpired sticky events one sender may hold across all rooms. Recording one more expires the sender's oldest. |
+| `server.sticky_events.max_per_room` | `1000` | `1` to `10000` | Unexpired sticky events one room may hold, all senders together. Recording one more expires the oldest event of the server whose users hold the most in the room, so a server that floods a room displaces only its own (ADR-0857). Classic `/sync` sends at most the newest 100 of a room's. |
 
 ##### Delayed events and call membership
 
