@@ -2438,6 +2438,20 @@ the verdict is made once, so a redaction that applied stays applied if the sende
 it: events are not un-redacted), and redacting a redaction event in room versions before 11 strips its `redacts`, so
 the target no longer shows `unsigned.redacted_because` after the next restart.
 
+### A remote server sending many sticky events (MSC4354, ADR-0854, ADR-0856)
+
+Threat: a remote server fills the `sticky_events` table, and the push to every server that joins, with sticky events, or
+sets a far-future `origin_server_ts` so its events stay sticky for longer than intended. Mitigation: sticky detection
+runs in the main process only, after an event is accepted and stored as a timeline event (a rejected, soft-failed,
+outlier or backfilled event, and any state event, gets no row), so the federation worker cannot make an event sticky.
+The expiry is `min(received, origin_server_ts) + min(duration, one hour)` and the received time is this server's clock
+at acceptance, so a timestamp in the future never extends a stay and nothing stays sticky for more than an hour. A
+sender holds at most `server.sticky_events.max_per_sender` unexpired rows, a remote sender included (its oldest expires),
+and the prune job deletes expired rows every minute. This server pushes only its own users' events to a joining server,
+never another server's, so a remote server cannot use it to amplify. Residual risk: a server that is not blocked can
+still hold the per-sender cap of rows for each of its users, for an hour each; the outbound queue is in memory and
+bounded, so a sticky event it refuses is not sent again until that destination joins again (ADR-0856, known gaps).
+
 ### Moderation through the state API, oversized local events, and ungated room administration (audit CSAZ-6, CSAZ-9, CSAZ-12)
 
 Threats: a ban or kick sent as `PUT /state/m.room.member` changed room state but not the membership projections, so

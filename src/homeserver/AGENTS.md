@@ -30,6 +30,7 @@ This is the largest and most complex module — read this file carefully before 
 | `DelayedEvents.cpp` | Delayed events (MSC4140, ADR-0823 to ADR-0826): `schedule_delayed_event`, `manage_delayed_event` (send, cancel, restart), `delayed_event_lookup`, the clock `delayed_event_now_ms` (and its seam `test_delayed_event_clock_ms`), `wake_delayed_events`, `send_due_delayed_events`, and `run_delayed_events_job`, the body of the `delayed-events` `PeriodicJob` in `main.cpp`. The caller holds `runtime.mutex` for all but the job body, which takes it for one send a run |
 | `ClientServerRuntime.cpp` (delayed events) | The MSC4140 routes (ADR-0823): S1 and S2 `PUT .../delayed_event/...`, the `org.matrix.msc4140.delay` branch of `PUT /send` and `/state`, M1 to M3 `POST .../delayed_events/{delayId}[/{action}]` and G1 and G2 `GET .../delayed_events/{delayId}`, with the `/versions` flags and `/capabilities` entries. See "Delayed events" below |
 | `StickyEventRecording.cpp` | `record_sticky_event_of_pdu` (MSC4354, ADR-0854): given a persisted PDU, its event ID and a received time, decides stickiness with `events::sticky_duration_of` and writes the `sticky_events` row with `database::record_sticky_event` (room, sender and `origin_server_ts` read from the PDU, expiry from `events::sticky_expiry_ms`). Independent of any client request, so federation ingest reuses it. See "Sticky events" below |
+| `StickyEventPush.cpp` | `push_local_sticky_events_to_server` (MSC4354, ADR-0856): queues to one joining server every unexpired sticky event in a room whose sender is a user of this server, as the stored PDU, in one `enqueue_batch`. See "Sticky events" below |
 | `StickyEventPrune.cpp` | `prune_sticky_events`, the body of the `sticky-events` `PeriodicJob` in `main.cpp` (every 60 s, one transaction under `runtime.mutex`) |
 | `ClientServerRuntimeInternal.hpp` | Call-throughs from `ClientServerRuntime.cpp`'s anonymous namespace that `DelayedEvents.cpp` shares with the `/send` and `/state` routes: `rate_limit_route_template` (`normalized_target`), `route_event_body` (`event_body_from_content`), `event_txn_part_is_too_long`, `errcode_for_refusal_status`, and the two reasons the `/send` route gives for a too-long type or transaction ID. Not public API |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
@@ -1315,6 +1316,24 @@ The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call t
   `unsigned.msc4354_sticky_duration_ttl_ms`. A path that builds an event's client form another way (sliding sync's
   `client_event_json`) must call it too. "Now" is `database::sticky_clock_now_ms`, which tests move through
   `PersistentStore::test_sticky_clock_ms`.
+- **A federated PDU is recorded in `ingest_pdu_event_locked`, in the main process, after it is accepted and stored**
+  (`record_sticky_event_of_accepted_pdu`, with the room stripe and `runtime.mutex` held, so the same lock order as the
+  rest of ingestion, ADR-0848). Only `ReceiptOutcome::accepted`, only an event with no `state_key`, only while
+  `server.sticky_events.enabled`; the received time is `sticky_clock_now_ms` read there, never a sender's time, and the
+  stored JSON is read back so an event a redaction already reached is judged redacted. A rejected, soft-failed or
+  outlier event gets no row, and an event stored by any other path (`verify_and_store_backfilled_event`, which stores
+  `outlier`, `soft_failed` or `rejected`; send_join state; the membership acceptor, state events only) never does:
+  a stored copy is answered `already_stored` and never judged again, so a backfilled event is never recorded later. The
+  federation worker decides nothing and the relay envelope carries no sticky field. The per-sender cap applies to a
+  remote sender. A false return is logged as `sticky_event.record_failed` (room and event ID only).
+- **A server that newly joins gets our own sticky events**: `broadcast_local_device_lists_to_remote_joiner` calls
+  `push_local_sticky_events_to_server` after the device lists, so it runs at every call site that sends a joiner our
+  device lists, under the same guard (`joiner_server_already_in_room`, read before the roster changes) and the same locks
+  (`runtime.mutex`, and the room stripe on the PDU path). It only enqueues. It sends the PDUs of unexpired rows whose
+  sender is a user of this server, ordered by (expiry, event ID), each as the stored JSON, to that server alone; it
+  refuses a server the operator's federation policy or the room's `m.room.server_acl` denies, and sends nothing while
+  the feature is off. Never relay another server's sticky event, and never send them to a server already in the room.
+  The settings are read from `runtime.config.server().sticky_events`, as `HomeserverRuntime` has no `limits`.
 
 ## Typing expiry (R13, ADR-0199)
 

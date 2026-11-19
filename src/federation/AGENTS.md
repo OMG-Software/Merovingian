@@ -394,6 +394,16 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `CachedServerDiscovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry, and so does outbound delivery, which its own backoff paces (ADR-0749); `remember_failures` stays the default for key resolution, pushers and appservices |
 | `RuntimeFederationConfig.cpp` | Federation route registration and per-origin request caps |
 
+## Sticky events over federation (MSC4354, ADR-0856)
+
+MSC4354 adds no federation endpoint: a sticky event is an ordinary PDU in `/send`. Whether an inbound PDU is sticky is
+decided in the main process only, in `ingest_pdu_event_locked` after the event is accepted and stored
+(`record_sticky_event_of_accepted_pdu`, `src/homeserver/AGENTS.md`, "Sticky events"). Nothing in this module, in the
+federation worker or in the worker-to-main relay envelope reads the sticky fields or adds one. A server pushes its own
+unexpired sticky events to a server that newly joins a room (`push_local_sticky_events_to_server`, called beside the
+device-list broadcast) and never relays another server's. Its dispatch queue is in memory and bounded, so a sticky event
+a full queue refuses is not sent again until that destination joins again (a known gap in ADR-0856).
+
 ## Adding a new federation endpoint
 
 1. Declare handler in the relevant `.hpp`
