@@ -1085,8 +1085,8 @@ SCENARIO("Sliding sync receipts and typing extensions serve the joined rooms of 
                                                                        0U, 10U, store, {}, scope);
             REQUIRE(responses.receipts.has_value());
             REQUIRE(responses.typing.has_value());
-            auto const receipts = reported_rooms(responses.receipts->rooms_json);
-            REQUIRE(reported_rooms(responses.typing->rooms_json) == receipts);
+            auto const receipts = reported_rooms(responses.receipts.value().rooms_json);
+            REQUIRE(reported_rooms(responses.typing.value().rooms_json) == receipts);
             return receipts;
         };
 
