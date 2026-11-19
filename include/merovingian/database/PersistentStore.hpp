@@ -92,6 +92,7 @@
 #include "merovingian/database/StateChangeLog.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
+#include "merovingian/database/StickyEventTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
 
@@ -593,6 +594,16 @@ struct PersistentStore final
     // over-long field, a `created_ms` that is not digits, a duplicate delay ID or key). The rows stay in the database.
     // The homeserver warns once at start-up when this is not zero.
     std::size_t livekit_delegation_rows_skipped_at_load{0U};
+    // Migration 005 (ADR-0854): `sticky_events`, the MSC4354 sticky events this server accepted. Read and write through
+    // StickyEventStore.hpp; it has no lock of its own, so in main `runtime.mutex` serialises it. The federation worker
+    // never holds it.
+    StickyEventTable sticky_events{};
+    // How many `sticky_events` and `delayed_event_sticky_durations` rows the last hydration skipped because they were
+    // not read exactly (an empty, over-long or NUL-holding field, a number that is not digits or is out of range, a
+    // duplicate event ID, a sticky duration below 1 or a delayed-event ID that is empty). A row that had already
+    // expired, and a duration whose delayed event is missing or finalised, are not counted: they are dropped, not
+    // malformed. The rows stay in the database. The homeserver warns once at start-up when this is not zero.
+    std::size_t sticky_event_rows_skipped_at_load{0U};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.

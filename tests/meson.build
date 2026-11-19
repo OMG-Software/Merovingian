@@ -384,6 +384,8 @@ shell = find_program('sh')
       'unit/test_delayed_event_table.cpp',
       'unit/test_livekit_delegation_store.cpp',
       'unit/test_livekit_delegation_table.cpp',
+      'unit/test_sticky_event_store.cpp',
+      'unit/test_sticky_event_table.cpp',
       'unit/test_media_reservation_sweep.cpp',
       'unit/test_credential_tables.cpp',
       'unit/test_bundled_aggregations.cpp',

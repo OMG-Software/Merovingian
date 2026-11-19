@@ -21,6 +21,7 @@
 #include "merovingian/database/Schema.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
 #include "merovingian/database/SnapshotReaderConnections.hpp"
+#include "merovingian/database/StickyEventRowText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -31,6 +32,7 @@
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1474,6 +1476,62 @@ namespace
                 {
                     ++store.livekit_delegation_rows_skipped_at_load;
                 }
+            }
+        }
+
+        // Migration 005 (ADR-0854): sticky events, main only. A row that is not read exactly is skipped and counted,
+        // never repaired; a row that had already expired is not loaded and not counted. The durations of scheduled
+        // delayed events follow, attached to the rows loaded above; one whose delayed event is missing or finalised
+        // is ignored.
+        if (table_load_profile_includes("sticky_events", profile))
+        {
+            auto const now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+            auto sticky = query_rows(connection, "postgresql_load_sticky_events",
+                                     "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM "
+                                     "sticky_events ORDER BY event_id");
+            if (!sticky.ok)
+            {
+                return false;
+            }
+            for (auto const& row : sticky.rows)
+            {
+                auto parsed = parse_sticky_event_row(row);
+                if (!parsed.has_value())
+                {
+                    ++store.sticky_event_rows_skipped_at_load;
+                    continue;
+                }
+                if (parsed->expires_at_ms <= now_ms)
+                {
+                    continue;
+                }
+                if (!store.sticky_events.insert(std::move(*parsed)))
+                {
+                    ++store.sticky_event_rows_skipped_at_load;
+                }
+            }
+        }
+        if (table_load_profile_includes("delayed_event_sticky_durations", profile))
+        {
+            auto durations = query_rows(connection, "postgresql_load_delayed_event_sticky_durations",
+                                        "SELECT delay_id, sticky_duration_ms FROM delayed_event_sticky_durations ORDER "
+                                        "BY delay_id");
+            if (!durations.ok)
+            {
+                return false;
+            }
+            for (auto const& row : durations.rows)
+            {
+                auto const duration =
+                    row.size() >= delayed_event_sticky_duration_row_columns ? parse_sticky_duration_ms(row[1]) : std::nullopt;
+                if (row.empty() || row[0].empty() || !duration.has_value())
+                {
+                    ++store.sticky_event_rows_skipped_at_load;
+                    continue;
+                }
+                std::ignore = store.delayed_events.attach_sticky_duration(row[0], *duration);
             }
         }
 

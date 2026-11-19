@@ -17,6 +17,7 @@
 #include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/PostgresqlStore.hpp>
 #include <merovingian/database/PreparedStatement.hpp>
+#include <merovingian/database/StickyEventStore.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -2001,6 +2002,79 @@ SCENARIO("PostgreSQL LiveKit delegations survive a reopen, replace by key and by
                 REQUIRE(again.store.livekit_delegations.find("dl-new-" + suffix) == nullptr);
                 REQUIRE(again.store.livekit_delegations.find("dl-bob-" + suffix) == nullptr);
                 REQUIRE(again.store.livekit_delegations.count_of_user(alice) == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL sticky events survive a reopen, keep the per-sender cap, and leave with the account",
+         "[database][postgresql][integration][pg-behaviour][sticky-events]")
+{
+    GIVEN("a sender holding three sticky events under a cap of two, and a delayed event with a sticky duration")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = reopen(uri);
+        auto const suffix = unique_suffix();
+        auto const alice = "@sticky-a-" + suffix + ":example.org";
+        auto const bob = "@sticky-b-" + suffix + ":example.org";
+        auto const room_id = "!sticky-" + suffix + ":example.org";
+        auto const make = [&](std::string id, std::string const& sender, std::int64_t expires_at_ms) {
+            return db::PersistentStickyEvent{"$" + id + "-" + suffix, room_id, sender, 1'000, expires_at_ms};
+        };
+        // The expiries are far in the real clock's future, and the clock the store functions are given is in 1970.
+        constexpr auto far_future_ms = std::int64_t{9'000'000'000'000};
+        REQUIRE(db::record_sticky_event(opened.store, make("one", alice, far_future_ms + 1), 2U, 1'000));
+        REQUIRE(db::record_sticky_event(opened.store, make("two", alice, far_future_ms + 2), 2U, 1'000));
+        REQUIRE(db::record_sticky_event(opened.store, make("bob", bob, far_future_ms + 3), 2U, 1'000));
+        REQUIRE(db::record_sticky_event(opened.store, make("three", alice, far_future_ms + 4), 2U, 1'000));
+        REQUIRE(db::record_sticky_event(opened.store, make("stale", alice, 3'000), 2U, 1'000));
+        auto delayed = delayed_event_row(suffix, room_id, "sticky", alice);
+        delayed.sticky_duration_ms = 3'600'000;
+        REQUIRE(db::store_delayed_event(opened.store, delayed));
+        auto finished = delayed_event_row(suffix, room_id, "finished", alice);
+        finished.sticky_duration_ms = 5'000;
+        REQUIRE(db::store_delayed_event(opened.store, finished));
+        REQUIRE(db::cancel_delayed_event(opened.store, finished.delay_id, 2'000U, 10U));
+
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = reopen(uri);
+            auto const& table = reopened.store.sticky_events;
+
+            THEN("the evicted and the expired rows are gone, the others are back, and the duration is attached")
+            {
+                REQUIRE_FALSE(table.contains("$one-" + suffix));
+                REQUIRE_FALSE(table.contains("$stale-" + suffix));
+                REQUIRE(table.find("$two-" + suffix, 1'000) != nullptr);
+                REQUIRE(table.find("$three-" + suffix, 1'000)->sender == alice);
+                REQUIRE(table.find("$three-" + suffix, 1'000)->room_id == room_id);
+                REQUIRE(table.find("$three-" + suffix, 1'000)->received_at_ms == 1'000);
+                REQUIRE(table.find("$three-" + suffix, 1'000)->expires_at_ms == far_future_ms + 4);
+                REQUIRE(table.unexpired_count_of_sender(alice, 1'000) == 2U);
+                REQUIRE(table.unexpired_count_of_sender(bob, 1'000) == 1U);
+                REQUIRE(reopened.store.delayed_events.find(delayed.delay_id)->sticky_duration_ms ==
+                        std::optional<std::int64_t>{3'600'000});
+                REQUIRE_FALSE(reopened.store.delayed_events.find(finished.delay_id)->sticky_duration_ms.has_value());
+            }
+
+            AND_THEN("a delete of the event, a prune and a delete of the sender's rows reach the database")
+            {
+                REQUIRE(db::delete_sticky_event(reopened.store, "$two-" + suffix));
+                REQUIRE(db::prune_expired_sticky_events(reopened.store, 5'000));
+                REQUIRE(db::delete_sticky_events_of_user(reopened.store, alice));
+                REQUIRE(db::delete_sticky_events_of_user(reopened.store, bob));
+                auto again = reopen(uri);
+                REQUIRE_FALSE(again.store.sticky_events.contains("$two-" + suffix));
+                REQUIRE_FALSE(again.store.sticky_events.contains("$three-" + suffix));
+                REQUIRE_FALSE(again.store.sticky_events.contains("$bob-" + suffix));
+                REQUIRE(again.store.sticky_events.unexpired_count_of_sender(alice, 1'000) == 0U);
+                REQUIRE(db::delete_delayed_events_of_user(again.store, alice));
             }
         }
     }

@@ -29,6 +29,7 @@
 #include "merovingian/database/DelayedEventStore.hpp"
 #include "merovingian/database/LiveKitDelegationStore.hpp"
 #include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/StickyEventStore.hpp"
 #include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
@@ -2603,6 +2604,16 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     if (!database::delete_livekit_delegations_of_user(runtime.database.persistent_store, user_id))
     {
         log_diagnostic("account.deactivated.livekit_delegations_removal_failed",
+                       {
+                           {"user_id", std::string{user_id}, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    // Every sticky event the account sent stops being sticky with it (MSC4354, ADR-0854). A failure is logged and
+    // deactivation goes on.
+    if (!database::delete_sticky_events_of_user(runtime.database.persistent_store, user_id))
+    {
+        log_diagnostic("account.deactivated.sticky_events_removal_failed",
                        {
                            {"user_id", std::string{user_id}, false}
         },

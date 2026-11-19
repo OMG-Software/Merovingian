@@ -36,6 +36,7 @@
 #include "merovingian/database/SnapshotReaderConnections.hpp"
 #include "merovingian/database/SqliteConnectionDeleter.hpp"
 #include "merovingian/database/SqliteWritePool.hpp"
+#include "merovingian/database/StickyEventRowText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -825,6 +826,64 @@ namespace
                          });
     }
 
+    // Migration 005 (ADR-0854): sticky events. A row that is not read exactly is skipped and counted, never repaired;
+    // a row that had already expired is not loaded and not counted. The delayed-event sticky durations follow, after
+    // `load_delayed_event_rows`: a duration attaches to a scheduled row, and one whose delayed event is missing or
+    // finalised is ignored. Both are skipped for a profile that does not include the tables, as PostgreSQL does.
+    [[nodiscard]] auto load_sticky_event_rows(sqlite3& connection, PersistentStore& store, TableLoadProfile profile)
+        -> bool
+    {
+        if (!table_load_profile_includes("sticky_events", profile))
+        {
+            return true;
+        }
+        auto const now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+        auto const loaded = load_rows(
+            connection, "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM sticky_events ORDER BY event_id",
+            [&store, now_ms](sqlite3_stmt& row) {
+                auto columns = std::array<std::string, sticky_event_row_columns>{};
+                for (auto index = std::size_t{0U}; index < columns.size(); ++index)
+                {
+                    columns[index] = column_text(row, static_cast<int>(index));
+                }
+                auto parsed = parse_sticky_event_row(columns);
+                if (!parsed.has_value())
+                {
+                    ++store.sticky_event_rows_skipped_at_load;
+                    return;
+                }
+                if (parsed->expires_at_ms <= now_ms)
+                {
+                    return;
+                }
+                if (!store.sticky_events.insert(std::move(*parsed)))
+                {
+                    ++store.sticky_event_rows_skipped_at_load;
+                }
+            });
+        if (!loaded || !table_load_profile_includes("delayed_event_sticky_durations", profile))
+        {
+            return loaded;
+        }
+        return load_rows(connection, "SELECT delay_id, sticky_duration_ms FROM delayed_event_sticky_durations ORDER BY delay_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto columns = std::array<std::string, delayed_event_sticky_duration_row_columns>{};
+                             for (auto index = std::size_t{0U}; index < columns.size(); ++index)
+                             {
+                                 columns[index] = column_text(row, static_cast<int>(index));
+                             }
+                             auto const duration = parse_sticky_duration_ms(columns[1]);
+                             if (columns[0].empty() || !duration.has_value())
+                             {
+                                 ++store.sticky_event_rows_skipped_at_load;
+                                 return;
+                             }
+                             std::ignore = store.delayed_events.attach_sticky_duration(columns[0], *duration);
+                         });
+    }
+
     // Events go to `hydrated_events` rather than `store.events`, for the caller to index in one pass
     // (ADR-0215): the SELECT has no ORDER BY, so adding them one at a time could shift the
     // stream-order index for every row.
@@ -841,6 +900,12 @@ namespace
         // Migration 004 (ADR-0832): LiveKit delegations, loaded the same way and for the same reason: the table depends
         // on no other table and none depends on it.
         if (!load_livekit_delegation_rows(connection, store, profile))
+        {
+            return false;
+        }
+        // Migration 005 (ADR-0854): sticky events and the durations of scheduled delayed events, loaded after both
+        // tables they depend on (the durations attach to rows `load_delayed_event_rows` loaded).
+        if (!load_sticky_event_rows(connection, store, profile))
         {
             return false;
         }
