@@ -727,3 +727,7 @@
 * [0850 - `latest` is replaced only by a build of the same or a newer commit](0850-latest-is-replaced-only-by-a-build-of-the-same-or-a-newer-commit.md)
 * [0851 - A scenario that races a password hash pauses the hash instead of timing it](0851-a-scenario-that-races-a-password-hash-pauses-the-hash-instead-of-timing-it.md)
 * [0852 - The decoder seccomp children skip under ThreadSanitizer instead of widening its allowlist](0852-the-decoder-seccomp-children-skip-under-threadsanitizer-instead-of-widening-its-allowlist.md)
+* [0853 - Sticky events are served on the unstable names released clients use and the stable names](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)
+* [0854 - A sticky event is a row beside the event, expiring an hour at most after it was first seen](0854-a-sticky-event-is-a-row-beside-the-event-expiring-an-hour-at-most-after-it-was-first-seen.md)
+* [0855 - Sticky events reach clients once per sync position, and in full on joining or entering scope](0855-sticky-events-reach-clients-once-per-sync-position-and-in-full-on-joining-or-entering-scope.md)
+* [0856 - A server pushes its own unexpired sticky events to a server that joins, and records only accepted ones](0856-a-server-pushes-its-own-unexpired-sticky-events-to-a-server-that-joins-and-records-only-accepted-ones.md)
