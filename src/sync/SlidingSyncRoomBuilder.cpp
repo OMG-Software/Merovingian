@@ -943,23 +943,25 @@ auto add_sticky_sender_members(database::PersistentStore const& store, std::stri
         {
             continue;
         }
-        for (auto const& ev : store.events.with_id(*member_event_id))
+        auto const found = store.events.find(*member_event_id);
+        if (found == store.events.end())
         {
-            if (ignored_senders.contains(ev.sender_user_id) &&
-                trust_safety::is_delivery_suppressed(
-                    ignored_senders, ev.sender_user_id, /*is_state_event=*/true,
-                    classify_event_for_ignore_filter(ev.json, user).is_new_room_invite_for_user))
-            {
-                break;
-            }
-            if (auto client_json = client_event_json(store, ev, viewer); !client_json.empty())
-            {
-                room.required_state_json.push_back(std::move(client_json));
-                room.required_state_members.insert(sender);
-                room.lazy_members_included.insert(sender);
-                ++added;
-            }
-            break;
+            continue;
+        }
+        auto const& ev = *found;
+        if (ignored_senders.contains(ev.sender_user_id) &&
+            trust_safety::is_delivery_suppressed(
+                ignored_senders, ev.sender_user_id, /*is_state_event=*/true,
+                classify_event_for_ignore_filter(ev.json, user).is_new_room_invite_for_user))
+        {
+            continue;
+        }
+        if (auto client_json = client_event_json(store, ev, viewer); !client_json.empty())
+        {
+            room.required_state_json.push_back(std::move(client_json));
+            room.required_state_members.insert(sender);
+            room.lazy_members_included.insert(sender);
+            ++added;
         }
     }
     return added;
