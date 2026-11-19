@@ -43,9 +43,14 @@ Recording one more expires the sender's oldest row (earliest `expires_at_ms`) in
 MSC4354 suggests: the newest call membership is the one that matters. This applies to local and remote senders alike, so
 a remote server cannot grow the table without bound through one user. A local send is never refused for this cap.
 
-**Delayed sticky events.** A delayed event scheduled with a sticky duration stores it in a new nullable
-`sticky_duration_ms` column of `delayed_events` (same migration). When the event is sent it goes through the ordinary
-sticky send path, so its lifetime starts when it is sent, not when it was scheduled.
+**Delayed sticky events.** A delayed event scheduled with a sticky duration stores it in a second table of the same
+migration, `delayed_event_sticky_durations` (`delay_id` primary key, `sticky_duration_ms`), written in the transaction
+that stores the delayed event. The in-memory `DelayedEventTable` row carries it as an optional field. The migration
+framework builds each step from `Schema.cpp`'s table arrays and has no add-column step, and `delayed_events` is already
+released, so its definition is not changed. The side row is deleted in the transaction that finalises, deletes or
+prunes its delayed event; a side row whose delayed event is missing or finalised is ignored at load and deleted by the
+`sticky-events` job. When the event is sent it goes through the ordinary sticky send path, so its lifetime starts
+when it is sent, not when it was scheduled.
 
 **Configuration.** `server.sticky_events.enabled` (default `true`, like delayed events,
 [ADR-0826](0826-delayed-events-are-on-by-default-with-a-maximum-delay-per-user-caps-and-per-user-rate-limits.md))
