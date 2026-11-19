@@ -3310,7 +3310,7 @@ auto bob_acts_in(merovingian::homeserver::ClientServerRuntime& rt, SharedRooms c
 
 } // namespace
 
-// MSC4508 (ADR-0859): the typing and receipts extensions apply to the lists `lists` names and the room subscriptions
+// MSC4508 (ADR-0861): the typing and receipts extensions apply to the lists `lists` names and the room subscriptions
 // `rooms` names; an absent key is all, an empty array none, and a room named without a subscription is not reached.
 SCENARIO("the sliding sync typing and receipts extensions follow their lists and rooms scope",
          "[homeserver][sliding-sync][integration][extension-scope]")
@@ -3371,7 +3371,7 @@ SCENARIO("the sliding sync typing and receipts extensions follow their lists and
     }
 }
 
-// A receipt or typing change wakes a long-poll only where the extension would report it (MSC4508, ADR-0859): one
+// A receipt or typing change wakes a long-poll only where the extension would report it (MSC4508, ADR-0861): one
 // outside its scope would answer the poll with nothing, and the client would poll again at once.
 SCENARIO("a sliding sync long-poll wakes for typing and receipts only within the extension's scope",
          "[homeserver][sliding-sync][integration][extension-scope]")

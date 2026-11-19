@@ -30,7 +30,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * Sliding sync sends sticky senders' member events with lazy-loaded members, and the extension reads MSC4508's `lists`
   and `rooms` scope; an event that expires mid-request is left out (ADR-0858).
 * Sliding sync's `typing` and `receipts` extensions read MSC4508's `lists` and `rooms` as `sticky_events` does; a room
-  named in `rooms` without a subscription is no longer served (ADR-0859).
+  named in `rooms` without a subscription is no longer served (ADR-0861).
 * A server that joins a room is sent this server's unexpired sticky events in it, and accepted sticky events from other
   servers are served like local ones (ADR-0856).
 * `server.sticky_events.enabled` (on), `max_per_sender` (60) and `max_per_room` (1000) configure them; migration 005
@@ -101,7 +101,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The decoder seccomp filter's forked children skip under TSan, whose background thread the filter kills for sleeping,
   so a child that made only allowed calls no longer fails the `tsan` job at random (ADR-0852).
 * A sliding sync long poll is no longer answered with nothing by a typing or receipt change outside the extension's
-  scope (ADR-0859).
+  scope (ADR-0861).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
   publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
 * Publishing `latest` moves its tag instead of deleting it, so a failed publish can no longer let an older queued build

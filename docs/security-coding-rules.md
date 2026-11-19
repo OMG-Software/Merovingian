@@ -1747,7 +1747,7 @@ media-fetch-pool task.
   without a subscription is not reached.
   Why: `room_access_for` scans every membership row in the store, and this runs under the
   runtime lock. Uncapped arrays let one request repeat that scan thousands of times (CWE-407;
-  security audit run-1, ADR-0174). A name is a claim, not an entitlement (CSAZ-1, ADR-0859).
+  security audit run-1, ADR-0174). A name is a claim, not an entitlement (CSAZ-1, ADR-0861).
   Source: `src/sync/AGENTS.md`.
 
 - **A client's search term is matched with `core::FoldedSubstringMatcher`, never `std::search`, `find` or

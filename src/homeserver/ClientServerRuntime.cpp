@@ -8508,7 +8508,7 @@ namespace
                     });
                 }
                 // Receipts, typing and sticky events wake the poll only in a joined room of their extension's scope
-                // (MSC4508, ADR-0859): the windows the previous response held (this request's, while their config is
+                // (MSC4508, ADR-0861): the windows the previous response held (this request's, while their config is
                 // unchanged) and the subscribed rooms. A change outside it would answer the poll with nothing.
                 auto const subscriptions = subscription_room_ids(ssreq);
                 auto const joined_in_scope = [&](std::optional<std::vector<std::string>> const& lists,
@@ -8792,7 +8792,7 @@ namespace
         auto extension_responses = std::optional<sync::SlidingSyncExtensionResponses>{};
         auto ext_obj = canonicaljson::Object{};
         // What the room-scoped extensions (receipts, typing, sticky_events) choose their MSC4508 scope from: this
-        // response's list windows and the request's room subscriptions (ADR-0858, ADR-0859).
+        // response's list windows and the request's room subscriptions (ADR-0858, ADR-0861).
         auto extension_scope = sync::ExtensionScopeSource{};
         if (ssreq.extensions.has_value())
         {

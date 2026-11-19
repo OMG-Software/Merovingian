@@ -30,7 +30,7 @@ namespace merovingian::sync
 //                            response. Scopes the account_data extension's room rows.
 // `extension_scope`        — this response's list windows and the request's room subscriptions. The
 //                            receipts and typing extensions serve the joined rooms of their MSC4508
-//                            scope over it (`joined_extension_scope_rooms`, ADR-0859).
+//                            scope over it (`joined_extension_scope_rooms`, ADR-0861).
 // `ignored_senders`        — the requesting user's resolved m.ignored_user_list
 //                            (see trust_safety::resolve_ignored_users), resolved once by the
 //                            caller and reused here. Typing and receipt entries authored by an

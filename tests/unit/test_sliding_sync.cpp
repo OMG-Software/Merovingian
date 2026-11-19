@@ -266,7 +266,7 @@ SCENARIO("Sliding sync parser extracts extension requests", "[sync][sliding-sync
     }
 }
 
-// MSC4508 "Common extension semantics" (ADR-0859): the typing and receipts extensions take `lists` and `rooms`. An
+// MSC4508 "Common extension semantics" (ADR-0861): the typing and receipts extensions take `lists` and `rooms`. An
 // absent key stays absent (every list or subscription), a present one is kept, de-duplicated, and a present key that
 // is not an array of strings names nothing.
 SCENARIO("Sliding sync parser reads the typing and receipts extensions' scope keys",
@@ -301,7 +301,7 @@ SCENARIO("Sliding sync parser reads the typing and receipts extensions' scope ke
 }
 
 // Each list a scope names costs a lookup under the runtime lock, so the receipts and typing extensions' `lists` are
-// capped like the request's own lists (ADR-0859).
+// capped like the request's own lists (ADR-0861).
 SCENARIO("Sliding sync bounds the lists the typing and receipts extensions name",
          "[sync][sliding-sync][extension-scope]")
 {

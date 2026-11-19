@@ -420,7 +420,7 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
     auto const wants_typing = ext_req.typing.has_value() && ext_req.typing->enabled;
     // One room-access index per request, shared by both extensions (and, from the handler, by the
-    // room_subscriptions classification). Each serves the joined rooms of its own MSC4508 scope (ADR-0859).
+    // room_subscriptions classification). Each serves the joined rooms of its own MSC4508 scope (ADR-0861).
     if (wants_receipts)
     {
         auto const rooms = joined_extension_scope_rooms(ext_req.receipts->lists, ext_req.receipts->rooms,

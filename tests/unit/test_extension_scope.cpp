@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // `extension_scope_rooms` (MSC4508 "Common extension semantics", ADR-0858): which rooms a sliding sync extension
-// applies to, from its `lists` and `rooms` keys; `joined_extension_scope_rooms` keeps the joined ones (ADR-0859).
+// applies to, from its `lists` and `rooms` keys; `joined_extension_scope_rooms` keeps the joined ones (ADR-0861).
 // MSC4508 is not in Matrix v1.19, so these are project-level checks.
 
 #include "merovingian/sync/ExtensionScope.hpp"
@@ -124,7 +124,7 @@ SCENARIO("an extension's rooms key reaches only rooms the request subscribed to"
     }
 }
 
-// CSAZ-1 (ADR-0859): naming a room, in a list window or a subscription, is no entitlement; every room-scoped extension
+// CSAZ-1 (ADR-0861): naming a room, in a list window or a subscription, is no entitlement; every room-scoped extension
 // serves only the rooms of its scope the user has joined.
 SCENARIO("an extension serves only the joined rooms of its scope", "[sync][extension-scope]")
 {

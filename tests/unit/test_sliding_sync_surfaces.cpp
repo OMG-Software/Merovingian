@@ -1063,7 +1063,7 @@ auto seed_scope_rooms(merovingian::homeserver::HomeserverRuntime& runtime,
 
 } // namespace
 
-// MSC4508 (ADR-0859): the receipts and typing extensions apply to the lists `lists` names and the room subscriptions
+// MSC4508 (ADR-0861): the receipts and typing extensions apply to the lists `lists` names and the room subscriptions
 // `rooms` names, and then only to joined rooms. Both extensions must report exactly the same rooms for one scope.
 SCENARIO("Sliding sync receipts and typing extensions serve the joined rooms of their MSC4508 scope",
          "[sync][sliding-sync][extensions][extension-scope][csaz-1]")
