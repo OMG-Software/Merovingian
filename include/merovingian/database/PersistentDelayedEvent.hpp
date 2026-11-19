@@ -5,6 +5,7 @@
 #include "merovingian/database/DelayedEventStatus.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace merovingian::database
@@ -15,8 +16,10 @@ namespace merovingian::database
 // the legacy state form, which has none; `via_appservice` records that an application service scheduled it, which the
 // send passes on. `delayed_since_ms` is when the timer last started: the event is due at `delayed_since_ms +
 // delay_ms`. `finalised_at_ms` is 0 while scheduled; `event_id` is empty unless sent; `error_json` is empty unless
-// failed and then holds the standard error object. Times are wall-clock milliseconds since the Unix epoch. A row
-// never changes except through `DelayedEventTable`.
+// failed and then holds the standard error object. Times are wall-clock milliseconds since the Unix epoch.
+// `sticky_duration_ms` is the MSC4354 sticky duration the event is sent with, set only on a scheduled row; it is stored
+// in `delayed_event_sticky_durations` (migration 005, ADR-0854), not in `delayed_events`, and is cleared when the row
+// is finalised. A row never changes except through `DelayedEventTable`.
 struct PersistentDelayedEvent final
 {
     std::string delay_id{};
@@ -35,6 +38,7 @@ struct PersistentDelayedEvent final
     std::uint64_t finalised_at_ms{0U};
     std::string event_id{};
     std::string error_json{};
+    std::optional<std::int64_t> sticky_duration_ms{};
 };
 
 } // namespace merovingian::database

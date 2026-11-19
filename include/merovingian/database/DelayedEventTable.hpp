@@ -81,9 +81,12 @@ public:
     // scheduled.
     auto restart(std::string_view delay_id, std::uint64_t delayed_since_ms) -> bool;
     // Finalises a scheduled row: `status` (sent, cancelled or failed; scheduled is refused) with `finalised_at_ms`,
-    // `event_id` and `error_json`. Any being-sent mark of the row goes. False when the row is absent or not scheduled.
+    // `event_id` and `error_json`. Any being-sent mark of the row goes, and so does its sticky duration. False when the row is absent or not scheduled.
     auto finalise(std::string_view delay_id, DelayedEventStatus status, std::uint64_t finalised_at_ms,
                   std::string event_id, std::string error_json) -> bool;
+    // Sets `sticky_duration_ms` of a scheduled row (hydration of `delayed_event_sticky_durations`). False when the row
+    // is absent or not scheduled, or `duration_ms` is below 1.
+    auto attach_sticky_duration(std::string_view delay_id, std::int64_t duration_ms) -> bool;
     // Removes one row. False when absent.
     auto erase(std::string_view delay_id) -> bool;
     // Removes every row of `user_id`, returning how many.

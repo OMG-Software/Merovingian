@@ -65,7 +65,8 @@ namespace
                within(row.room_id, max_delayed_event_field_bytes) &&
                within(row.event_type, max_delayed_event_field_bytes) &&
                within(row.state_key, max_delayed_event_field_bytes) &&
-               within(row.txn_id, max_delayed_event_field_bytes) && row.delay_ms != 0U &&
+               within(row.txn_id, max_delayed_event_field_bytes) &&
+               (!row.sticky_duration_ms.has_value() || *row.sticky_duration_ms >= 1) && row.delay_ms != 0U &&
                row.delay_ms <= max_delayed_event_delay_ms && row.status == DelayedEventStatus::scheduled &&
                row.finalised_at_ms == 0U && row.event_id.empty() && row.error_json.empty();
     }
@@ -86,7 +87,8 @@ namespace
         return {"delete_delayed_events", std::move(sql), std::move(parameters)};
     }
 
-    // Appends the DELETEs for `delay_ids`, batched.
+    // Appends the DELETEs for `delay_ids`, batched. These are finalised rows (an eviction or the age prune), which have
+    // no sticky-duration side row: finalising deletes it in its own transaction (ADR-0854).
     auto append_delete_statements(std::vector<PreparedStatement>& statements, std::vector<std::string> const& delay_ids)
         -> void
     {
@@ -95,6 +97,14 @@ namespace
             statements.push_back(
                 delete_rows_statement(delay_ids, first, std::min(delete_ids_per_statement, delay_ids.size() - first)));
         }
+    }
+
+    // The DELETE of one row's sticky-duration side row, which a finalised row no longer has.
+    [[nodiscard]] auto delete_sticky_duration_statement(std::string_view delay_id) -> PreparedStatement
+    {
+        return {"delete_delayed_event_sticky_duration",
+                "DELETE FROM delayed_event_sticky_durations WHERE delay_id = $1",
+                {text(delay_id)}};
     }
 
     // The delay IDs of the oldest finalised rows of `user_id` to delete so that, once one more row is finalised, the
@@ -140,7 +150,8 @@ auto store_delayed_event(PersistentStore& store, PersistentDelayedEvent row) -> 
     {
         return false;
     }
-    auto const statement = PreparedStatement{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
         "insert_delayed_event",
         "INSERT INTO delayed_events (delay_id, user_id, device_id, room_id, event_type, is_state, state_key, "
         "content_json, txn_id, via_appservice, delay_ms, delayed_since_ms, status, finalised_at_ms, event_id, "
@@ -149,8 +160,16 @@ auto store_delayed_event(PersistentStore& store, PersistentDelayedEvent row) -> 
           flag(row.is_state), text(row.state_key), text(row.content_json), text(row.txn_id), flag(row.via_appservice),
           number(row.delay_ms), number(row.delayed_since_ms), text(delayed_event_status_text(row.status)),
           number(row.finalised_at_ms), text(row.event_id), text(row.error_json)}
-    };
-    if (!commit_persistent_transaction(store, {statement}))
+    });
+    if (row.sticky_duration_ms.has_value())
+    {
+        statements.push_back(PreparedStatement{
+            "insert_delayed_event_sticky_duration",
+            "INSERT INTO delayed_event_sticky_durations (delay_id, sticky_duration_ms) VALUES ($1, $2)",
+            {text(row.delay_id), text(std::to_string(*row.sticky_duration_ms))}
+        });
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
@@ -187,6 +206,7 @@ auto cancel_delayed_event(PersistentStore& store, std::string_view delay_id, std
     auto const doomed = evictions_for(store.delayed_events, row->user_id, max_finalised_per_user);
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(finalise_statement(delay_id, DelayedEventStatus::cancelled, now_ms, {}, {}));
+    statements.push_back(delete_sticky_duration_statement(delay_id));
     append_delete_statements(statements, doomed);
     if (!commit_persistent_transaction(store, statements))
     {
@@ -214,6 +234,7 @@ auto record_delayed_event_outcome(PersistentStore& store, std::string_view delay
     auto const doomed = evictions_for(store.delayed_events, row->user_id, max_finalised_per_user);
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(finalise_statement(delay_id, outcome, now_ms, event_id, error_json));
+    statements.push_back(delete_sticky_duration_statement(delay_id));
     append_delete_statements(statements, doomed);
     auto const committed = commit_persistent_transaction(store, statements);
     // The one place memory changes without a commit (ADR-0825). By now the send was attempted, and memory must say
@@ -236,9 +257,16 @@ auto delete_delayed_events_of_user(PersistentStore& store, std::string_view user
 {
     // Always the DELETE, even when memory holds no row for the user: a row that hydration skipped is in the database
     // and must not survive a deactivation. Deactivation is rare.
+    // The side rows go first, while the rows that name their owners still exist (ADR-0854).
+    auto const side_rows = PreparedStatement{
+        "delete_delayed_event_sticky_durations_of_user",
+        "DELETE FROM delayed_event_sticky_durations WHERE delay_id IN (SELECT delay_id FROM delayed_events WHERE "
+        "user_id = $1)",
+        {text(user_id)}
+    };
     auto const statement = PreparedStatement{
         "delete_delayed_events_of_user", "DELETE FROM delayed_events WHERE user_id = $1", {text(user_id)}};
-    if (!commit_persistent_transaction(store, {statement}))
+    if (!commit_persistent_transaction(store, {side_rows, statement}))
     {
         return false;
     }

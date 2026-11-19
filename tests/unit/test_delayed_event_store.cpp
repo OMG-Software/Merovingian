@@ -477,7 +477,7 @@ SCENARIO("A delayed event is written with bound parameters only", "[database][de
 
             THEN("every statement uses $n placeholders, none carries a value, and the boolean columns hold text")
             {
-                REQUIRE(captured.size() == 3U);
+                REQUIRE(captured.size() == 4U);
                 for (auto const& statement : captured)
                 {
                     INFO("statement " << statement.name);
@@ -711,11 +711,12 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
                 "the oldest row goes in the same transaction, the finalised row stays, and the other user is untouched")
             {
                 REQUIRE(transactions == 1U);
-                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements.size() == 3U);
                 REQUIRE(store.captured_statements[0].name == "finalise_delayed_event");
-                REQUIRE(store.captured_statements[1].name == "delete_delayed_events");
-                REQUIRE(store.captured_statements[1].parameters.size() == 1U);
-                REQUIRE(store.captured_statements[1].parameters[0].value == "old-0");
+                REQUIRE(store.captured_statements[1].name == "delete_delayed_event_sticky_duration");
+                REQUIRE(store.captured_statements[2].name == "delete_delayed_events");
+                REQUIRE(store.captured_statements[2].parameters.size() == 1U);
+                REQUIRE(store.captured_statements[2].parameters[0].value == "old-0");
                 REQUIRE(store.delayed_events.finalised_count(alice) == 3U);
                 REQUIRE(store.delayed_events.find("old-0") == nullptr);
                 REQUIRE(store.delayed_events.find("old-1") != nullptr);
@@ -748,10 +749,10 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
             auto const before = db::committed_transaction_count(store);
             REQUIRE(db::cancel_delayed_event(store, "live-1", 900U, 100U));
 
-            THEN("nothing is evicted and the transaction holds the one update")
+            THEN("nothing is evicted and the transaction holds the update and its sticky-duration delete")
             {
                 REQUIRE(db::committed_transaction_count(store) - before == 1U);
-                REQUIRE(store.captured_statements.size() == 1U);
+                REQUIRE(store.captured_statements.size() == 2U);
                 REQUIRE(store.delayed_events.finalised_count(alice) == 4U);
             }
         }
@@ -781,7 +782,8 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
         db::enable_statement_capture(store, 16U);
 
         // 300 held, 1 more, bound 100: 201 rows go and 99 old ones stay. A DELETE names at most 128 delay IDs, so 201
-        // rows are two DELETE statements, and with the UPDATE that is three statements in one transaction.
+        // rows are two DELETE statements, and with the UPDATE and the delete of the sticky-duration side row that is four
+        // statements in one transaction.
         WHEN("one more row is cancelled with a bound of 100")
         {
             auto const before = db::committed_transaction_count(store);
@@ -790,7 +792,7 @@ SCENARIO("Finalising keeps at most the bound of a user's finalised rows, evictin
             THEN("201 rows are deleted in batches within one transaction, leaving the newest 99 and the new row")
             {
                 REQUIRE(db::committed_transaction_count(store) - before == 1U);
-                REQUIRE(store.captured_statements.size() == 3U);
+                REQUIRE(store.captured_statements.size() == 4U);
                 REQUIRE(store.delayed_events.finalised_count(alice) == 100U);
                 REQUIRE(store.delayed_events.find("many-200") == nullptr);
                 REQUIRE(store.delayed_events.find("many-201") != nullptr);
@@ -826,12 +828,17 @@ SCENARIO("All of a user's delayed events are deleted in one statement",
             {
                 REQUIRE(deleted);
                 REQUIRE(transactions == 1U);
-                REQUIRE(store.captured_statements[0].sql == "DELETE FROM delayed_events WHERE user_id = $1");
+                // The sticky-duration side rows go first, in the same transaction (ADR-0854).
+                REQUIRE(store.captured_statements[0].sql ==
+                        "DELETE FROM delayed_event_sticky_durations WHERE delay_id IN (SELECT delay_id FROM "
+                        "delayed_events WHERE user_id = $1)");
                 REQUIRE(store.captured_statements[0].parameters[0].value == std::string{alice});
+                REQUIRE(store.captured_statements[1].sql == "DELETE FROM delayed_events WHERE user_id = $1");
+                REQUIRE(store.captured_statements[1].parameters[0].value == std::string{alice});
                 REQUIRE(none);
                 REQUIRE(db::committed_transaction_count(store) - before == 2U);
-                REQUIRE(store.captured_statements.size() == 2U);
-                REQUIRE(store.captured_statements[1].parameters[0].value == "@nobody:example.org");
+                REQUIRE(store.captured_statements.size() == 4U);
+                REQUIRE(store.captured_statements[3].parameters[0].value == "@nobody:example.org");
                 REQUIRE(store.delayed_events.size() == 1U);
                 REQUIRE(store.delayed_events.find("b-live") != nullptr);
             }

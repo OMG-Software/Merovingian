@@ -262,7 +262,19 @@ auto DelayedEventTable::finalise(std::string_view delay_id, DelayedEventStatus s
     found->second.finalised_at_ms = finalised_at_ms;
     found->second.event_id = std::move(event_id);
     found->second.error_json = std::move(error_json);
+    found->second.sticky_duration_ms.reset();
     index_row(found->second);
+    return true;
+}
+
+auto DelayedEventTable::attach_sticky_duration(std::string_view delay_id, std::int64_t duration_ms) -> bool
+{
+    auto const found = m_rows.find(delay_id);
+    if (found == m_rows.end() || found->second.status != DelayedEventStatus::scheduled || duration_ms < 1)
+    {
+        return false;
+    }
+    found->second.sticky_duration_ms = duration_ms;
     return true;
 }
 
