@@ -122,6 +122,14 @@ public:
         return m_started.runtime.homeserver.database.persistent_store;
     }
 
+    // Points the runtime's room-changed log at this fixture's own list, which is declared before the runtime and so
+    // outlives it, and returns that list.
+    [[nodiscard]] auto record_changed_rooms() noexcept -> std::vector<std::string> const&
+    {
+        m_started.runtime.homeserver.test_room_changed_log = &m_changed_rooms;
+        return m_changed_rooms;
+    }
+
     [[nodiscard]] auto room_path() const -> std::string
     {
         return "/_matrix/client/v3/rooms/" + m_room_id;
@@ -185,6 +193,7 @@ private:
     std::string m_alice_token{};
     std::string m_bob_token{};
     std::string m_room_id{};
+    std::vector<std::string> m_changed_rooms{};
 
     [[nodiscard]] auto sign_in(std::string const& name, std::string const& device) -> std::string
     {
@@ -617,8 +626,7 @@ SCENARIO("A sticky event that expires a sender's row in another room reports tha
                                      R"({"preset":"public_chat"})");
         REQUIRE(created.status == 200U);
         auto const other_room = *string_member(parse_object(created.body), "room_id");
-        auto changed_rooms = std::vector<std::string>{};
-        fixture.runtime().homeserver.test_room_changed_log = &changed_rooms;
+        auto const& changed_rooms = fixture.record_changed_rooms();
 
         WHEN("alice sends a sticky event in a second room")
         {
@@ -627,7 +635,6 @@ SCENARIO("A sticky event that expires a sender's row in another room reports tha
                                                     "/_matrix/client/v3/rooms/" + other_room +
                                                         "/send/m.test.sticky/t2" + "?sticky_duration_ms=1800000",
                                                     fixture.alice_token(), R"({"body":"hello"})"));
-            fixture.runtime().homeserver.test_room_changed_log = nullptr;
             THEN("the first room's row is gone and the first room is reported changed")
             {
                 auto const now = t0 + 1'000;
@@ -641,7 +648,6 @@ SCENARIO("A sticky event that expires a sender's row in another room reports tha
         {
             fixture.set_time(t0 + 1'000);
             auto const second = event_id_of(fixture.put_send("t2", "sticky_duration_ms=1800000"));
-            fixture.runtime().homeserver.test_room_changed_log = nullptr;
             THEN("the second room, which lost nothing, is not reported changed")
             {
                 REQUIRE(fixture.store().sticky_events.find(second, t0 + 1'000) != nullptr);
