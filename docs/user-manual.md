@@ -919,6 +919,17 @@ start-up; anything outside the range, or not a boolean or unsigned integer, refu
 | `server.delayed_events.max_scheduled_per_user` | `100` | `1` to `1000` | Scheduled events one user may hold. |
 | `server.delayed_events.max_finalised_per_user` | `100` | `1` to `1000` | Finalised events kept per user (and for at most 7 days). |
 
+##### Sticky events — `server.sticky_events.*`
+
+Sticky events (MSC4354) are message events that a server keeps delivering to clients, and to other servers, until
+they expire, for at most one hour. Element Call's `matrix_2_0` mode needs them for call membership; its default
+`compatibility` mode does not. Both keys require a restart and are checked at start-up (ADR-0854).
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `server.sticky_events.enabled` | `true` | `true` or `false` | `false` refuses a sticky send with 403 and stops serving the sticky sections; events already stored are unchanged. |
+| `server.sticky_events.max_per_sender` | `60` | `1` to `1000` | Unexpired sticky events one sender may hold across all rooms. Recording one more expires the sender's oldest. |
+
 ##### Delayed events and call membership
 
 A call member who loses connection should stop being listed. With delayed events (MSC4140) the client schedules the
@@ -2081,6 +2092,7 @@ take effect.
 | `server.rtc.livekit.service_url` | Reloadable |
 | `server.rtc.livekit.*` (the built-in token service) | Restart required |
 | `server.delayed_events.*` | Restart required |
+| `server.sticky_events.*` | Restart required |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |

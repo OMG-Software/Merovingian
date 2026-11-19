@@ -15512,6 +15512,8 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_delayed_event_delay_ms = config.server().delayed_events.max_delay_ms;
     rt.limits.max_scheduled_delayed_events_per_user = config.server().delayed_events.max_scheduled_per_user;
     rt.limits.max_finalised_delayed_events_per_user = config.server().delayed_events.max_finalised_per_user;
+    rt.limits.sticky_events_enabled = config.server().sticky_events.enabled;
+    rt.limits.max_sticky_events_per_sender = config.server().sticky_events.max_per_sender;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
