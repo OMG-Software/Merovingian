@@ -58,12 +58,13 @@ auto push_local_sticky_events_to_server(HomeserverRuntime& runtime, std::string_
         auto const body = federation::build_pdu_transaction_body(server_name, stored->json);
         if (!body.has_value())
         {
-            observability::log_diagnostic("rooms", "sticky_event.push_refused",
-                                          {
-                                              {"room_id",  std::string{room_id}, false},
-                                              {"event_id", row->event_id,        false}
+            observability::log_diagnostic(
+                "rooms", "sticky_event.push_refused",
+                {
+                    {"room_id",  std::string{room_id}, false},
+                    {"event_id", row->event_id,        false}
             },
-                                          observability::LogEventSeverity::error);
+                observability::LogEventSeverity::error);
             continue;
         }
         // One transaction ID per transaction: it is the durable queue row's key.
@@ -85,8 +86,8 @@ auto push_local_sticky_events_to_server(HomeserverRuntime& runtime, std::string_
         // Not retried: the queue is in memory and bounded (ADR-0856, known gaps).
         observability::log_diagnostic("rooms", "sticky_event.push_refused",
                                       {
-                                          {"room_id",     std::string{room_id},                false},
-                                          {"destination", std::string{destination},            false},
+                                          {"room_id",     std::string{room_id},                    false},
+                                          {"destination", std::string{destination},                false},
                                           {"refused",     std::to_string(accepted.size() - count), false}
         },
                                       observability::LogEventSeverity::warning);

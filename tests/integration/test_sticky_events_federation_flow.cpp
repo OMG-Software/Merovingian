@@ -196,17 +196,16 @@ public:
 
     [[nodiscard]] auto alice_sends_plain(std::string const& txn) -> std::string
     {
-        auto const response = request(
-            runtime(), "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.test.sticky/" + txn, alice_token,
-            R"({"body":"plain"})");
+        auto const response =
+            request(runtime(), "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.test.sticky/" + txn, alice_token,
+                    R"({"body":"plain"})");
         REQUIRE(response.status == 200U);
         return *string_member(parse_object(response.body), "event_id");
     }
 
     // A membership PDU as a conformant peer would file it.
     [[nodiscard]] auto membership_envelope(std::string_view user_id, std::string_view membership,
-                                           std::string const& event_id, std::uint64_t depth)
-        -> fed::InboundPduEnvelope
+                                           std::string const& event_id, std::uint64_t depth) -> fed::InboundPduEnvelope
     {
         auto envelope = fed::InboundPduEnvelope{};
         envelope.event_id = event_id;
@@ -383,8 +382,8 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
 
         WHEN("carol sends a PDU carrying equal stable and unstable sticky fields")
         {
-            auto const result = fixture.ingest(fixture.envelope_of(
-                {std::string{carol}, "$equal:c.example.org", t0, one_minute, one_minute}));
+            auto const result = fixture.ingest(
+                fixture.envelope_of({std::string{carol}, "$equal:c.example.org", t0, one_minute, one_minute}));
             REQUIRE(result.status == fed::PduIngestionStatus::accepted);
 
             THEN("a row is kept: received now, expiring a duration later")
@@ -415,10 +414,12 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
 
         WHEN("carol sends one PDU with the stable field only and one with the unstable field only")
         {
-            REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, "$stable:c.example.org", t0, one_minute, {}}))
-                        .status == fed::PduIngestionStatus::accepted);
-            REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, "$unstable:c.example.org", t0, {}, one_minute}))
-                        .status == fed::PduIngestionStatus::accepted);
+            REQUIRE(
+                fixture.ingest(fixture.envelope_of({std::string{carol}, "$stable:c.example.org", t0, one_minute, {}}))
+                    .status == fed::PduIngestionStatus::accepted);
+            REQUIRE(
+                fixture.ingest(fixture.envelope_of({std::string{carol}, "$unstable:c.example.org", t0, {}, one_minute}))
+                    .status == fed::PduIngestionStatus::accepted);
 
             THEN("each is sticky")
             {
@@ -429,8 +430,8 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
 
         WHEN("carol sends a PDU whose two sticky fields disagree")
         {
-            auto const result = fixture.ingest(fixture.envelope_of(
-                {std::string{carol}, "$unequal:c.example.org", t0, one_minute, 2 * one_minute}));
+            auto const result = fixture.ingest(
+                fixture.envelope_of({std::string{carol}, "$unequal:c.example.org", t0, one_minute, 2 * one_minute}));
 
             THEN("it is accepted as an ordinary event and gets no row")
             {
@@ -469,8 +470,8 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
         WHEN("sticky events are disabled")
         {
             fixture.homeserver().config.server().sticky_events.enabled = false;
-            auto const result = fixture.ingest(fixture.envelope_of(
-                {std::string{carol}, "$disabled:c.example.org", t0, one_minute, one_minute}));
+            auto const result = fixture.ingest(
+                fixture.envelope_of({std::string{carol}, "$disabled:c.example.org", t0, one_minute, one_minute}));
 
             THEN("the PDU is accepted and no row is kept")
             {
@@ -481,8 +482,7 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
     }
 }
 
-SCENARIO("A rejected or soft-failed sticky PDU gets no row",
-         "[sticky-events][federation][integration][inbound]")
+SCENARIO("A rejected or soft-failed sticky PDU gets no row", "[sticky-events][federation][integration][inbound]")
 {
     GIVEN("a room with carol joined, and dave of server D who never joined")
     {
@@ -505,8 +505,9 @@ SCENARIO("A rejected or soft-failed sticky PDU gets no row",
         {
             auto const late =
                 fixture.envelope_of({std::string{carol}, "$late:c.example.org", t0, one_minute, one_minute}, 40U);
-            REQUIRE(fixture.ingest(fixture.membership_envelope(carol, "leave", "$carol_leave:c.example.org", 41U)).status ==
-                    fed::PduIngestionStatus::accepted);
+            REQUIRE(
+                fixture.ingest(fixture.membership_envelope(carol, "leave", "$carol_leave:c.example.org", 41U)).status ==
+                fed::PduIngestionStatus::accepted);
             auto const result = fixture.ingest(late);
 
             THEN("it is soft-failed and gets no row")
@@ -531,8 +532,8 @@ SCENARIO("The per-sender cap applies to a remote sender, and a remote redaction 
             fixture.homeserver().config.server().sticky_events.max_per_sender = 2U;
             for (auto const* id : {"$one:c.example.org", "$two:c.example.org", "$three:c.example.org"})
             {
-                REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, id, t0, one_hour, one_hour}))
-                            .status == fed::PduIngestionStatus::accepted);
+                REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, id, t0, one_hour, one_hour})).status ==
+                        fed::PduIngestionStatus::accepted);
             }
 
             THEN("she holds two unexpired rows and the newest is one of them")
@@ -544,8 +545,10 @@ SCENARIO("The per-sender cap applies to a remote sender, and a remote redaction 
 
         WHEN("carol redacts her own sticky PDU")
         {
-            REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, "$target:c.example.org", t0, one_hour, one_hour}))
-                        .status == fed::PduIngestionStatus::accepted);
+            REQUIRE(
+                fixture
+                    .ingest(fixture.envelope_of({std::string{carol}, "$target:c.example.org", t0, one_hour, one_hour}))
+                    .status == fed::PduIngestionStatus::accepted);
             REQUIRE(fixture.row("$target:c.example.org") != nullptr);
             auto redaction = RemotePdu{std::string{carol}, "$redaction:c.example.org"};
             redaction.type = "m.room.redaction";
@@ -573,8 +576,9 @@ SCENARIO("A server that joins a room is sent this server's own unexpired sticky 
         auto const medium = fixture.alice_sends_sticky("b", one_minute);
         auto const long_lived = fixture.alice_sends_sticky("c", 30 * one_minute);
         auto const plain = fixture.alice_sends_plain("d");
-        REQUIRE(fixture.ingest(fixture.envelope_of({std::string{carol}, "$carols:c.example.org", t0, one_hour, one_hour}))
-                    .status == fed::PduIngestionStatus::accepted);
+        REQUIRE(
+            fixture.ingest(fixture.envelope_of({std::string{carol}, "$carols:c.example.org", t0, one_hour, one_hour}))
+                .status == fed::PduIngestionStatus::accepted);
         fixture.set_time(t0 + 20'000);
         auto const c_queue_before = fixture.queued_pdus_for(server_c);
         REQUIRE(fixture.queued_pdus_for(server_d).empty());
@@ -597,7 +601,8 @@ SCENARIO("A server that joins a room is sent this server's own unexpired sticky 
             THEN("no other server is sent them again")
             {
                 auto const c_after = fixture.queued_pdus_for(server_c);
-                REQUIRE(count_of(c_after, fixture.stored_form(medium)) == count_of(c_queue_before, fixture.stored_form(medium)));
+                REQUIRE(count_of(c_after, fixture.stored_form(medium)) ==
+                        count_of(c_queue_before, fixture.stored_form(medium)));
                 REQUIRE(count_of(c_after, fixture.stored_form(long_lived)) ==
                         count_of(c_queue_before, fixture.stored_form(long_lived)));
             }

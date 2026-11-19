@@ -5509,17 +5509,6 @@ namespace
 
 } // namespace
 
-// The body of ingest_pdu_event; the public function below adds what must happen
-// after this one has released its locks. File-local, but deliberately `static`
-// rather than inside the anonymous namespace above: that would re-indent the
-// whole function and bury the real change.
-// Signature verification (receipt step 2) is the caller's job, done before
-// this function takes any lock because resolving a key may go to the network:
-// federation::authorize_federation_pdu() in InboundRequest.cpp on the
-// same-process path, and handle_pdu_ingest_request() in WorkerPool.cpp, with
-// main's own admitted key-only helper, for a PDU relayed by a federation worker
-// (ADR-0071). This function re-checks authorization and content-hash
-// integrity.
 // MSC4354 (ADR-0854, ADR-0856): records a federated PDU as a sticky event once it is accepted and stored as a timeline
 // event. The caller has judged the PDU `accepted` (never rejected, soft-failed or an outlier) and holds the room stripe
 // and `runtime.mutex`. A state event is never sticky. The received time is this process's clock now, never a time the
@@ -5540,15 +5529,28 @@ static auto record_sticky_event_of_accepted_pdu(HomeserverRuntime& runtime,
     }
     auto const now_ms = database::sticky_clock_now_ms(store);
     if (!record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
-                                    static_cast<std::size_t>(runtime.config.server().sticky_events.max_per_sender), now_ms))
+                                    static_cast<std::size_t>(runtime.config.server().sticky_events.max_per_sender),
+                                    now_ms))
     {
-        log_diagnostic("sticky_event.record_failed", {
-                                                         {"room_id",  envelope.room_id,  false},
-                                                         {"event_id", envelope.event_id, false}
+        log_diagnostic("sticky_event.record_failed",
+                       {
+                           {"room_id",  envelope.room_id,  false},
+                           {"event_id", envelope.event_id, false}
         });
     }
 }
 
+// The body of ingest_pdu_event; the public function below adds what must happen
+// after this one has released its locks. File-local, but deliberately `static`
+// rather than inside the anonymous namespace above: that would re-indent the
+// whole function and bury the real change.
+// Signature verification (receipt step 2) is the caller's job, done before
+// this function takes any lock because resolving a key may go to the network:
+// federation::authorize_federation_pdu() in InboundRequest.cpp on the
+// same-process path, and handle_pdu_ingest_request() in WorkerPool.cpp, with
+// main's own admitted key-only helper, for a PDU relayed by a federation worker
+// (ADR-0071). This function re-checks authorization and content-hash
+// integrity.
 [[nodiscard]] static auto ingest_pdu_event_locked(HomeserverRuntime& runtime,
                                                   federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
@@ -6740,7 +6742,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"room_id",    room_id,                             false},
                            {"body_bytes", std::to_string(request.body.size()), false}
         });
-        auto result = send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts, request.sticky);
+        auto result =
+            send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts, request.sticky);
         log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
                        {
                            {"room_id", room_id,                                                    false},
