@@ -24,10 +24,11 @@ namespace merovingian::sync
 [[nodiscard]] auto sticky_candidates_of_room(database::PersistentStore const& store, std::string_view room_id,
                                              std::int64_t now_ms) -> std::vector<StickyCandidate>;
 
-// Which of `candidates` a sync response carries for one room (ADR-0855). Pure. A candidate is chosen when its ordering is
-// at most `upper_bound` and above `after` (when given), its sender is not in `ignored_senders`, and its event ID is not
-// in `excluded` (what the timeline carries, and for sliding sync what the connection was already sent). The result is
-// oldest first (ordering, then event ID) and holds at most `limit` events; `more` says whether eligible ones were left.
+// Which of `candidates` a sync response carries for one room (ADR-0855). Pure. A candidate is chosen when its ordering
+// is at most `upper_bound` and above `after` (when given), its sender is not in `ignored_senders`, and its event ID is
+// not in `excluded` (what the timeline carries, and for sliding sync what the connection was already sent). The result
+// is oldest first (ordering, then event ID) and holds at most `limit` events; `more` says whether eligible ones were
+// left.
 [[nodiscard]] auto select_sticky_for_sync(std::vector<StickyCandidate> const& candidates, std::uint64_t upper_bound,
                                           std::optional<std::uint64_t> after,
                                           std::unordered_set<std::string> const& ignored_senders,

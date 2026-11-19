@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Sticky events (MSC4354, MSC4480) in `/sync` and sliding sync (ADR-0855), end to end: a real runtime and store, events
-// sent through the API and then recorded as sticky with `database::record_sticky_event` (the send path that records them
-// itself is tested with it). Time is `PersistentStore::test_sticky_clock_ms`; no scenario sleeps. The feature is
+// sent through the API and then recorded as sticky with `database::record_sticky_event` (the send path that records
+// them itself is tested with it). Time is `PersistentStore::test_sticky_clock_ms`; no scenario sleeps. The feature is
 // not in the Matrix v1.19 specification, so there is no conformance scenario.
 
 #include "../support/InMemoryDatabaseConfig.hpp"
@@ -122,7 +122,8 @@ public:
     [[nodiscard]] auto send(std::string method, std::string target, std::string const& token, std::string body = {})
         -> hs::LocalHttpResponse
     {
-        return hs::handle_client_server_request(runtime(), {std::move(method), std::move(target), token, std::move(body)})
+        return hs::handle_client_server_request(runtime(),
+                                                {std::move(method), std::move(target), token, std::move(body)})
             .response;
     }
 
@@ -242,8 +243,8 @@ SCENARIO("a joined room's sticky section holds the sticky events its timeline do
 
         WHEN("bob's timeline filter refuses messages")
         {
-            auto const body = fixture.filtered_sync(fixture.bob_token,
-                                                    R"({"room":{"timeline":{"not_types":["m.room.message"]}}})");
+            auto const body =
+                fixture.filtered_sync(fixture.bob_token, R"({"room":{"timeline":{"not_types":["m.room.message"]}}})");
             THEN("the messages are in the section")
             {
                 REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{m1, m2, m3});
@@ -255,8 +256,9 @@ SCENARIO("a joined room's sticky section holds the sticky events its timeline do
             auto const body = fixture.sync(fixture.bob_token);
             THEN("there is no section")
             {
-                REQUIRE(object_member_as_object(*object_member_as_object(*object_member_as_object(body, "rooms"), "join"),
-                                                fixture.room_id) != nullptr);
+                REQUIRE(
+                    object_member_as_object(*object_member_as_object(*object_member_as_object(body, "rooms"), "join"),
+                                            fixture.room_id) != nullptr);
                 REQUIRE(sticky_of(fixture, body).empty());
                 REQUIRE(sticky_of(fixture, body, "msc4354_sticky").empty());
             }
@@ -277,8 +279,8 @@ SCENARIO("an incremental sync carries only the sticky events after its position"
 
         WHEN("bob syncs from his token with an empty timeline")
         {
-            auto const body = fixture.filtered_sync(fixture.bob_token, no_timeline_filter,
-                                                    *string_member(initial, "next_batch"));
+            auto const body =
+                fixture.filtered_sync(fixture.bob_token, no_timeline_filter, *string_member(initial, "next_batch"));
             THEN("only the new event is in the section, and the room is not dropped as empty")
             {
                 REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{second});
@@ -287,8 +289,9 @@ SCENARIO("an incremental sync carries only the sticky events after its position"
 
         WHEN("bob syncs from his token with full_state")
         {
-            auto const body = fixture.sync(fixture.bob_token, "?full_state=true&filter=" + std::string{no_timeline_filter} +
-                                                                  "&since=" + *string_member(initial, "next_batch"));
+            auto const body =
+                fixture.sync(fixture.bob_token, "?full_state=true&filter=" + std::string{no_timeline_filter} +
+                                                    "&since=" + *string_member(initial, "next_batch"));
             THEN("every unexpired sticky event is in the section")
             {
                 REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{first, second});
@@ -392,8 +395,8 @@ SCENARIO("with sticky events disabled /sync has no section", "[sticky-events][in
             auto const body = fixture.filtered_sync(fixture.bob_token, no_timeline_filter);
             THEN("neither key is present")
             {
-                auto const* room = object_member_as_object(*object_member_as_object(*object_member_as_object(body, "rooms"), "join"),
-                                                           fixture.room_id);
+                auto const* room = object_member_as_object(
+                    *object_member_as_object(*object_member_as_object(body, "rooms"), "join"), fixture.room_id);
                 REQUIRE(room != nullptr);
                 REQUIRE(object_member(*room, "sticky") == nullptr);
                 REQUIRE(object_member(*room, "msc4354_sticky") == nullptr);
@@ -409,7 +412,8 @@ namespace
                                 std::string_view timeline_limit = "0") -> std::string
 {
     return R"({"conn_id":")" + std::string{conn} + R"(","lists":{"all":{"ranges":[[0,10]],"timeline_limit":)" +
-           std::string{timeline_limit} + R"(,"required_state":[]}},"extensions":{)" + std::string{extension_json} + "}}";
+           std::string{timeline_limit} + R"(,"required_state":[]}},"extensions":{)" + std::string{extension_json} +
+           "}}";
 }
 
 [[nodiscard]] auto parsed(hs::DispatchResult const& result) -> cj::Object
@@ -486,8 +490,7 @@ SCENARIO("a sticky event in a timeline carries its remaining time under both nam
 
         WHEN("alice's sliding sync timeline holds it")
         {
-            auto const body =
-                parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
+            auto const body = parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
             auto const path = std::vector<std::string_view>{"rooms", fixture.room_id, "timeline"};
             THEN("the event carries the remaining time and the extension does not repeat it")
             {
@@ -504,8 +507,7 @@ SCENARIO("a sticky event in a timeline carries its remaining time under both nam
         WHEN("the sticky event has expired")
         {
             fixture.runtime().homeserver.database.persistent_store.test_sticky_clock_ms = t0 + one_hour_ms;
-            auto const body =
-                parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
+            auto const body = parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
             THEN("the timeline event carries no remaining time")
             {
                 auto const path = std::vector<std::string_view>{"rooms", fixture.room_id, "timeline"};
@@ -550,7 +552,8 @@ SCENARIO("the sliding sync sticky_events extension answers under the names the r
         {
             auto const body = parsed(fixture.sliding(
                 fixture.alice_token,
-                list_request(R"("sticky_events":{"enabled":true},"org.matrix.msc4354.sticky_events":{"enabled":true})")));
+                list_request(
+                    R"("sticky_events":{"enabled":true},"org.matrix.msc4354.sticky_events":{"enabled":true})")));
             THEN("both names carry the same events")
             {
                 REQUIRE(sliding_ids(fixture, body) == std::vector<std::string>{message});
@@ -561,8 +564,8 @@ SCENARIO("the sliding sync sticky_events extension answers under the names the r
 
         WHEN("the request enables nothing")
         {
-            auto const body = parsed(fixture.sliding(fixture.alice_token,
-                                                     list_request(R"("sticky_events":{"enabled":false})")));
+            auto const body =
+                parsed(fixture.sliding(fixture.alice_token, list_request(R"("sticky_events":{"enabled":false})")));
             THEN("there is no answer")
             {
                 REQUIRE(sliding_ids(fixture, body).empty());
@@ -618,8 +621,7 @@ SCENARIO("sliding sync sends a backlog over several responses and answers a poll
 
         WHEN("the client acknowledges and asks again with a long poll")
         {
-            auto const second =
-                fixture.sliding(fixture.alice_token, request, first_pos, /*can_wait=*/true, "30000");
+            auto const second = fixture.sliding(fixture.alice_token, request, first_pos, /*can_wait=*/true, "30000");
             THEN("the answer is at once, with the rest")
             {
                 REQUIRE(sliding_ids(fixture, parsed(second)) == std::vector<std::string>{m3});
@@ -674,8 +676,10 @@ SCENARIO("sliding sync sends a room that re-enters the extension's scope only wh
     {
         auto fixture = Fixture{};
         auto const m1 = fixture.sticky_message("one");
-        auto const in_scope = list_request(R"("sticky_events":{"enabled":true,"rooms":[")" + fixture.room_id + R"("]})");
-        auto const out_of_scope = list_request(R"("sticky_events":{"enabled":true,"rooms":["!elsewhere:example.org"]})");
+        auto const in_scope =
+            list_request(R"("sticky_events":{"enabled":true,"rooms":[")" + fixture.room_id + R"("]})");
+        auto const out_of_scope =
+            list_request(R"("sticky_events":{"enabled":true,"rooms":["!elsewhere:example.org"]})");
         auto const first = parsed(fixture.sliding(fixture.alice_token, in_scope));
         REQUIRE(sliding_ids(fixture, first) == std::vector<std::string>{m1});
         auto const second = parsed(fixture.sliding(fixture.alice_token, out_of_scope, *string_member(first, "pos")));
@@ -735,10 +739,10 @@ SCENARIO("a new sliding sync connection is sent every sticky event again", "[sti
         WHEN("the extension is left out and then asked for again")
         {
             std::ignore = fixture.plain_message("filler");
-            auto const second = parsed(fixture.sliding(fixture.alice_token, list_request(""),
-                                                       *string_member(first, "pos")));
-            auto const third = parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension),
-                                                      *string_member(second, "pos")));
+            auto const second =
+                parsed(fixture.sliding(fixture.alice_token, list_request(""), *string_member(first, "pos")));
+            auto const third = parsed(
+                fixture.sliding(fixture.alice_token, list_request(stable_extension), *string_member(second, "pos")));
             THEN("the event is sent again")
             {
                 REQUIRE(sliding_ids(fixture, third) == std::vector<std::string>{message});

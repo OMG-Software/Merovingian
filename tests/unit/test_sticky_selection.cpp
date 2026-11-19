@@ -29,10 +29,10 @@ constexpr auto no_limit = std::numeric_limits<std::size_t>::max();
 {
     // Listed out of order on purpose: the selection orders them.
     return {
-        {"$c", "@alice:example.org", 30U},
-        {"$a", "@alice:example.org", 10U},
+        {"$c", "@alice:example.org",   30U},
+        {"$a", "@alice:example.org",   10U},
         {"$d", "@mallory:example.org", 40U},
-        {"$b", "@bob:example.org", 20U},
+        {"$b", "@bob:example.org",     20U},
     };
 }
 
