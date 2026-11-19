@@ -5,6 +5,7 @@
 #include "merovingian/sync/ExtAccountDataRequest.hpp"
 #include "merovingian/sync/ExtE2eeRequest.hpp"
 #include "merovingian/sync/ExtReceiptsRequest.hpp"
+#include "merovingian/sync/ExtStickyEventsRequest.hpp"
 #include "merovingian/sync/ExtToDeviceRequest.hpp"
 #include "merovingian/sync/ExtTypingRequest.hpp"
 
@@ -20,6 +21,8 @@ struct SlidingSyncExtensionRequests final
     std::optional<ExtAccountDataRequest> account_data{};
     std::optional<ExtReceiptsRequest> receipts{};
     std::optional<ExtTypingRequest> typing{};
+    // MSC4480, read under either of its two names (ADR-0853, ADR-0855).
+    std::optional<ExtStickyEventsRequest> sticky_events{};
 };
 
 } // namespace merovingian::sync

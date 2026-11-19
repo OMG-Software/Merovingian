@@ -27,6 +27,7 @@ Spec authority:
 | `ReceiptVisibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
+| `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
@@ -402,6 +403,33 @@ body is built. Its mutex is a leaf below
 `homeserver.mutex`; do not call out of it or take another lock inside it. Do not replace it with a "sent" set (ADR-0450 has
 the lost-response sequence that breaks it). `/messages` and `/context` stay stateless (ADR-0451). A change to a rule above
 changes the tracker's tests with it.
+
+## Sticky events (ADR-0855)
+
+`/sync` and sliding sync deliver MSC4354 sticky events through `sticky_candidates_of_room` and `select_sticky_for_sync`
+only; never loop the sticky table or the room's events. The clock is `database::sticky_clock_now_ms`, the one the send
+path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), and everything is off when
+`ClientApiLimits::sticky_events_enabled` is false. Both serializers (`client_event_with_id` and sliding sync's
+`client_event_value`) add the remaining time with `database::attach_sticky_remaining`.
+
+- **Classic `/sync`** (`classic_sticky_events`, `ClientServerRuntime.cpp`): `rooms.join.{roomId}.sticky` and
+  `msc4354_sticky`, the same array, only when non-empty. Candidates are the room's unexpired rows at or below the
+  response's position from unignored senders; an initial sync, `full_state` or a room joined after `since` gets all of
+  them, otherwise those after `since`. An event in this response's `timeline.events` is left out, and the timeline
+  filter is applied first; the `state` and `timeline` filters do not touch the section. No history-visibility check,
+  no cap (classic `/sync` has no cursor for what a cap would leave), joined rooms only. A room with only a sticky
+  event is not suppressed as empty, and a sticky sender is a lazy-loaded sender. `StreamToken` has no sticky
+  component: do not add one.
+- **Sliding sync** (`sticky_events` or `org.matrix.msc4354.sticky_events`; both names in one request are one request
+  answered under both): the connection keeps `sticky_delivered`, per room, the IDs sent in the extension or carried by
+  a timeline. A response sends each in-scope joined room's undelivered events, oldest first, at most `limit` (default
+  and at most 100; below 1 is refused by `sliding_sync_request_limit_violation`). The set lives in the pending response
+  like every other connection state, so a repeated `pos` is built from the committed set and answers the same events.
+  A request without the extension starts the set afresh; an out-of-scope room keeps its set, less expired IDs. A
+  backlog (`sticky_backlog_exists`, over the previous window and subscriptions or the named rooms) answers a long poll
+  at once, except for a request at the same `pos` as a response that already delivered sticky events
+  (`sticky_answered`): a pos no stream advanced is not acknowledged by a repeat, and answering again would spin the
+  client. Scope is the other extensions' (`rooms`; `lists` is not read by any extension).
 
 ## Long-poll behaviour
 
