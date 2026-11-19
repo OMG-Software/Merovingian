@@ -147,7 +147,7 @@ SCENARIO("a room reload reads the database without touching the store and swaps 
         {
             auto snapshot = db::load_room_snapshot(fixture.worker(), room_id);
             REQUIRE(snapshot.has_value());
-            db::apply_room_snapshot(fixture.worker(), std::move(*snapshot));
+            db::apply_room_snapshot(fixture.worker(), std::move(snapshot).value());
 
             THEN("the worker store now enforces the ACL")
             {
@@ -177,7 +177,7 @@ SCENARIO("a room reload gives the worker the room's sticky rows and takes away a
         {
             auto snapshot = db::load_room_snapshot(fixture.worker(), room_id);
             REQUIRE(snapshot.has_value());
-            db::apply_room_snapshot(fixture.worker(), std::move(*snapshot));
+            db::apply_room_snapshot(fixture.worker(), std::move(snapshot).value());
 
             THEN("the worker holds the row as main stored it")
             {
@@ -193,7 +193,7 @@ SCENARIO("a room reload gives the worker the room's sticky rows and takes away a
                 REQUIRE(db::delete_sticky_event(fixture.main_open.store, "$call"));
                 auto again = db::load_room_snapshot(fixture.worker(), room_id);
                 REQUIRE(again.has_value());
-                db::apply_room_snapshot(fixture.worker(), std::move(*again));
+                db::apply_room_snapshot(fixture.worker(), std::move(again).value());
 
                 THEN("the worker holds no row")
                 {

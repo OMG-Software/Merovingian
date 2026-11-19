@@ -212,9 +212,11 @@ SCENARIO("an event carries its sticky remaining time only when attach_sticky_rem
             auto event = client_event();
             db::attach_sticky_remaining(opened.store, event_id, event);
 
+            auto const served = cj::Value{std::move(event)};
+
             THEN("the event carries it")
             {
-                REQUIRE(db::carries_sticky_remaining(cj::Value{std::move(event)}));
+                REQUIRE(db::carries_sticky_remaining(served));
             }
         }
 
@@ -224,9 +226,11 @@ SCENARIO("an event carries its sticky remaining time only when attach_sticky_rem
             auto event = with_unsigned(cj::Value{cj::Object{}});
             db::attach_sticky_remaining(opened.store, event_id, event);
 
+            auto const served = cj::Value{std::move(event)};
+
             THEN("the event does not carry it")
             {
-                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{std::move(event)}));
+                REQUIRE_FALSE(db::carries_sticky_remaining(served));
             }
         }
 
@@ -234,12 +238,14 @@ SCENARIO("an event carries its sticky remaining time only when attach_sticky_rem
         {
             auto unstable = cj::Object{};
             unstable.push_back(cj::make_member("msc4354_sticky_duration_ttl_ms", cj::Value{std::int64_t{1}}));
+            auto const only_unstable = cj::Value{with_unsigned(cj::Value{std::move(unstable)})};
+            auto const unsigned_text = cj::Value{with_unsigned(cj::Value{std::string{"x"}})};
 
             THEN("none carries it")
             {
                 REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{std::string{"event"}}));
-                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{with_unsigned(cj::Value{std::string{"x"}})}));
-                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{with_unsigned(cj::Value{std::move(unstable)})}));
+                REQUIRE_FALSE(db::carries_sticky_remaining(unsigned_text));
+                REQUIRE_FALSE(db::carries_sticky_remaining(only_unstable));
             }
         }
     }

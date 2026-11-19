@@ -149,8 +149,9 @@ SCENARIO("A room snapshot crosses the IPC channel exactly", "[ipc][c44][worker-s
                 REQUIRE(assembled->event_state_groups.size() == 1U);
                 REQUIRE(assembled->forward_extremities.size() == 1U);
                 REQUIRE(assembled->forward_extremities.front().event_id == "$second");
-                REQUIRE(assembled->sticky_events.size() == 1U);
-                auto const& sticky = assembled->sticky_events.front();
+                auto const& sticky_rows = assembled.value().sticky_events;
+                REQUIRE(sticky_rows.size() == 1U);
+                auto const& sticky = sticky_rows.front();
                 REQUIRE(sticky.event_id == "$second");
                 REQUIRE(sticky.room_id == room_id);
                 REQUIRE(sticky.sender == "@alice:local.example");

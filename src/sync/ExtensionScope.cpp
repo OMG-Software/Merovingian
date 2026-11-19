@@ -4,8 +4,11 @@
 #include "merovingian/sync/ExtensionScope.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_set>
+#include <vector>
 
 namespace merovingian::sync
 {
@@ -13,10 +16,16 @@ namespace merovingian::sync
 namespace
 {
 
-    // Whether a scope key names every list or subscription: absent, or holding "*".
-    [[nodiscard]] auto names_every(std::optional<std::vector<std::string>> const& key) -> bool
+    // The entries a scope key names, or nullptr when it names every list or subscription: absent, or holding "*".
+    [[nodiscard]] auto named_entries(std::optional<std::vector<std::string>> const& key)
+        -> std::vector<std::string> const*
     {
-        return !key.has_value() || std::ranges::find(*key, std::string_view{"*"}) != key->end();
+        if (!key.has_value())
+        {
+            return nullptr;
+        }
+        auto const& entries = key.value();
+        return std::ranges::find(entries, std::string_view{"*"}) != entries.end() ? nullptr : &entries;
     }
 
 } // namespace
@@ -34,7 +43,7 @@ auto extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
             scope.push_back(room_id);
         }
     };
-    if (names_every(lists))
+    if (auto const* named_lists = named_entries(lists); named_lists == nullptr)
     {
         for (auto const& [key, window] : list_windows)
         {
@@ -43,7 +52,7 @@ auto extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
     }
     else
     {
-        for (auto const& key : *lists)
+        for (auto const& key : *named_lists)
         {
             if (auto const found = list_windows.find(key); found != list_windows.end())
             {
@@ -51,13 +60,13 @@ auto extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
             }
         }
     }
-    if (names_every(rooms))
+    if (auto const* named_rooms = named_entries(rooms); named_rooms == nullptr)
     {
         std::ranges::for_each(subscriptions, add);
     }
     else
     {
-        auto const named = std::unordered_set<std::string>{rooms->begin(), rooms->end()};
+        auto const named = std::unordered_set<std::string>{named_rooms->begin(), named_rooms->end()};
         for (auto const& room_id : subscriptions)
         {
             if (named.contains(room_id))
