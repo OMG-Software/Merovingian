@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -347,6 +348,27 @@ namespace
         return sub;
     }
 
+    // MSC4508's scope keys, `lists` and `rooms`, of one room-scoped extension object (typing, receipts, sticky_events),
+    // each de-duplicated. A key that is present but not an array of strings names nothing, as an empty array does.
+    template <typename ScopedRequest>
+    auto read_extension_scope(canonicaljson::Object const& source, ScopedRequest& request) -> void
+    {
+        if (auto const* v = find_member(source, "lists"); v != nullptr)
+        {
+            request.lists = extract_unique_strings(*v);
+        }
+        if (auto const* v = find_member(source, "rooms"); v != nullptr)
+        {
+            request.rooms = extract_unique_strings(*v);
+        }
+    }
+
+    // Whether a scope key holds more than `cap` names; an absent key holds none.
+    [[nodiscard]] auto exceeds(std::optional<std::vector<std::string>> const& key, std::size_t cap) noexcept -> bool
+    {
+        return key.has_value() && key->size() > cap;
+    }
+
     // MSC4480's extension is sent under `sticky_events` or `org.matrix.msc4354.sticky_events`. A request that sends
     // both is one request, read from the stable name's object (ADR-0855), and is answered under both names.
     [[nodiscard]] auto parse_sticky_events_request(canonicaljson::Object const& extensions)
@@ -384,15 +406,7 @@ namespace
                 }
             }
         }
-        // MSC4508: a key that is present but not an array of strings names nothing, as an empty array does.
-        if (auto const* v = find_member(source, "lists"); v != nullptr)
-        {
-            req.lists = extract_unique_strings(*v);
-        }
-        if (auto const* v = find_member(source, "rooms"); v != nullptr)
-        {
-            req.rooms = extract_unique_strings(*v);
-        }
+        read_extension_scope(source, req);
         return req;
     }
 
@@ -456,11 +470,8 @@ namespace
             {
                 auto req = ExtReceiptsRequest{};
                 req.enabled = parse_enabled(*o);
-                if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
-                {
-                    req.rooms = extract_unique_strings(*rv);
-                }
-                ext.receipts = req;
+                read_extension_scope(*o, req);
+                ext.receipts = std::move(req);
             }
         }
 
@@ -470,11 +481,8 @@ namespace
             {
                 auto req = ExtTypingRequest{};
                 req.enabled = parse_enabled(*o);
-                if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
-                {
-                    req.rooms = extract_unique_strings(*rv);
-                }
-                ext.typing = req;
+                read_extension_scope(*o, req);
+                ext.typing = std::move(req);
             }
         }
 
@@ -713,18 +721,32 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
             return "too many required_state entries in a room subscription";
         }
     }
-    // The receipts and typing extensions name rooms as room_subscriptions does, and each named
-    // room costs a membership lookup under the runtime lock, so the same cap bounds them.
+    // The room-scoped extensions name rooms as room_subscriptions does and lists as `lists` does (MSC4508), and each
+    // name costs a lookup under the runtime lock, so the same caps bound them.
     if (request.extensions.has_value())
     {
         auto const& extensions = *request.extensions;
-        if (extensions.receipts.has_value() && extensions.receipts->rooms.size() > limits.room_subscriptions)
+        if (extensions.receipts.has_value())
         {
-            return "too many rooms in the receipts extension";
+            if (exceeds(extensions.receipts->rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the receipts extension";
+            }
+            if (exceeds(extensions.receipts->lists, limits.lists))
+            {
+                return "too many lists in the receipts extension";
+            }
         }
-        if (extensions.typing.has_value() && extensions.typing->rooms.size() > limits.room_subscriptions)
+        if (extensions.typing.has_value())
         {
-            return "too many rooms in the typing extension";
+            if (exceeds(extensions.typing->rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the typing extension";
+            }
+            if (exceeds(extensions.typing->lists, limits.lists))
+            {
+                return "too many lists in the typing extension";
+            }
         }
         if (extensions.sticky_events.has_value())
         {
@@ -733,11 +755,11 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
                 return "the sticky_events limit must be at least 1";
             }
             auto const& sticky = *extensions.sticky_events;
-            if (sticky.rooms.has_value() && sticky.rooms->size() > limits.room_subscriptions)
+            if (exceeds(sticky.rooms, limits.room_subscriptions))
             {
                 return "too many rooms in the sticky_events extension";
             }
-            if (sticky.lists.has_value() && sticky.lists->size() > limits.lists)
+            if (exceeds(sticky.lists, limits.lists))
             {
                 return "too many lists in the sticky_events extension";
             }

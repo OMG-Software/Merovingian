@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/ExtensionScopeHistory.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 
 #include <cstdint>
@@ -31,6 +32,8 @@ struct SlidingSyncPendingResponse final
     // This response delivered sticky events from a backlog at once. A request at the same pos may be a retry, so it
     // does not answer a backlog at once a second time: with no stream advanced it would spin the client.
     bool sticky_answered{false};
+    // See SlidingSyncConnectionState::extension_scope_history.
+    ExtensionScopeHistory extension_scope_history{};
     // See SlidingSyncConnectionState::room_timeline_limits and list_configs.
     std::unordered_map<std::string, std::uint64_t> room_timeline_limits{};
     std::map<std::string, SlidingSyncList> list_configs{};

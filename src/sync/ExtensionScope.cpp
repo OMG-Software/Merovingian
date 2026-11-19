@@ -4,6 +4,7 @@
 #include "merovingian/sync/ExtensionScope.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -76,6 +77,36 @@ auto extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
         }
     }
     return scope;
+}
+
+auto joined_extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
+                                  std::optional<std::vector<std::string>> const& rooms,
+                                  ExtensionScopeSource const& source,
+                                  std::map<std::string, RoomAccess, std::less<>> const& room_access)
+    -> std::vector<std::string>
+{
+    auto scope = extension_scope_rooms(lists, rooms, source.list_windows, source.subscriptions);
+    std::erase_if(scope, [&room_access](std::string const& room_id) {
+        auto const found = room_access.find(room_id);
+        return found == room_access.end() || found->second != RoomAccess::joined;
+    });
+    return scope;
+}
+
+auto enters_typing_scope(ExtensionScopeHistory const& history, std::string const& room_id) -> bool
+{
+    return !history.typing_rooms.contains(room_id);
+}
+
+auto receipt_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
+                       std::uint64_t since_sync_stream_id) -> std::uint64_t
+{
+    if (history.receipt_rooms.contains(room_id))
+    {
+        return since_sync_stream_id;
+    }
+    auto const floor = history.receipt_floors.find(room_id);
+    return floor != history.receipt_floors.end() ? std::min(floor->second, since_sync_stream_id) : since_sync_stream_id;
 }
 
 } // namespace merovingian::sync

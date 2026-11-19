@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/SlidingSyncExtensionRequests.hpp"
 #include "merovingian/sync/SlidingSyncExtensionResponses.hpp"
@@ -26,8 +27,10 @@ namespace merovingian::sync
 // `current_sync_stream_id` — current top of the sync stream; used to derive
 //                            the to_device next_batch opaque token.
 // `response_room_ids`      — union of all room IDs appearing in the rooms map of the current
-//                            response. Scopes receipts and typing when the extension request
-//                            does not name explicit rooms.
+//                            response. Scopes the account_data extension's room rows.
+// `extension_scope`        — this response's list windows and the request's room subscriptions. The
+//                            receipts and typing extensions serve the joined rooms of their MSC4508
+//                            scope over it (`joined_extension_scope_rooms`, ADR-0861).
 // `ignored_senders`        — the requesting user's resolved m.ignored_user_list
 //                            (see trust_safety::resolve_ignored_users), resolved once by the
 //                            caller and reused here. Typing and receipt entries authored by an
@@ -43,6 +46,7 @@ namespace merovingian::sync
                                     std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
                                     std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
                                     database::PersistentStore& store, std::vector<std::string> const& response_room_ids,
+                                    ExtensionScopeSource const& extension_scope,
                                     std::unordered_set<std::string> const& ignored_senders = {},
                                     std::unordered_set<std::string> const& initial_room_ids = {})
     -> SlidingSyncExtensionResponses;
@@ -56,6 +60,7 @@ namespace merovingian::sync
                                     database::PersistentStore& store,
                                     std::map<std::string, RoomAccess, std::less<>> const& room_access,
                                     std::vector<std::string> const& response_room_ids,
+                                    ExtensionScopeSource const& extension_scope,
                                     std::unordered_set<std::string> const& ignored_senders = {},
                                     std::unordered_set<std::string> const& initial_room_ids = {})
     -> SlidingSyncExtensionResponses;

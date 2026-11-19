@@ -4,27 +4,29 @@
 #include "merovingian/sync/SlidingSyncExtensions.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"
+#include "merovingian/sync/ExtensionScope.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
+#include "merovingian/sync/ReceiptVisibility.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/ToDevicePosition.hpp"
-#include "merovingian/sync/ReceiptVisibility.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -237,50 +239,13 @@ namespace
         return resp;
     }
 
-    // ── Shared helper: effective room list ────────────────────────────────────
-
-    // When an extension names explicit rooms, scope to those. Otherwise fall
-    // back to all rooms that appear in the current response. Per MSC4186,
-    // `"rooms":["*"]` is the `AllSubscribed` sentinel (ruma's
-    // `ExtensionRoomConfig::AllSubscribed` serializes to the literal string
-    // "*"), not a room named "*" — matrix-rust-sdk's RoomListService sends
-    // exactly this for the receipts extension. Treat it the same as omitting
-    // `rooms` entirely, rather than matching against a room that can never
-    // exist.
-    [[nodiscard]] auto effective_rooms(std::vector<std::string> const& ext_rooms,
-                                       std::vector<std::string> const& response_rooms)
-        -> std::vector<std::string> const&
-    {
-        auto const is_all_subscribed = ext_rooms.empty() || (ext_rooms.size() == 1U && ext_rooms.front() == "*");
-        return is_all_subscribed ? response_rooms : ext_rooms;
-    }
-
-    // The requested rooms (after effective_rooms) that the caller has joined, each once.
-    //
-    // CSAZ-1: `rooms` is client-supplied, so only a room the caller has joined may be named.
-    // The rooms are classified through one index over the caller's memberships, built once per
-    // request, rather than one scan of every membership row per named room: this runs under
-    // the runtime lock (security audit run-1, sp01.sliding-sync-extension-rooms-unbounded).
-    [[nodiscard]] auto joined_rooms_among(std::vector<std::string> const& rooms,
-                                          std::map<std::string, RoomAccess, std::less<>> const& access)
-        -> std::set<std::string_view, std::less<>>
-    {
-        auto joined = std::set<std::string_view, std::less<>>{};
-        for (auto const& room_id : rooms)
-        {
-            if (auto const found = access.find(room_id); found != access.end() && found->second == RoomAccess::joined)
-            {
-                joined.insert(room_id);
-            }
-        }
-        return joined;
-    }
-
     // ── receipts extension ────────────────────────────────────────────────────
 
+    // `floors` holds the rooms re-entering the receipts scope, each with the position it dropped out at: such a room
+    // is sent the receipts that changed after that position, the others those after `since_sync_stream_id`.
     [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::string_view user,
-                                      std::uint64_t since_sync_stream_id,
-                                      std::set<std::string_view, std::less<>> const& joined_rooms,
+                                      std::uint64_t since_sync_stream_id, std::vector<std::string> const& joined_rooms,
+                                      std::unordered_map<std::string, std::uint64_t> const& floors,
                                       std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
     {
         auto resp = ExtReceiptsResponse{};
@@ -292,7 +257,7 @@ namespace
         // The rows of each room that was asked for, through the receipt index (ADR-0737), never the whole table.
         auto by_room = std::map<std::string_view, ReceiptContentBuilder, std::less<>>{};
         auto rows = std::vector<database::PersistentReceipt const*>{};
-        for (auto const room_id : joined_rooms)
+        for (auto const& room_id : joined_rooms)
         {
             auto room_rows = database::receipts_in_room(rt.database.persistent_store, room_id);
             rows.insert(rows.end(), room_rows.begin(), room_rows.end());
@@ -300,7 +265,8 @@ namespace
         for (auto const* receipt_row : rows)
         {
             auto const& receipt = *receipt_row;
-            if (receipt.stream_id <= since_sync_stream_id)
+            auto const floor = floors.find(receipt.room_id);
+            if (receipt.stream_id <= (floor != floors.end() ? floor->second : since_sync_stream_id))
             {
                 continue;
             }
@@ -345,17 +311,20 @@ namespace
 
     // ── typing extension ──────────────────────────────────────────────────────
 
+    // `entering` holds the rooms entering the typing scope (MSC4508): each is reported with its current typing list
+    // whatever its typing position, and left out when nobody is typing, as on an initial sync (ADR-0863).
     [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
-                                    std::set<std::string_view, std::less<>> const& joined_rooms,
+                                    std::vector<std::string> const& joined_rooms,
+                                    std::unordered_set<std::string> const& entering,
                                     std::unordered_set<std::string> const& ignored_senders) -> ExtTypingResponse
     {
         auto resp = ExtTypingResponse{};
 
-        // Only rooms whose typing list changed since the caller's position are reported.
+        // Rooms whose typing list changed since the caller's position, and rooms entering the scope, are reported.
         auto user_ids_by_room = std::map<std::string_view, canonicaljson::Array, std::less<>>{};
-        for (auto const room_id : joined_rooms)
+        for (auto const& room_id : joined_rooms)
         {
-            if (homeserver::room_typing_stream_id_for(rt, room_id) > since_sync_stream_id)
+            if (entering.contains(room_id) || homeserver::room_typing_stream_id_for(rt, room_id) > since_sync_stream_id)
             {
                 user_ids_by_room.try_emplace(room_id);
             }
@@ -389,10 +358,11 @@ namespace
 
         for (auto& [room_id, user_ids] : user_ids_by_room)
         {
-            // Suppress empty typing lists on the first sync (since == 0); for
-            // every subsequent position emit the current list even when empty so
-            // clients can clear stale indicators.
-            if (user_ids.empty() && since_sync_stream_id == std::uint64_t{0U})
+            // Suppress empty typing lists on the first sync (since == 0) and for a room entering the scope, which the
+            // client holds no indicator for; for every other room emit the current list even when empty so clients
+            // can clear stale indicators.
+            if (user_ids.empty() &&
+                (since_sync_stream_id == std::uint64_t{0U} || entering.contains(std::string{room_id})))
             {
                 continue;
             }
@@ -412,6 +382,39 @@ namespace
         return resp;
     }
 
+    // The receipts half of the history a response leaves (ADR-0863): `rooms` are in scope now; a room that was in scope
+    // and is not now drops out at `since_sync_stream_id`, the position after which this response sends it nothing; a
+    // room that was already out keeps its floor; a room back in scope gives its floor up. Only rooms the user is still
+    // joined to keep one: a room rejoined later enters the scope afresh (MSC4551), and the map stays bounded by the
+    // user's rooms.
+    [[nodiscard]] auto receipts_scope_history(ExtensionScopeHistory const& previous,
+                                              std::vector<std::string> const& rooms, std::uint64_t since_sync_stream_id,
+                                              std::map<std::string, RoomAccess, std::less<>> const& room_access)
+        -> ExtensionScopeHistory
+    {
+        auto next = ExtensionScopeHistory{};
+        next.receipt_rooms.insert(rooms.begin(), rooms.end());
+        auto const still_joined = [&room_access](std::string const& room_id) {
+            auto const found = room_access.find(room_id);
+            return found != room_access.end() && found->second == RoomAccess::joined;
+        };
+        for (auto const& room_id : previous.receipt_rooms)
+        {
+            if (!next.receipt_rooms.contains(room_id) && still_joined(room_id))
+            {
+                next.receipt_floors.emplace(room_id, since_sync_stream_id);
+            }
+        }
+        for (auto const& [room_id, floor] : previous.receipt_floors)
+        {
+            if (!next.receipt_rooms.contains(room_id) && still_joined(room_id))
+            {
+                next.receipt_floors.emplace(room_id, floor);
+            }
+        }
+        return next;
+    }
+
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -419,7 +422,7 @@ namespace
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
-                      std::vector<std::string> const& response_room_ids,
+                      std::vector<std::string> const& response_room_ids, ExtensionScopeSource const& extension_scope,
                       std::unordered_set<std::string> const& ignored_senders,
                       std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
@@ -429,14 +432,14 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const room_access =
         needs_access ? room_access_index(store, user) : std::map<std::string, RoomAccess, std::less<>>{};
     return build_extensions(rt, user, device_id, ext_req, since_sync_stream_id, current_sync_stream_id, store,
-                            room_access, response_room_ids, ignored_senders, initial_room_ids);
+                            room_access, response_room_ids, extension_scope, ignored_senders, initial_room_ids);
 }
 
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
                       std::map<std::string, RoomAccess, std::less<>> const& room_access,
-                      std::vector<std::string> const& response_room_ids,
+                      std::vector<std::string> const& response_room_ids, ExtensionScopeSource const& extension_scope,
                       std::unordered_set<std::string> const& ignored_senders,
                       std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
@@ -460,20 +463,56 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
     auto const wants_typing = ext_req.typing.has_value() && ext_req.typing->enabled;
     // One room-access index per request, shared by both extensions (and, from the handler, by the
-    // room_subscriptions classification).
+    // room_subscriptions classification). Each serves the joined rooms of its own MSC4508 scope (ADR-0861).
+    // With the connection's scope history, a room entering the typing scope and a room re-entering the receipts
+    // scope are sent what MSC4508 asks for, and the history this response leaves is returned (ADR-0863).
+    auto const* const history = extension_scope.history;
+    auto next_history = ExtensionScopeHistory{};
     if (wants_receipts)
     {
-        resp.receipts =
-            build_receipts(rt, user, since_sync_stream_id,
-                           joined_rooms_among(effective_rooms(ext_req.receipts->rooms, response_room_ids), room_access),
-                           ignored_senders);
+        auto const rooms = joined_extension_scope_rooms(ext_req.receipts->lists, ext_req.receipts->rooms,
+                                                        extension_scope, room_access);
+        auto floors = std::unordered_map<std::string, std::uint64_t>{};
+        if (history != nullptr)
+        {
+            for (auto const& room_id : rooms)
+            {
+                if (auto const floor = receipt_floor_for(*history, room_id, since_sync_stream_id);
+                    floor < since_sync_stream_id)
+                {
+                    floors.emplace(room_id, floor);
+                }
+            }
+            next_history = receipts_scope_history(*history, rooms, since_sync_stream_id, room_access);
+        }
+        auto receipts = build_receipts(rt, user, since_sync_stream_id, rooms, floors, ignored_senders);
+        resp.sent_on_scope_entry = std::ranges::any_of(floors, [&receipts](auto const& entry) {
+            return receipts.rooms_json.contains(entry.first);
+        });
+        resp.receipts = std::move(receipts);
     }
     if (wants_typing)
     {
-        resp.typing =
-            build_typing(rt, since_sync_stream_id,
-                         joined_rooms_among(effective_rooms(ext_req.typing->rooms, response_room_ids), room_access),
-                         ignored_senders);
+        auto const rooms =
+            joined_extension_scope_rooms(ext_req.typing->lists, ext_req.typing->rooms, extension_scope, room_access);
+        auto entering = std::unordered_set<std::string>{};
+        if (history != nullptr)
+        {
+            std::ranges::copy_if(rooms, std::inserter(entering, entering.end()), [history](std::string const& room_id) {
+                return enters_typing_scope(*history, room_id);
+            });
+            next_history.typing_rooms.insert(rooms.begin(), rooms.end());
+        }
+        auto typing = build_typing(rt, since_sync_stream_id, rooms, entering, ignored_senders);
+        resp.sent_on_scope_entry =
+            resp.sent_on_scope_entry || std::ranges::any_of(entering, [&typing](std::string const& room_id) {
+                return typing.rooms_json.contains(room_id);
+            });
+        resp.typing = std::move(typing);
+    }
+    if (history != nullptr)
+    {
+        resp.scope_history = std::move(next_history);
     }
 
     return resp;

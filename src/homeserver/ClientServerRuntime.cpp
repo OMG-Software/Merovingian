@@ -179,6 +179,7 @@
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/ExtStickyEventsRequest.hpp"
 #include "merovingian/sync/ExtensionScope.hpp"
+#include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/LazyMemberTracker.hpp"
@@ -8076,21 +8077,70 @@ namespace
         return ids;
     }
 
-    // The rooms the sticky_events extension serves in one response: its scope (MSC4508, `sync::extension_scope_rooms`)
-    // over this response's list windows and room subscriptions, less every room the user has not joined (MSC4480: an
-    // invited, left, kicked or banned room in scope is sent no sticky events).
-    [[nodiscard]] auto sticky_scope_rooms(sync::ExtStickyEventsRequest const& request,
-                                          std::map<std::string, std::vector<std::string>> const& list_windows,
-                                          std::vector<std::string> const& subscriptions,
-                                          std::map<std::string, sync::RoomAccess, std::less<>> const& room_access)
-        -> std::vector<std::string>
+    // Whether any of a sliding-sync request's lists sorts by notification count, which the user's own receipts
+    // change.
+    [[nodiscard]] auto lists_sort_by_notification_count(std::map<std::string, sync::SlidingSyncList> const& lists)
+        -> bool
     {
-        auto scope = sync::extension_scope_rooms(request.lists, request.rooms, list_windows, subscriptions);
-        std::erase_if(scope, [&](std::string const& room_id) {
-            auto const found = room_access.find(room_id);
-            return found == room_access.end() || found->second != sync::RoomAccess::joined;
+        return std::ranges::any_of(lists, [](auto const& entry) {
+            return std::ranges::find(entry.second.sort, "by_notification_count") != entry.second.sort.end();
         });
-        return scope;
+    }
+
+    // Whether the user has posted a receipt, of any type, in one of `joined_rooms` since `since_sync_stream_id`.
+    // Read through the per-user receipt index: the cost is the user's own receipts in their rooms (ADR-0861).
+    [[nodiscard]] auto own_receipt_moved_in_any(database::PersistentStore const& store,
+                                                std::unordered_set<std::string_view> const& joined_rooms,
+                                                std::string_view user, std::uint64_t since_sync_stream_id) -> bool
+    {
+        return std::ranges::any_of(joined_rooms, [&](std::string_view room_id) {
+            return std::ranges::any_of(database::receipts_of_user_in_room(store, room_id, user),
+                                       [since_sync_stream_id](database::PersistentReceipt const* receipt) {
+                                           return receipt->stream_id > since_sync_stream_id;
+                                       });
+        });
+    }
+
+    // Whether any of a sliding-sync request's lists filters on `is_dm` or `is_favourite`, which the user's own
+    // `m.direct` and `m.tag` account data decide.
+    [[nodiscard]] auto lists_filter_on_account_data(std::map<std::string, sync::SlidingSyncList> const& lists) -> bool
+    {
+        return std::ranges::any_of(lists, [](auto const& entry) {
+            auto const& filters = entry.second.filters;
+            return filters.has_value() && (filters->is_dm.has_value() || filters->is_favourite.has_value());
+        });
+    }
+
+    // The rooms where someone the user has not ignored is typing: what the typing extension would send a room entering
+    // its scope (ADR-0863). One pass over the typing table, under `runtime.mutex`.
+    [[nodiscard]] auto rooms_with_unignored_typing(HomeserverRuntime const& runtime,
+                                                   std::unordered_set<std::string> const& ignored_senders)
+        -> std::unordered_set<std::string>
+    {
+        auto rooms = std::unordered_set<std::string>{};
+        for (auto const& entry : runtime.typing_users)
+        {
+            if (entry.typing &&
+                !trust_safety::is_delivery_suppressed(ignored_senders, entry.user_id, /*is_state_event=*/false))
+            {
+                rooms.insert(entry.room_id);
+            }
+        }
+        return rooms;
+    }
+
+    // Whether the user's global `m.direct` or a room's `m.tag` has changed since `since_sync_stream_id`. Read through
+    // the per-user account-data index: the cost is the user's own rows (ADR-0440, ADR-0861).
+    [[nodiscard]] auto own_list_filter_data_moved(database::PersistentStore const& store, std::string_view user,
+                                                  std::uint64_t since_sync_stream_id) -> bool
+    {
+        auto moved = false;
+        database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& row) {
+            bool const decides_filter = (row.room_id.empty() && row.event_type == "m.direct") ||
+                                        (!row.room_id.empty() && row.event_type == "m.tag");
+            moved = moved || (decides_filter && row.stream_id > since_sync_stream_id);
+        });
+        return moved;
     }
 
     using StickyIdsByRoom = std::unordered_map<std::string, std::unordered_set<std::string>>;
@@ -8338,6 +8388,7 @@ namespace
                 conn.lazy_members_sent = std::move(conn.pending_response->lazy_members_sent);
                 conn.room_timeline_limits = std::move(conn.pending_response->room_timeline_limits);
                 conn.sticky_delivered = std::move(conn.pending_response->sticky_delivered);
+                conn.extension_scope_history = std::move(conn.pending_response->extension_scope_history);
                 conn.list_configs = std::move(conn.pending_response->list_configs);
                 conn.last_event_ordering = conn.pending_response->last_event_ordering;
                 conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
@@ -8523,33 +8574,75 @@ namespace
                         has_relevant_ad = has_relevant_ad || ad.stream_id > since_sync_stream_id;
                     });
                 }
-                bool const has_relevant_receipts =
-                    wants_receipts && std::ranges::any_of(joined_rooms, [&](auto const& joined_room) {
-                        return std::ranges::any_of(
-                            database::receipts_in_room(rt.homeserver.database.persistent_store, joined_room),
-                            [&](database::PersistentReceipt const* r) {
-                                return r->stream_id > since_sync_stream_id &&
-                                       sync::receipt_visible_to(r->receipt_type, r->user_id, user);
-                            });
+                // Receipts, typing and sticky events wake the poll only in a joined room of their extension's scope
+                // (MSC4508, ADR-0861): the windows the previous response held (this request's, while their config is
+                // unchanged) and the subscribed rooms. A change outside it would answer the poll with nothing.
+                auto const subscriptions = subscription_room_ids(ssreq);
+                auto const joined_in_scope = [&](std::optional<std::vector<std::string>> const& lists,
+                                                 std::optional<std::vector<std::string>> const& rooms) {
+                    auto scope = sync::extension_scope_rooms(lists, rooms, expansion_windows, subscriptions);
+                    std::erase_if(scope, [&joined_rooms](std::string const& room_id) {
+                        return !joined_rooms.contains(room_id);
                     });
-                bool const has_relevant_typing =
-                    wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
-                        return kv.second > since_sync_stream_id && joined_rooms.contains(kv.first);
-                    });
-                // A sticky event this connection has not been sent answers the poll at once (ADR-0855). The rooms it
-                // covers are the extension's scope (MSC4508) over the windows the previous response held (this
-                // request's, while their config is unchanged) and the subscribed rooms.
+                    return scope;
+                };
+                // A room back in the receipts scope is read from where it dropped out, and a room entering the typing
+                // scope wakes the poll while someone it would be sent is typing there (ADR-0863). Both test exactly
+                // what the response sends, ignored senders included: a wake that sent nothing would be answered again
+                // at once.
+                auto const& scope_history = conn.extension_scope_history;
+                auto has_relevant_receipts = false;
+                if (wants_receipts)
+                {
+                    auto const& receipts = *ssreq.extensions->receipts;
+                    has_relevant_receipts =
+                        std::ranges::any_of(joined_in_scope(receipts.lists, receipts.rooms), [&](auto const& room_id) {
+                            auto const floor = sync::receipt_floor_for(scope_history, room_id, since_sync_stream_id);
+                            return std::ranges::any_of(
+                                database::receipts_in_room(rt.homeserver.database.persistent_store, room_id),
+                                [&](database::PersistentReceipt const* r) {
+                                    return r->stream_id > floor &&
+                                           sync::receipt_visible_to(r->receipt_type, r->user_id, user) &&
+                                           !trust_safety::is_delivery_suppressed(ignored_senders, r->user_id,
+                                                                                 /*is_state_event=*/false);
+                                });
+                        });
+                }
+                auto has_relevant_typing = false;
+                if (wants_typing)
+                {
+                    auto const& typing = *ssreq.extensions->typing;
+                    auto const typing_rooms = rooms_with_unignored_typing(rt.homeserver, ignored_senders);
+                    has_relevant_typing =
+                        std::ranges::any_of(joined_in_scope(typing.lists, typing.rooms), [&](auto const& room_id) {
+                            auto const position = homeserver::room_typing_stream_id_for(rt.homeserver, room_id);
+                            return position > since_sync_stream_id ||
+                                   (sync::enters_typing_scope(scope_history, room_id) &&
+                                    typing_rooms.contains(room_id));
+                        });
+                }
+                // A sticky event this connection has not been sent answers the poll at once (ADR-0855).
                 auto has_relevant_sticky = false;
                 if (sticky_request != nullptr && !sticky_answered_for_this_pos)
                 {
-                    auto const sticky_rooms = sync::extension_scope_rooms(
-                        sticky_request->lists, sticky_request->rooms, expansion_windows, subscription_room_ids(ssreq));
+                    auto const sticky_rooms = sync::extension_scope_rooms(sticky_request->lists, sticky_request->rooms,
+                                                                          expansion_windows, subscriptions);
                     has_relevant_sticky =
                         sticky_backlog_exists(store, sticky_rooms, joined_rooms, conn.sticky_delivered,
                                               sticky_now_ms(rt.homeserver), cur_event, ignored_senders);
                 }
+                // The user's own receipt in any joined room can move a room into or out of a list sorted by
+                // notification count, whatever the extensions ask for, so it wakes such a connection (ADR-0861).
+                bool const has_reordering_receipt =
+                    lists_sort_by_notification_count(ssreq.lists) &&
+                    own_receipt_moved_in_any(store, joined_rooms, user, since_sync_stream_id);
+                // Likewise the user's own `m.tag` or `m.direct` can move a room into or out of a list filtered on
+                // `is_favourite` or `is_dm`, which leaves the saved windows above stale; the answer rebuilds them.
+                bool const has_refiltering_account_data = lists_filter_on_account_data(ssreq.lists) &&
+                                                          own_list_filter_data_moved(store, user, since_sync_stream_id);
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
-                    !has_relevant_typing && !has_relevant_sticky)
+                    !has_relevant_typing && !has_relevant_sticky && !has_reordering_receipt &&
+                    !has_refiltering_account_data)
                 {
                     // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.
@@ -8787,23 +8880,28 @@ namespace
 
         auto extension_responses = std::optional<sync::SlidingSyncExtensionResponses>{};
         auto ext_obj = canonicaljson::Object{};
+        // What the room-scoped extensions (receipts, typing, sticky_events) choose their MSC4508 scope from: this
+        // response's list windows and the request's room subscriptions (ADR-0858, ADR-0861).
+        auto extension_scope = sync::ExtensionScopeSource{};
         if (ssreq.extensions.has_value())
         {
+            for (auto const& [list_name, result] : list_results)
+            {
+                extension_scope.list_windows.emplace(list_name, result.windowed_room_ids);
+            }
+            extension_scope.subscriptions = subscription_room_ids(ssreq);
+            extension_scope.history = &conn.extension_scope_history;
             extension_responses = sync::build_extensions(
                 rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id, store.next_sync_stream_id,
-                store, room_access, response_room_ids, ignored_senders, initial_room_ids);
+                store, room_access, response_room_ids, extension_scope, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
         auto sticky_outcome = SlidingStickyOutcome{};
         if (sticky_request != nullptr)
         {
-            auto response_windows = std::map<std::string, std::vector<std::string>>{};
-            for (auto const& [list_name, result] : list_results)
-            {
-                response_windows.emplace(list_name, result.windowed_room_ids);
-            }
-            auto const scope_rooms =
-                sticky_scope_rooms(*sticky_request, response_windows, subscription_room_ids(ssreq), room_access);
+            // MSC4480: an invited, left, kicked or banned room in scope is sent no sticky events.
+            auto const scope_rooms = sync::joined_extension_scope_rooms(sticky_request->lists, sticky_request->rooms,
+                                                                        extension_scope, room_access);
             auto sticky_viewer = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
             sticky_outcome =
                 build_sliding_sticky(store,
@@ -8876,8 +8974,11 @@ namespace
         // acknowledge it, so a backlog wider than the limit would stall. Such a response carries the request's page
         // plus one; a retry of the request carries the old page and is answered from the committed state as before.
         auto const response_token = sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch};
+        // The same holds for a response that sent a room entering the typing or receipts scope what it lacked
+        // (ADR-0863).
         auto response_page = std::uint64_t{0U};
-        if (request_pos.has_value() && sticky_outcome.delivered_any)
+        auto const sent_on_scope_entry = extension_responses.has_value() && extension_responses->sent_on_scope_entry;
+        if (request_pos.has_value() && (sticky_outcome.delivered_any || sent_on_scope_entry))
         {
             auto const same_stream_position =
                 sync::encode_stream_token(request_pos->token) == sync::encode_stream_token(response_token);
@@ -9016,6 +9117,11 @@ namespace
         // A request that does not ask for sticky events forgets what was sent: asking again starts afresh (ADR-0855).
         next_state.sticky_delivered = std::move(sticky_outcome.delivered);
         next_state.sticky_answered = sticky_outcome.delivered_any;
+        // A request without the typing or receipts extension leaves nothing in their scope (ADR-0863).
+        if (extension_responses.has_value() && extension_responses->scope_history.has_value())
+        {
+            next_state.extension_scope_history = std::move(*extension_responses->scope_history);
+        }
         for (auto const& [room_id, limit] : room_timeline_limits_built)
         {
             next_state.room_timeline_limits[room_id] = limit;

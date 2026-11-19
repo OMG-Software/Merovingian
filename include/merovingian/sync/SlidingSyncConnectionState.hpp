@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/ExtensionScopeHistory.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 
@@ -42,6 +43,10 @@ struct SlidingSyncConnectionState final
     // (ADR-0855). Only unexpired IDs are kept. Committed with the rest of the response's state, so a repeated pos is
     // answered from the set the first request saw.
     std::unordered_map<std::string, std::unordered_set<std::string>> sticky_delivered{};
+    // What the last acknowledged response left in the typing and receipts extensions' scope (ADR-0863): the next
+    // response sends a room entering the typing scope its typing state, and a room back in the receipts scope what it
+    // missed. Empty while the request asks for neither extension.
+    ExtensionScopeHistory extension_scope_history{};
     // The effective timeline_limit each room was last built with on this connection. MSC4186
     // "Changes to `timeline_limit`": when a request asks for more than this, the room's latest
     // events are resent (expanded_timeline) rather than only those after its delta floor.

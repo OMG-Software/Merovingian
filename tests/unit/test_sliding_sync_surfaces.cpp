@@ -7,6 +7,8 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/ExtensionScopeHistory.hpp"
+#include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/SlidingSyncExtensions.hpp"
 #include "merovingian/sync/SlidingSyncRoomList.hpp"
@@ -17,9 +19,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -31,6 +35,13 @@ namespace
 using merovingian::canonicaljson::Array;
 using merovingian::canonicaljson::Object;
 using merovingian::canonicaljson::Value;
+using Names = std::optional<std::vector<std::string>>;
+
+// An extension scope key holding exactly `entries`; `named({})` is the empty array.
+[[nodiscard]] auto named(std::vector<std::string> entries) -> Names
+{
+    return Names{std::move(entries)};
+}
 
 [[nodiscard]] auto json_member(Object const& object, std::string_view key) -> Value const*
 {
@@ -561,13 +572,19 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
         requests.to_device = merovingian::sync::ExtToDeviceRequest{true, 0U, std::optional<std::string>{"abc"}};
         requests.e2ee = merovingian::sync::ExtE2eeRequest{true};
         requests.account_data = merovingian::sync::ExtAccountDataRequest{true};
-        requests.receipts = merovingian::sync::ExtReceiptsRequest{true, {}};
-        requests.typing = merovingian::sync::ExtTypingRequest{true, {"!room-b:example.org"}};
+        // Receipts cover the list alone (`rooms: []`); typing covers room-b's subscription alone (`lists: []`).
+        requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true, .rooms = named({})};
+        requests.typing = merovingian::sync::ExtTypingRequest{
+            .enabled = true, .lists = named({}), .rooms = named({"!room-b:example.org"})};
+        auto const scope = merovingian::sync::ExtensionScopeSource{
+            .list_windows = {{"all", {"!room-a:example.org"}}},
+            .subscriptions = {"!room-b:example.org"},
+        };
 
         WHEN("the enabled extensions are built for the current response")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       2U, 2U, store, {"!room-a:example.org"});
+                                                                       2U, 2U, store, {"!room-a:example.org"}, scope);
 
             THEN("each extension returns only the expected scoped data")
             {
@@ -655,7 +672,7 @@ SCENARIO("Sliding sync account_data extension delivers content holding fractiona
         WHEN("the account_data extension is built")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       2U, 2U, store, {"!room-a:example.org"});
+                                                                       2U, 2U, store, {"!room-a:example.org"}, {});
 
             THEN("the tag arrives with its order")
             {
@@ -710,14 +727,18 @@ SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms an
 
         auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
         requests.receipts = merovingian::sync::ExtReceiptsRequest{
-            true, {"!joined:example.org", "!outside:example.org"}
+            .enabled = true, .rooms = named({"!joined:example.org", "!outside:example.org"})};
+        requests.typing =
+            merovingian::sync::ExtTypingRequest{.enabled = true, .rooms = named({"!outside:example.org"})};
+        // A room subscription is a claim, not an entitlement: alice subscribes to the room she left too.
+        auto const scope = merovingian::sync::ExtensionScopeSource{
+            .subscriptions = {"!joined:example.org", "!outside:example.org"},
         };
-        requests.typing = merovingian::sync::ExtTypingRequest{true, {"!outside:example.org"}};
 
         WHEN("the extensions are built for alice with rooms named explicitly")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       0U, 10U, store, {"!joined:example.org"});
+                                                                       0U, 10U, store, {"!joined:example.org"}, scope);
 
             THEN("the room she has left is dropped from both extensions")
             {
@@ -763,7 +784,7 @@ SCENARIO("Sliding sync collapses a repeated device-list subject to a single entr
         WHEN("the e2ee extension is built for an initial request")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       0U, 50U, store, {});
+                                                                       0U, 50U, store, {}, {});
 
             THEN("the subject is reported once rather than once per change row")
             {
@@ -786,7 +807,7 @@ SCENARIO("Sliding sync collapses a repeated device-list subject to a single entr
         WHEN("the e2ee extension is built for an incremental request")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       10U, 50U, store, {});
+                                                                       10U, 50U, store, {}, {});
 
             THEN("the subject is still collapsed to a single entry")
             {
@@ -949,17 +970,18 @@ SCENARIO("Sliding sync receipts and typing group one pass of their tables into t
         auto const ignored = std::unordered_set<std::string>{"@mallory:example.org"};
 
         auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
-        requests.receipts = merovingian::sync::ExtReceiptsRequest{
-            true, {"!a:example.org", "!b:example.org"}
-        };
-        requests.typing = merovingian::sync::ExtTypingRequest{
-            true, {"!a:example.org", "!b:example.org"}
+        requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true,
+                                                                  .rooms = named({"!a:example.org", "!b:example.org"})};
+        requests.typing =
+            merovingian::sync::ExtTypingRequest{.enabled = true, .rooms = named({"!a:example.org", "!b:example.org"})};
+        auto const scope = merovingian::sync::ExtensionScopeSource{
+            .subscriptions = {"!a:example.org", "!b:example.org"}
         };
 
         WHEN("the extensions are built from position 4")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       4U, 10U, store, {}, ignored);
+                                                                       4U, 10U, store, {}, scope, ignored);
 
             THEN("each room's receipts are its own, newer than the position, and not from the ignored user")
             {
@@ -994,12 +1016,197 @@ SCENARIO("Sliding sync receipts and typing group one pass of their tables into t
             THEN("the overload taking the handler's room-access index gives the same responses")
             {
                 auto const index = merovingian::sync::room_access_index(store, "@alice:example.org");
-                auto const shared = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE",
-                                                                        requests, 4U, 10U, store, index, {}, ignored);
+                auto const shared = merovingian::sync::build_extensions(
+                    runtime, "@alice:example.org", "ALICE", requests, 4U, 10U, store, index, {}, scope, ignored);
                 REQUIRE(shared.receipts.has_value());
                 REQUIRE(shared.typing.has_value());
                 REQUIRE(shared.receipts->rooms_json == responses.receipts->rooms_json);
                 REQUIRE(shared.typing->rooms_json == responses.typing->rooms_json);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The room IDs an extension response reports, sorted.
+[[nodiscard]] auto reported_rooms(std::map<std::string, std::string> const& rooms_json) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& [room_id, json] : rooms_json)
+    {
+        ids.push_back(room_id);
+    }
+    std::ranges::sort(ids);
+    return ids;
+}
+
+// Alice joined to !a, !b and !c and invited to !d; bob has a receipt and is typing in each of them.
+auto seed_scope_rooms(merovingian::homeserver::HomeserverRuntime& runtime,
+                      merovingian::database::PersistentStore& store) -> void
+{
+    auto receipt_ts = std::uint64_t{10U};
+    for (auto const* const room_id : {"!a:example.org", "!b:example.org", "!c:example.org", "!d:example.org"})
+    {
+        runtime.database.persistent_store.receipts.push_back(
+            {room_id, "m.read", "@bob:example.org", std::string{"$read-"} + room_id, receipt_ts, receipt_ts});
+        ++receipt_ts;
+        runtime.typing_users.push_back({room_id, "@bob:example.org", true, 0U});
+        runtime.room_typing_stream_id.emplace(room_id, 9U);
+    }
+    store.memberships = {
+        {"!a:example.org", "@alice:example.org", "join",   1U},
+        {"!b:example.org", "@alice:example.org", "join",   2U},
+        {"!c:example.org", "@alice:example.org", "join",   3U},
+        {"!d:example.org", "@alice:example.org", "invite", 4U},
+    };
+}
+
+} // namespace
+
+// MSC4508 (ADR-0861): the receipts and typing extensions apply to the lists `lists` names and the room subscriptions
+// `rooms` names, and then only to joined rooms. Both extensions must report exactly the same rooms for one scope.
+SCENARIO("Sliding sync receipts and typing extensions serve the joined rooms of their MSC4508 scope",
+         "[sync][sliding-sync][extensions][extension-scope][csaz-1]")
+{
+    GIVEN("lists `dms` (!a) and `all` (!b, !d), a subscription to !c, and alice joined to all but the invited !d")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+        seed_scope_rooms(runtime, store);
+        auto const scope = merovingian::sync::ExtensionScopeSource{
+            .list_windows = {{"dms", {"!a:example.org"}}, {"all", {"!b:example.org", "!d:example.org"}}},
+            .subscriptions = {"!c:example.org"},
+        };
+        auto const served = [&](Names const& lists, Names const& rooms) {
+            auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+            requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true, .lists = lists, .rooms = rooms};
+            requests.typing = merovingian::sync::ExtTypingRequest{.enabled = true, .lists = lists, .rooms = rooms};
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       0U, 10U, store, {}, scope);
+            REQUIRE(responses.receipts.has_value());
+            REQUIRE(responses.typing.has_value());
+            // Each read behind its own check, which clang-tidy can see (a REQUIRE is not one).
+            auto const receipts = responses.receipts.has_value() ? reported_rooms(responses.receipts->rooms_json)
+                                                                 : std::vector<std::string>{};
+            auto const typing = responses.typing.has_value() ? reported_rooms(responses.typing->rooms_json)
+                                                             : std::vector<std::string>{};
+            REQUIRE(typing == receipts);
+            return receipts;
+        };
+
+        WHEN("neither key is sent, or both hold \"*\"")
+        {
+            auto const absent = served(std::nullopt, std::nullopt);
+            auto const star = served(named({"*"}), named({"*"}));
+            THEN("every joined room of every list and subscription is reported, and the invited room is not")
+            {
+                auto const expected = std::vector<std::string>{"!a:example.org", "!b:example.org", "!c:example.org"};
+                REQUIRE(absent == expected);
+                REQUIRE(star == expected);
+            }
+        }
+
+        WHEN("lists names `dms` and rooms is empty")
+        {
+            THEN("only the room of `dms` is reported")
+            {
+                REQUIRE(served(named({"dms"}), named({})) == std::vector<std::string>{"!a:example.org"});
+            }
+        }
+
+        WHEN("lists is empty and rooms names the subscription, a list room and an unknown room")
+        {
+            auto const rooms = served(named({}), named({"!c:example.org", "!a:example.org", "!z:example.org"}));
+            THEN("only the subscribed room is reported: naming a room does not subscribe to it")
+            {
+                REQUIRE(rooms == std::vector<std::string>{"!c:example.org"});
+            }
+        }
+
+        WHEN("lists names only a list the request does not hold, and rooms is empty")
+        {
+            THEN("nothing is reported")
+            {
+                REQUIRE(served(named({"missing"}), named({})).empty());
+            }
+        }
+    }
+}
+
+// MSC4508 (ADR-0863): a room entering the typing scope is sent its current typing state, and a room re-entering the
+// receipts scope the receipts that changed after it dropped out, whatever the request's position; each response leaves
+// the scope history the connection keeps for the next.
+SCENARIO("Sliding sync typing and receipts send what a room entering their scope lacks",
+         "[sync][sliding-sync][extensions][extension-scope]")
+{
+    GIVEN("alice at position 20, bob typing everywhere and with receipts at 10 to 13, and the scope history before it")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+        seed_scope_rooms(runtime, store);
+        auto const build = [&](merovingian::sync::ExtensionScopeHistory const& history, Names const& lists,
+                               Names const& rooms) {
+            auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+            requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true, .lists = lists, .rooms = rooms};
+            requests.typing = merovingian::sync::ExtTypingRequest{.enabled = true, .lists = lists, .rooms = rooms};
+            auto const scope = merovingian::sync::ExtensionScopeSource{
+                .list_windows = {{"dms", {"!a:example.org"}}, {"all", {"!b:example.org", "!d:example.org"}}},
+                .subscriptions = {"!c:example.org"},
+                .history = &history,
+            };
+            return merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests, 20U, 30U,
+                                                       store, {}, scope);
+        };
+
+        WHEN("!a stayed in both scopes, !b comes back to receipts after dropping out at 10, and !c is new to both")
+        {
+            auto const history = merovingian::sync::ExtensionScopeHistory{
+                .typing_rooms = {"!a:example.org"},
+                .receipt_rooms = {"!a:example.org"},
+                .receipt_floors = {{"!b:example.org", 10U}},
+            };
+            auto const responses = build(history, std::nullopt, std::nullopt);
+            THEN("!b and !c get bob's typing, !b its receipt from 11, and the history holds all three with no floor")
+            {
+                auto const typing = responses.typing.has_value() ? reported_rooms(responses.typing->rooms_json)
+                                                                 : std::vector<std::string>{};
+                auto const receipts = responses.receipts.has_value() ? reported_rooms(responses.receipts->rooms_json)
+                                                                     : std::vector<std::string>{};
+                REQUIRE(typing == std::vector<std::string>{"!b:example.org", "!c:example.org"});
+                REQUIRE(receipts == std::vector<std::string>{"!b:example.org"});
+                REQUIRE(responses.sent_on_scope_entry);
+                auto const next = responses.scope_history.value_or(merovingian::sync::ExtensionScopeHistory{});
+                REQUIRE(responses.scope_history.has_value());
+                auto const all = std::unordered_set<std::string>{"!a:example.org", "!b:example.org", "!c:example.org"};
+                REQUIRE(next.typing_rooms == all);
+                REQUIRE(next.receipt_rooms == all);
+                REQUIRE(next.receipt_floors.empty());
+            }
+        }
+
+        WHEN("the scope narrows to `dms` after !a to !c, and the invited !d, were in it")
+        {
+            auto const history = merovingian::sync::ExtensionScopeHistory{
+                .typing_rooms = {"!a:example.org", "!b:example.org", "!c:example.org"},
+                .receipt_rooms = {"!a:example.org", "!b:example.org", "!c:example.org", "!d:example.org"},
+                .receipt_floors = {},
+            };
+            auto const responses = build(history, named({"dms"}), named({}));
+            THEN("nothing is sent, and !b and !c drop out of receipts at 20 while the unjoined !d keeps no floor")
+            {
+                REQUIRE_FALSE(responses.sent_on_scope_entry);
+                REQUIRE((responses.typing.has_value() && responses.typing->rooms_json.empty()));
+                REQUIRE((responses.receipts.has_value() && responses.receipts->rooms_json.empty()));
+                auto const next = responses.scope_history.value_or(merovingian::sync::ExtensionScopeHistory{});
+                REQUIRE(responses.scope_history.has_value());
+                REQUIRE(next.typing_rooms == std::unordered_set<std::string>{"!a:example.org"});
+                auto const floors = std::unordered_map<std::string, std::uint64_t>{
+                    {"!b:example.org", 20U},
+                    {"!c:example.org", 20U}
+                };
+                REQUIRE(next.receipt_floors == floors);
             }
         }
     }
