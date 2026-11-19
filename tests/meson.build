@@ -164,6 +164,12 @@ shell = find_program('sh')
   )
 
   test(
+    'livekit-companion-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_livekit_companion.py'],
+  )
+
+  test(
     'line-endings-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],

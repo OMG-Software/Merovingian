@@ -282,6 +282,7 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 | `page-text-member-initialiser-tooling` | No data member of type `HtmlText`, `HtmlLiteral`, `HtmlName` or `PagePath` has a default member initialiser other than `{}`: clang 18 runs their compile-time check at run time there (ADR-0800) |
 | `catch-report-capture-tooling` | A test binary writing its CI skip report still lets a test capture `std::cout` (ADR-0546) |
 | `tests/tooling/test_packages_workflow.py` | Version consistency and packaging requirements |
+| `livekit-companion-tooling` | The LiveKit SFU's unit, OpenRC script, sample configuration, setup helper and package scripts name one account, paths and port; the unit keeps its hardening; the helper writes one secret to two `0400` files, never prints it and never replaces a file (ADR-0860) |
 | `workflow-action-pinning-tooling` | The GitHub Action pinning policy |
 
 The unsafe-pattern gate scans selected C/C++ extensions under `include/`,

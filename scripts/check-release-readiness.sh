@@ -24,6 +24,10 @@ require_file packaging/netbsd/Makefile
 require_file packaging/systemd/merovingian.service
 require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
+require_file packaging/systemd/merovingian-livekit.service
+require_file packaging/openrc/merovingian-livekit
+require_file packaging/livekit/merovingian-livekit-setup
+require_file config/livekit.yaml.example
 require_file docs/todos/production-milestone.md
 require_file docs/release-process.md
 require_file docs/security-review-checklist.md

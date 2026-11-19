@@ -908,6 +908,50 @@ built-in libexec default, so a pass also proves the package installed the
 worker where the server looks for it. Its decisions are covered by
 `tests/tooling/test_startup_hardening_gate.py` against a fake server.
 
+### The LiveKit SFU beside the server
+
+The Linux packages install `packaging/systemd/merovingian-livekit.service`
+disabled, for an operator-installed `livekit-server` (ADR-0860). LiveKit is a
+third-party Go binary that takes media from the internet, so it gets none of the
+server's in-process hardening. The isolation is the service manager's and the
+file system's:
+
+* it runs as its own `merovingian-livekit` account, never `merovingian`, so it
+  cannot read the database, the signing key, the master key or any secret file
+  but its own key file;
+* the unit sets `NoNewPrivileges=true`, `PrivateTmp=true`, `PrivateDevices=true`,
+  `ProtectSystem=strict`, `ProtectHome=true`, empty `CapabilityBoundingSet=` and
+  `AmbientCapabilities=`, `LockPersonality=true`, `MemoryDenyWriteExecute=true`,
+  `RestrictRealtime=true`, `RestrictSUIDSGID=true`,
+  `SystemCallArchitectures=native`, `RestrictNamespaces=true`, the
+  `ProtectKernel*`, `ProtectControlGroups=`, `ProtectClock=` and
+  `ProtectHostname=` set, `ProtectProc=invisible`, `UMask=0077`,
+  `LimitNOFILE=65536`, `TasksMax=4096` and `SystemCallFilter=@system-service`;
+* `RestrictAddressFamilies=` adds `AF_NETLINK` to the server's
+  `AF_UNIX AF_INET AF_INET6`, because Go lists the host's interfaces over
+  netlink to gather ICE candidates;
+* the sample `config/livekit.yaml.example` binds the signalling and room-service
+  port to `127.0.0.1` and turns off `room.auto_create`, so a token can only join
+  a room the server created (ADR-0830);
+* `merovingian-livekit-setup` writes the shared secret twice, as
+  `/etc/merovingian/livekit-secret` for `merovingian` and
+  `/etc/merovingian/livekit-keys.yaml` for `merovingian-livekit`, each `0400`,
+  from `/dev/urandom`, never on a command line and never replacing an existing
+  file; run again, it refuses a pair that is not two regular files of the right
+  owners with mode `0400`.
+* the RPM `%post` leaves the unit out of `%systemd_post`, so a host preset
+  policy of `enable *` cannot start the SFU before the operator has set it up.
+  The Fedora package job in `packages.yml` installs each RPM under exactly that
+  policy and fails unless `merovingian.service` comes out enabled (the policy
+  ran) and `merovingian-livekit.service` disabled. On openSUSE, where
+  `%systemd_post` presets only units `%systemd_pre` marked as new, the spec's
+  `%pre` marks `merovingian.service` alone, never the LiveKit unit.
+  The OpenRC script has none of the unit's sandboxing, only the account.
+
+`tests/tooling/test_livekit_companion.py` checks the unit, the OpenRC script,
+the sample configuration and the package scripts against each other, and runs
+the setup helper.
+
 ## CI gates
 
 Hardening is exercised by automated tests:
