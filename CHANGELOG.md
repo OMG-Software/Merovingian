@@ -21,6 +21,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
   and a check that the shards together run every scenario once (ADR-0845).
 * CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
+* Sticky events (MSC4354): `PUT /send` and the delayed-event routes take `org.matrix.msc4354.sticky_duration_ms` (or
+  `sticky_duration_ms`), and the event is kept sticky for up to an hour; `/versions` lists `org.matrix.msc4354` (ADR-0853).
+* `/sync` carries a joined room's sticky events in `sticky` and `msc4354_sticky`, and sliding sync in the `sticky_events`
+  extension (MSC4480), each once per connection, with `unsigned.sticky_duration_remaining_ms` (ADR-0855).
+* A server that joins a room is sent this server's unexpired sticky events in it, and accepted sticky events from other
+  servers are served like local ones (ADR-0856).
+* `server.sticky_events.enabled` (default on) and `server.sticky_events.max_per_sender` (default 60) configure them;
+  migration 005 adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854).
 
 ## Security Fixes
 
@@ -31,6 +39,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The federation worker refuses to start if a Landlock rule would let it read the LiveKit API secret file (ADR-0062).
 * A LiveKit call's host lookup counts against the call's deadline: the exchange gets only the time the lookup left,
   and none starts once the deadline has passed (ADR-0830).
+* A sticky event's hour starts when this server first saw it, or earlier if its timestamp says so: neither a remote
+  server nor an application service's `?ts=` can extend it (ADR-0854).
+* A sender, local or remote, keeps at most `max_per_sender` unexpired sticky events; one more expires their oldest, so
+  one user cannot grow the table or every room's sync without bound (ADR-0854).
+* A client's sticky duration above 2^53-1 is refused, so a composed event stays canonical JSON (ADR-0853).
 
 ## Bug fixes
 
@@ -81,11 +94,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
-and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
-`state_after` sync of each room with news carries its whole state once. A SQLite server no longer refuses writes under
-sustained write load, and `database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request
-and the full matrix in the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge
-after the core gate alone.
+an exact `state_after` on `/sync`, and sticky events (MSC4354) for Element Call. It adds migrations 004
+(`livekit_delegations`) and 005 (`sticky_events`). After a restart, the first `state_after` sync of each room with news
+carries its whole state once. A SQLite server no longer refuses writes under sustained write load, and
+`database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request and the full matrix in
+the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate
+alone.
 
 # Version 1.1.2
 
