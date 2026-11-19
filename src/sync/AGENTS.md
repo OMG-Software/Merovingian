@@ -27,6 +27,7 @@ Spec authority:
 | `ReceiptVisibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
+| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). The caller keeps the joined ones |
 | `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
@@ -293,6 +294,10 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   `/messages`, `/context` (target and both lists), `/event`, `/search` and its per-result
   context, `/relations`, `/threads`, the `initialSync` chunk. A new endpoint that returns room
   events must call it.
+- MSC4354 sticky events are the one exception to the rules (ADR-0858): an `accepted` event with an unexpired sticky
+  row of its own room is visible to a user whose membership of that room is `join` now, whatever the visibility, until
+  it expires (`is_sticky_for_joined_user`, checked after the withheld-redaction test). The sticky clock is read once
+  per instance. Do not widen it to other statuses, to a user who has left, or to an expired row.
 - Rule 3 (`shared`: the user joined "after the event was sent") compares the depth of the user's newest
   accepted join with the event's depth, never stream orderings (ADR-0308): an event fetched as history is
   stored after the join it precedes. Do not order by stream ordering anywhere the question is "before or after
@@ -416,11 +421,13 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   `msc4354_sticky`, the same array, only when non-empty. Candidates are the room's unexpired rows at or below the
   response's position from unignored senders; an initial sync, `full_state` or a room joined after `since` gets all of
   them, otherwise those after `since`. An event in this response's `timeline.events` is left out, and the timeline
-  filter is applied first; the `state` and `timeline` filters do not touch the section. No history-visibility check,
-  at most the newest `max_classic_sticky_events_per_room` (100) by stream ordering, the older ones never sent later
-  (classic `/sync` has no cursor for them; ADR-0857), joined rooms only. A room with only a sticky
-  event is not suppressed as empty, and a sticky sender is a lazy-loaded sender. `StreamToken` has no sticky
+  filter is applied first; the `state` and `timeline` filters do not touch the section. No history-visibility check
+  and no count cap: every chosen event is sent, since classic `/sync` has no cursor and one left out would never be
+  sent; `server.sticky_events.max_per_room` bounds it (ADR-0857, ADR-0858). Joined rooms only. A room with only a
+  sticky event is not suppressed as empty, and a sticky sender is a lazy-loaded sender. `StreamToken` has no sticky
   component: do not add one.
+- **Both surfaces add an event only when its served form `carries_sticky_remaining`** (ADR-0858): the clock is read
+  again at serialization, and an event that expired after it was chosen is left out (and not recorded as delivered).
 - **Sliding sync** (`sticky_events` or `org.matrix.msc4354.sticky_events`; both names in one request are one request
   answered under both): the connection keeps `sticky_delivered`, per room, the IDs sent in the extension or carried by
   a timeline. A response sends each in-scope joined room's undelivered events, oldest first, at most `limit` (default
@@ -430,7 +437,11 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   backlog (`sticky_backlog_exists`, over the previous window and subscriptions or the named rooms) answers a long poll
   at once, except for a request at the same `pos` as a response that already delivered sticky events
   (`sticky_answered`): a pos no stream advanced is not acknowledged by a repeat, and answering again would spin the
-  client. Scope is the other extensions' (`rooms`; `lists` is not read by any extension).
+  client. Scope is MSC4508's, from `extension_scope_rooms` over the response's list windows and subscriptions, then
+  joined rooms only (ADR-0858). The typing and receipts extensions still read `rooms` alone.
+- **Lazy members (MSC4480):** in a room built with `$LAZY` members, the senders of the sticky events sent are timeline
+  senders: `add_sticky_sender_members` adds their member events to `required_state` once per connection
+  (`lazy_members_sent`), and a room whose only change is those events is still sent.
 
 ## Long-poll behaviour
 

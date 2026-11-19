@@ -20,8 +20,8 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/EventId.hpp"
@@ -496,6 +496,60 @@ SCENARIO("A server whose only user joined after an event reads it redacted under
                 // Existing gate (FED-2) stays in front of the visibility rule.
                 REQUIRE_FALSE(result.accepted);
                 REQUIRE(result.status == 403U);
+            }
+        }
+    }
+}
+
+// Spec: MSC4354 (sticky events, unstable; not part of v1.19), "History visibility checks MUST NOT be applied to
+// unexpired sticky events. This applies to all endpoints where the unexpired sticky events could be returned."
+// URL: https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4354-sticky-events.md
+//
+// "Any joined user or server is authorised to see unexpired sticky events for the duration they remain sticky."
+// (ADR-0858.) A server with a joined user reads an unexpired sticky event in full whatever the visibility; once it
+// expires, the ordinary rule applies again. A server with no user in the room gains nothing.
+SCENARIO("A joined server reads an unexpired sticky event in full under joined visibility",
+         "[federation][conformance][history-visibility][server-visibility][sticky-events]")
+{
+    GIVEN("a joined-visibility room whose message from before the remote server's join is sticky until 5000")
+    {
+        auto history = standard_history("joined");
+        auto& store = history.finish();
+        REQUIRE(store.sticky_events.insert({"$m_before", std::string{room_id}, std::string{alice}, 1000, 5000}));
+        store.test_sticky_clock_ms = 2000;
+
+        WHEN("the remote server backfills the room while the event is sticky")
+        {
+            auto const served = serve_backfill(store, remote_server);
+
+            THEN("the sticky event is in full and the other early message is still redacted")
+            {
+                // MSC4354 MUST NOT: no history visibility check on an unexpired sticky event.
+                REQUIRE(shows_content(served.at("$m_before")));
+                REQUIRE_FALSE(shows_content(served.at("$m_invited")));
+                REQUIRE(fed::event_visible_to_server(store, "$m_before", remote_server));
+            }
+        }
+
+        WHEN("a server with no user in the room asks about it")
+        {
+            THEN("it is not visible to that server")
+            {
+                // MSC4354: only a joined server is authorised.
+                REQUIRE_FALSE(fed::event_visible_to_server(store, "$m_before", "stranger.example"));
+            }
+        }
+
+        WHEN("the clock reaches its expiry")
+        {
+            store.test_sticky_clock_ms = 5000;
+            auto const served = serve_backfill(store, remote_server);
+
+            THEN("the event is redacted again, as joined visibility asks")
+            {
+                // MSC4354: the exemption lasts only while the event is sticky.
+                REQUIRE_FALSE(shows_content(served.at("$m_before")));
+                REQUIRE_FALSE(fed::event_visible_to_server(store, "$m_before", remote_server));
             }
         }
     }

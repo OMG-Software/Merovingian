@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,8 +22,10 @@ struct ExtStickyEventsRequest final
     std::uint32_t limit{max_sticky_events_per_room_response};
     // The request gave a `limit` below 1: refused by `sliding_sync_request_limit_violation` (400 M_INVALID_PARAM).
     bool limit_refused{false};
-    // Limit delivery to these rooms; empty or "*" = every room in the response.
-    std::vector<std::string> rooms{};
+    // MSC4508's scope (`sync::extension_scope_rooms`): the lists and room subscriptions the extension applies to, by
+    // list key and room ID. Absent is every one; an empty array is none; "*" is every one (the older MSC3575 form).
+    std::optional<std::vector<std::string>> lists{};
+    std::optional<std::vector<std::string>> rooms{};
     // Which names the request used; the response is written under each of them (ADR-0853).
     bool used_stable_name{false};
     bool used_unstable_name{false};

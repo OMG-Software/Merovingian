@@ -1,6 +1,7 @@
 sync_sources = files(
   'BundledAggregations.cpp',
   'DeviceListDelta.cpp',
+  'ExtensionScope.cpp',
   'HistoryVisibility.cpp',
   'LazyMemberTracker.cpp',
   'ParkedPollRegistry.cpp',

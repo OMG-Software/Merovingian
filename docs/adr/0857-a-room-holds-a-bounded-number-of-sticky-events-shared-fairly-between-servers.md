@@ -41,10 +41,9 @@ under which a flooding server displaces nobody but itself.
   it is the one chosen it is not stored and the other rows stay. All of it is one transaction.
 * A row whose expiry is at or before now is a successful no-op before anything else is judged, so a negative or past
   `origin_server_ts` stores nothing.
-* Classic `/sync` carries at most the newest 100 (`max_classic_sticky_events_per_room`) of a room's chosen events, by
-  stream ordering, oldest first. The older ones are never sent to that client: classic `/sync` has no cursor for them,
-  and the newest are the state a client acts on. Sliding sync keeps its `limit` and its per-connection record of what
-  was delivered ([ADR-0855](0855-sticky-events-reach-clients-once-per-sync-position-and-in-full-on-joining-or-entering-scope.md)),
+* The room cap is what bounds a classic `/sync` section, which carries every chosen event: classic `/sync` has no
+  cursor, so an event left out would never be sent ([ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)). Sliding sync keeps its `limit` and
+  its per-connection record of what was delivered ([ADR-0855](0855-sticky-events-reach-clients-once-per-sync-position-and-in-full-on-joining-or-entering-scope.md)),
   which the room cap now bounds too.
 
 ### Positive Consequences
@@ -57,7 +56,6 @@ under which a flooding server displaces nobody but itself.
 
 * Within one server the oldest row goes, so a server with many genuine users in a full room loses its own oldest call
   memberships first. Those are the ones nearest expiry.
-* A classic `/sync` client in a room with more than 100 unexpired sticky events misses the oldest. Sliding sync does not.
 * Recording walks the room's unexpired rows when the room is over the cap: at most `max_per_room` plus one.
 
 ## Pros and Cons of the Options
@@ -81,9 +79,10 @@ under which a flooding server displaces nobody but itself.
 ### A sticky cursor in the stream token
 
 * Good, because classic `/sync` could deliver an uncapped section in pages.
-* Bad, because it changes the token every client holds, for a section MSC4354 lets a server cap; ADR-0855 rejected it.
+* Bad, because it changes the token every client holds, for a section the room cap already bounds; ADR-0855 rejected it.
 
 ## Links
 
 * Refines [ADR-0854](0854-a-sticky-event-is-a-row-beside-the-event-expiring-an-hour-at-most-after-it-was-first-seen.md)
 * Amends [ADR-0855](0855-sticky-events-reach-clients-once-per-sync-position-and-in-full-on-joining-or-entering-scope.md)
+* Amended by [ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)

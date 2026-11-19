@@ -11,6 +11,7 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStateGroup.hpp"
 #include "merovingian/database/PersistentStateGroupStateEntry.hpp"
+#include "merovingian/database/PersistentStickyEvent.hpp"
 
 #include <optional>
 #include <string>
@@ -45,6 +46,10 @@ struct RoomReloadSnapshot final
     // The room's forward extremities, read in the same transaction (ADR-0733): a federation worker builds its whole
     // store from these snapshots, and its make_leave and make_knock templates build on the tips.
     std::vector<PersistentForwardExtremity> forward_extremities{};
+    // The room's sticky events (MSC4354, ADR-0858), read in the same transaction, expired rows included: the reader
+    // judges expiry with its own clock. A federation worker exempts an unexpired one from server history visibility,
+    // and its store holds no other copy of the table.
+    std::vector<PersistentStickyEvent> sticky_events{};
     // A memory-backed store has no database to read: nothing to apply (apply_room_snapshot returns at once).
     bool nothing_to_apply{false};
 };

@@ -71,6 +71,8 @@ constexpr auto past_2_53 = std::uint64_t{9'223'372'036'854'775'000ULL};
     snapshot.state_group_state.push_back({"sg:2", "m.room.member", "@bob:remote.example", "$first"});
     snapshot.event_state_groups.push_back({"$first", "sg:2"});
     snapshot.forward_extremities.push_back({room_id, "$second"});
+    snapshot.sticky_events.push_back(
+        {"$second", room_id, "@alice:local.example", 1'700'000'000'000, std::int64_t{past_2_53 >> 1U}});
     return snapshot;
 }
 
@@ -147,6 +149,13 @@ SCENARIO("A room snapshot crosses the IPC channel exactly", "[ipc][c44][worker-s
                 REQUIRE(assembled->event_state_groups.size() == 1U);
                 REQUIRE(assembled->forward_extremities.size() == 1U);
                 REQUIRE(assembled->forward_extremities.front().event_id == "$second");
+                REQUIRE(assembled->sticky_events.size() == 1U);
+                auto const& sticky = assembled->sticky_events.front();
+                REQUIRE(sticky.event_id == "$second");
+                REQUIRE(sticky.room_id == room_id);
+                REQUIRE(sticky.sender == "@alice:local.example");
+                REQUIRE(sticky.received_at_ms == 1'700'000'000'000);
+                REQUIRE(sticky.expires_at_ms == std::int64_t{past_2_53 >> 1U});
             }
         }
     }
@@ -315,10 +324,12 @@ SCENARIO("The worker's assembler refuses pages that do not follow the rules", "[
         }
     }
 
-    GIVEN("pages holding a row of another room, or a group entry naming no group of the snapshot")
+    GIVEN("pages holding a row or a sticky row of another room, or a group entry naming no group of the snapshot")
     {
         auto foreign = full_snapshot();
         foreign.memberships.push_back({"!other:local.example", "@mallory:remote.example", "join", 9U});
+        auto foreign_sticky = full_snapshot();
+        foreign_sticky.sticky_events.push_back({"$elsewhere", "!other:local.example", "@mallory:remote.example", 1, 2});
         auto orphan = full_snapshot();
         orphan.state_group_state.push_back({"sg:other", "m.room.name", "", "$first"});
 
@@ -327,6 +338,8 @@ SCENARIO("The worker's assembler refuses pages that do not follow the rules", "[
             THEN("each is refused")
             {
                 REQUIRE_FALSE(assemble(ipc::paginate_room_snapshot(foreign, 1U, 1U << 20U).pages, 1U).has_value());
+                REQUIRE_FALSE(
+                    assemble(ipc::paginate_room_snapshot(foreign_sticky, 1U, 1U << 20U).pages, 1U).has_value());
                 REQUIRE_FALSE(assemble(ipc::paginate_room_snapshot(orphan, 1U, 1U << 20U).pages, 1U).has_value());
             }
         }

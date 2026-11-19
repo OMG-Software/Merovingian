@@ -91,7 +91,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
     The snapshot carries the room's forward extremities too (ADR-0733): the federation worker opens no database and
-    builds its whole store from snapshots main sends (`fill_store_from_room_snapshots`).
+    builds its whole store from snapshots main sends (`fill_store_from_room_snapshots`). It carries the room's
+    unexpired `sticky_events` rows (ADR-0858), which `apply_room_snapshot` puts in place of the room's held rows
+    (`StickyEventTable::erase_room`) for the worker's federation visibility exemption.
 
 11. **The to-device queue is bounded in rows, age and bytes, per device and per user, and read through its indexes**
     (ADR-0335, ADR-0336, ADR-0618). `index_to_device_recipients` gathers all the queues of every user a batch names through
@@ -265,7 +267,8 @@ prunes a delayed event deletes the side row in the same transaction** (`cancel_d
 have none), and the prune job also deletes side rows of missing or finalised rows. Hydration loads neither table for the
 worker profile, does not load an expired row (not counted), and counts every row it cannot read exactly, and a malformed
 duration, in `PersistentStore::sticky_event_rows_skipped_at_load`, logged once by `main.cpp` as
-`sticky_events.rows_skipped_at_load`. The federation worker never reads either table.
+`sticky_events.rows_skipped_at_load`. The federation worker never reads either table: it holds the `sticky_events`
+rows of a room only from main's room snapshot (ADR-0858), and never writes one.
 
 ## Delayed events (migration 003, ADR-0824)
 

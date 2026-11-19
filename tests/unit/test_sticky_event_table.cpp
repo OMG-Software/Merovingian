@@ -75,8 +75,8 @@ SCENARIO("A sticky event row is stored once and only within its caps", "[databas
             auto const long_id = table.insert(sticky("$" + std::string(255U, 'x'), 5000));
             auto const nul_sender = table.insert(sticky("$c", 5000, std::string{"@a\0b:x", 6U}));
             auto const negative = table.insert(sticky("$d", -1));
-            auto const at_cap = table.insert(sticky(std::string(255U, 'y'), 5000, std::string(255U, 'z'),
-                                                    std::string(255U, 'r')));
+            auto const at_cap =
+                table.insert(sticky(std::string(255U, 'y'), 5000, std::string(255U, 'z'), std::string(255U, 'r')));
 
             THEN("each is refused, and a row exactly at the cap is stored")
             {
@@ -185,13 +185,13 @@ SCENARIO("A sticky event table reader looks only at the rows it returns", "[data
         }
         for (auto index = 0; index < 10; ++index)
         {
-            REQUIRE(table.insert(sticky("$gone-" + std::to_string(index), 100 + index, "@mixed:example.org",
-                                        "!mixed:example.org")));
+            REQUIRE(table.insert(
+                sticky("$gone-" + std::to_string(index), 100 + index, "@mixed:example.org", "!mixed:example.org")));
         }
         for (auto index = 0; index < 5; ++index)
         {
-            REQUIRE(table.insert(sticky("$live-" + std::to_string(index), 50'000 + index, "@mixed:example.org",
-                                        "!mixed:example.org")));
+            REQUIRE(table.insert(
+                sticky("$live-" + std::to_string(index), 50'000 + index, "@mixed:example.org", "!mixed:example.org")));
         }
 
         WHEN("each reader runs once")
@@ -287,6 +287,24 @@ SCENARIO("Erasing sticky event rows keeps every index in step", "[database][stic
                 REQUIRE(table.unexpired_count_of_sender(bob, 1000) == 0U);
                 REQUIRE(table.unexpired_count_of_sender(alice, 1000) == 2U);
                 REQUIRE(table.erase_sender(bob) == 0U);
+            }
+        }
+
+        WHEN("a room's rows are erased")
+        {
+            auto const removed = table.erase_room(room_a);
+
+            THEN("both go, from every index, and the other room is untouched")
+            {
+                REQUIRE(removed == 2U);
+                REQUIRE(table.size() == 2U);
+                REQUIRE_FALSE(table.contains("$a1"));
+                REQUIRE_FALSE(table.contains("$b1"));
+                REQUIRE(table.unexpired_of_room(room_a, 0).empty());
+                REQUIRE(ids_of(table.unexpired_of_room(room_b, 0)) == std::vector<std::string>{"$b2", "$a2"});
+                REQUIRE(table.unexpired_count_of_sender(alice, 1000) == 1U);
+                REQUIRE(table.unexpired_count_of_sender(bob, 0) == 1U);
+                REQUIRE(table.erase_room(room_a) == 0U);
             }
         }
 

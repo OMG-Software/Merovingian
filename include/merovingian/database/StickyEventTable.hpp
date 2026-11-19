@@ -68,6 +68,8 @@ public:
     auto erase(std::string_view event_id) -> bool;
     // Removes every row whose sender is `sender`, returning how many.
     auto erase_sender(std::string_view sender) -> std::size_t;
+    // Removes every row whose room is `room_id`, returning how many. For `apply_room_snapshot` (ADR-0858).
+    auto erase_room(std::string_view room_id) -> std::size_t;
     // Removes every row with `expires_at_ms <= now_ms`, returning how many.
     auto erase_expired(std::int64_t now_ms) -> std::size_t;
     // Removes every row, for hydration.
@@ -86,6 +88,8 @@ private:
     using Ordering = std::set<OrderKey>;
 
     auto unindex(PersistentStickyEvent const& row) -> void;
+    // Removes every row `book` (a room's or a sender's ordering) names, returning how many.
+    auto erase_book(Ordering const& book) -> std::size_t;
 
     KeyedBy<PersistentStickyEvent> m_rows{};
     KeyedBy<Ordering> m_by_room{};

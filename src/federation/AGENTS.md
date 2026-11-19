@@ -148,7 +148,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    room's state AT the event (its ADR-0064 state group, never current state): `world_readable` is
    visible; `shared` (also the default when the state has no `m.room.history_visibility`) needs a user of `origin`
    joined in that state or joined now (ADR-0585); `invited`
-   needs a user of `origin` invited or joined in that state; `joined` needs one joined. Any other event is
+   needs a user of `origin` invited or joined in that state; `joined` needs one joined. Before those rules, an
+   `accepted` event with an unexpired sticky row of its own room is visible to an `origin` with a user joined to the
+   room now (MSC4354, ADR-0858: "Any joined user or server is authorised to see unexpired sticky events"); the clock
+   is read once per filter. Any other event is
    sent REDACTED (`events::redact_event` with the room's version policy): its signatures, hashes,
    `prev_events`, `auth_events` and event ID are untouched, and it is never dropped, which would leave a hole
    in the receiver's graph. Fail closed: an event with no state group or a broken chain is redacted; if it
@@ -399,7 +402,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 MSC4354 adds no federation endpoint: a sticky event is an ordinary PDU in `/send`. Whether an inbound PDU is sticky is
 decided in the main process only, in `ingest_pdu_event_locked` after the event is accepted and stored
 (`record_sticky_event_of_accepted_pdu`, `src/homeserver/AGENTS.md`, "Sticky events"). Nothing in this module, in the
-federation worker or in the worker-to-main relay envelope reads the sticky fields or adds one. A server pushes its own
+federation worker or in the worker-to-main relay envelope reads the sticky fields or adds one. The worker reads a
+room's sticky rows only from main's room snapshot, for `ServerEventFilter`'s exemption (rule 7, ADR-0858); it never
+records, deletes or pushes one. A server pushes its own
 unexpired sticky events to a server that newly joins a room (`push_local_sticky_events_to_server`, called beside the
 device-list broadcast) and never relays another server's. Its dispatch queue is in memory and bounded, so a sticky event
 a full queue refuses is not sent again until that destination joins again (a known gap in ADR-0856).

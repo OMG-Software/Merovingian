@@ -12,7 +12,8 @@ namespace merovingian::database
 {
 
 // How a sticky event's remaining lifetime is shown to clients (MSC4354, ADR-0853). Every client-facing event serializer
-// calls `attach_sticky_remaining` after it has built the client form of an event, as it calls `attach_redacted_because`.
+// calls `attach_sticky_remaining` after it has built the client form of an event, as it calls
+// `attach_redacted_because`.
 
 // The wall-clock milliseconds the sticky readers judge expiry against: `PersistentStore::test_sticky_clock_ms` when a
 // test set it, else the system clock.
@@ -23,5 +24,10 @@ namespace merovingian::database
 // keeping what `unsigned` already holds. Otherwise does nothing: an expired or unknown event gets neither field.
 auto attach_sticky_remaining(PersistentStore const& store, std::string_view event_id,
                              canonicaljson::Object& client_event) -> void;
+
+// True when `client_event` is an object whose `unsigned` holds `sticky_duration_remaining_ms`: the event was still
+// sticky when it was serialized. A sync section that may carry only sticky events (MSC4354, MSC4480) keeps an event
+// only when this holds, since the clock is read again for each event after the section's events were chosen.
+[[nodiscard]] auto carries_sticky_remaining(canonicaljson::Value const& client_event) -> bool;
 
 } // namespace merovingian::database

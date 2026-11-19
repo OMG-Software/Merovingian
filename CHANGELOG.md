@@ -23,8 +23,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
 * Sticky events (MSC4354): `PUT /send` and delayed events take `org.matrix.msc4354.sticky_duration_ms` (or
   `sticky_duration_ms`), sticky for up to an hour; `/versions` lists `org.matrix.msc4354` (ADR-0853).
-* `/sync` serves a room's newest 100 sticky events in `sticky` and `msc4354_sticky`, sliding sync in the
-  `sticky_events` extension (MSC4480), each once per connection (ADR-0855, ADR-0857).
+* `/sync` serves every unexpired sticky event in `sticky` and `msc4354_sticky`, sliding sync in the `sticky_events`
+  extension (MSC4480), each once per connection (ADR-0855, ADR-0857, ADR-0858).
+* Every joined user and server may read an unexpired sticky event on any endpoint, whatever the room's history
+  visibility (MSC4354); the federation worker gets the sticky rows in its room snapshots (ADR-0858).
+* Sliding sync sends sticky senders' member events with lazy-loaded members, and the extension reads MSC4508's `lists`
+  and `rooms` scope; an event that expires mid-request is left out (ADR-0858).
 * A server that joins a room is sent this server's unexpired sticky events in it, and accepted sticky events from other
   servers are served like local ones (ADR-0856).
 * `server.sticky_events.enabled` (on), `max_per_sender` (60) and `max_per_room` (1000) configure them; migration 005

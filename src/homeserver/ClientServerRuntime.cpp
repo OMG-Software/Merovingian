@@ -177,6 +177,8 @@
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"
 #include "merovingian/sync/EventTypeFilter.hpp"
+#include "merovingian/sync/ExtStickyEventsRequest.hpp"
+#include "merovingian/sync/ExtensionScope.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/LazyMemberTracker.hpp"
@@ -185,7 +187,6 @@
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
 #include "merovingian/sync/ReceiptVisibility.hpp"
 #include "merovingian/sync/ResolvedState.hpp"
-#include "merovingian/sync/ExtStickyEventsRequest.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
 #include "merovingian/sync/RoomListResult.hpp"
@@ -6993,15 +6994,11 @@ namespace
         return database::sticky_clock_now_ms(runtime.database.persistent_store);
     }
 
-    // At most this many sticky events go in one room's `sticky` section of one classic /sync response, the newest by
-    // stream ordering (MSC4354 suggests 100). Classic /sync has no cursor for the older ones left out, so a client is
-    // never sent them: the newest are the ones it can act on (ADR-0857).
-    constexpr auto max_classic_sticky_events_per_room = std::size_t{100U};
-
     // The sticky events of a joined room that `rooms.join.{roomId}.sticky` carries (ADR-0855), oldest first: the room's
     // unexpired ones up to `upper_bound` from a sender the user does not ignore, those after `after` unless the room is
-    // sent in full (`after` empty), and none that this response's timeline carries; of those, the newest
-    // `max_classic_sticky_events_per_room`.
+    // sent in full (`after` empty), and none that this response's timeline carries. All of them: classic /sync has no
+    // cursor, so one left out would never be sent, and MSC4354 requires every unexpired sticky event to be delivered.
+    // The room cap bounds the section (`server.sticky_events.max_per_room`, ADR-0857).
     [[nodiscard]] auto classic_sticky_events(database::PersistentStore const& store, std::string_view room_id,
                                              std::int64_t now_ms, std::uint64_t upper_bound,
                                              std::optional<std::uint64_t> after,
@@ -7017,9 +7014,7 @@ namespace
         }
         auto const choice = sync::select_sticky_for_sync(candidates, upper_bound, after, ignored_senders, timeline_ids,
                                                          std::numeric_limits<std::size_t>::max());
-        auto const chosen = choice.event_ids.size();
-        auto const skipped = chosen - std::min(chosen, max_classic_sticky_events_per_room);
-        for (auto const& event_id : choice.event_ids | std::views::drop(skipped))
+        for (auto const& event_id : choice.event_ids)
         {
             auto const found = store.events.find_in_room(room_id, event_id);
             if (found != store.events.end())
@@ -7233,10 +7228,10 @@ namespace
                     timeline_ids.insert((*it)->event_id);
                 }
                 auto const sticky_in_full = !since_token.has_value() || full_state || newly_joined;
-                sticky_events = classic_sticky_events(store, room.room_id, sticky_now_ms(rt.homeserver), sync_position,
-                                                      sticky_in_full ? std::nullopt
-                                                                     : std::optional<std::uint64_t>{since_ordering},
-                                                      ignored_senders, timeline_ids);
+                sticky_events =
+                    classic_sticky_events(store, room.room_id, sticky_now_ms(rt.homeserver), sync_position,
+                                          sticky_in_full ? std::nullopt : std::optional<std::uint64_t>{since_ordering},
+                                          ignored_senders, timeline_ids);
             }
 
             auto timeline_events = canonicaljson::Array{};
@@ -7423,7 +7418,13 @@ namespace
             auto sticky_section = canonicaljson::Array{};
             for (auto const* const sticky : sticky_events)
             {
-                sticky_section.push_back(viewer_unsigned.apply(*sticky, client_event_with_id(store, *sticky)));
+                auto served = viewer_unsigned.apply(*sticky, client_event_with_id(store, *sticky));
+                // MSC4354: every event in the section is sticky. The clock is read again when an event is serialized,
+                // so one that expired after it was chosen comes back without its remaining time and is left out.
+                if (database::carries_sticky_remaining(served))
+                {
+                    sticky_section.push_back(std::move(served));
+                }
             }
             append_sticky_section(joined_room, std::move(sticky_section));
             join_members.push_back(json_member(room.room_id, json_obj(std::move(joined_room))));
@@ -8007,25 +8008,32 @@ namespace
         return ids;
     }
 
-    // The rooms a sticky_events extension covers: the rooms it names, or the rooms of the response when it names none or
-    // "*", each once and only if the user has joined it (the other extensions' scope, ADR-0855).
+    // The room IDs of a sliding-sync request's `room_subscriptions`.
+    [[nodiscard]] auto subscription_room_ids(sync::SlidingSyncRequest const& request) -> std::vector<std::string>
+    {
+        auto ids = std::vector<std::string>{};
+        ids.reserve(request.room_subscriptions.size());
+        for (auto const& [room_id, subscription] : request.room_subscriptions)
+        {
+            ids.push_back(room_id);
+        }
+        return ids;
+    }
+
+    // The rooms the sticky_events extension serves in one response: its scope (MSC4508, `sync::extension_scope_rooms`)
+    // over this response's list windows and room subscriptions, less every room the user has not joined (MSC4480: an
+    // invited, left, kicked or banned room in scope is sent no sticky events).
     [[nodiscard]] auto sticky_scope_rooms(sync::ExtStickyEventsRequest const& request,
-                                          std::vector<std::string> const& response_room_ids,
+                                          std::map<std::string, std::vector<std::string>> const& list_windows,
+                                          std::vector<std::string> const& subscriptions,
                                           std::map<std::string, sync::RoomAccess, std::less<>> const& room_access)
         -> std::vector<std::string>
     {
-        auto const all = request.rooms.empty() || (request.rooms.size() == 1U && request.rooms.front() == "*");
-        auto const& named = all ? response_room_ids : request.rooms;
-        auto scope = std::vector<std::string>{};
-        auto seen = std::unordered_set<std::string>{};
-        for (auto const& room_id : named)
-        {
+        auto scope = sync::extension_scope_rooms(request.lists, request.rooms, list_windows, subscriptions);
+        std::erase_if(scope, [&](std::string const& room_id) {
             auto const found = room_access.find(room_id);
-            if (found != room_access.end() && found->second == sync::RoomAccess::joined && seen.insert(room_id).second)
-            {
-                scope.push_back(room_id);
-            }
-        }
+            return found == room_access.end() || found->second != sync::RoomAccess::joined;
+        });
         return scope;
     }
 
@@ -8038,6 +8046,8 @@ namespace
         canonicaljson::Object extension{};
         // The connection's delivered sets after this response.
         StickyIdsByRoom delivered{};
+        // The senders of the events sent in each room: for lazy-loaded members they count as timeline senders.
+        StickyIdsByRoom senders{};
         bool delivered_any{false};
     };
 
@@ -8052,8 +8062,8 @@ namespace
         std::unordered_set<std::string> const& ignored_senders;
     };
 
-    // The events each in-scope room is sent, and the delivered sets that follow. A room outside the scope keeps its set,
-    // less the IDs that have expired, so a room re-entering scope is sent only what it has not had.
+    // The events each in-scope room is sent, and the delivered sets that follow. A room outside the scope keeps its
+    // set, less the IDs that have expired, so a room re-entering scope is sent only what it has not had.
     [[nodiscard]] auto build_sliding_sticky(database::PersistentStore const& store, SlidingStickyInputs const& in,
                                             sync::ViewerEventUnsigned& viewer) -> SlidingStickyOutcome
     {
@@ -8091,9 +8101,16 @@ namespace
             for (auto const& event_id : choice.event_ids)
             {
                 auto const found = store.events.find_in_room(room_id, event_id);
-                if (found != store.events.end())
+                if (found == store.events.end())
                 {
-                    events.push_back(viewer.apply(*found, client_event_with_id(store, *found)));
+                    continue;
+                }
+                auto served = viewer.apply(*found, client_event_with_id(store, *found));
+                // As in classic /sync: an event that expired after it was chosen is no longer sticky (MSC4480).
+                if (database::carries_sticky_remaining(served))
+                {
+                    events.push_back(std::move(served));
+                    outcome.senders[room_id].insert(found->sender_user_id);
                 }
             }
             if (!events.empty())
@@ -8129,9 +8146,10 @@ namespace
         return outcome;
     }
 
-    // Whether any of `rooms` the user has joined holds a sticky event the connection has not been sent: a backlog, which
-    // answers a long-poll at once (ADR-0855).
-    [[nodiscard]] auto sticky_backlog_exists(database::PersistentStore const& store, std::vector<std::string> const& rooms,
+    // Whether any of `rooms` the user has joined holds a sticky event the connection has not been sent: a backlog,
+    // which answers a long-poll at once (ADR-0855).
+    [[nodiscard]] auto sticky_backlog_exists(database::PersistentStore const& store,
+                                             std::vector<std::string> const& rooms,
                                              std::unordered_set<std::string_view> const& joined_rooms,
                                              StickyIdsByRoom const& delivered, std::int64_t now_ms,
                                              std::uint64_t upper_bound,
@@ -8292,11 +8310,11 @@ namespace
 
         // ADR-0855: the sticky_events extension, when the request enables it and the feature is on. A response that
         // delivered sticky events at this request's pos may be retried, so it does not answer a backlog at once again.
-        auto const* const sticky_request = ssreq.extensions.has_value() && ssreq.extensions->sticky_events.has_value() &&
-                                                   ssreq.extensions->sticky_events->enabled &&
-                                                   rt.limits.sticky_events_enabled
-                                               ? &*ssreq.extensions->sticky_events
-                                               : nullptr;
+        auto const* const sticky_request =
+            ssreq.extensions.has_value() && ssreq.extensions->sticky_events.has_value() &&
+                    ssreq.extensions->sticky_events->enabled && rt.limits.sticky_events_enabled
+                ? &*ssreq.extensions->sticky_events
+                : nullptr;
         auto const sticky_answered_for_this_pos = conn.pending_response.has_value() &&
                                                   conn.pending_response->request_pos == requested_pos &&
                                                   conn.pending_response->sticky_answered;
@@ -8456,29 +8474,13 @@ namespace
                         return kv.second > since_sync_stream_id && joined_rooms.contains(kv.first);
                     });
                 // A sticky event this connection has not been sent answers the poll at once (ADR-0855). The rooms it
-                // covers are those the previous response held (this request's windows, while their config is
-                // unchanged) and the subscribed ones, or the rooms the extension names.
+                // covers are the extension's scope (MSC4508) over the windows the previous response held (this
+                // request's, while their config is unchanged) and the subscribed rooms.
                 auto has_relevant_sticky = false;
                 if (sticky_request != nullptr && !sticky_answered_for_this_pos)
                 {
-                    auto sticky_rooms = std::vector<std::string>{};
-                    auto const named = !sticky_request->rooms.empty() &&
-                                       (sticky_request->rooms.size() != 1U || sticky_request->rooms.front() != "*");
-                    if (named)
-                    {
-                        sticky_rooms = sticky_request->rooms;
-                    }
-                    else
-                    {
-                        for (auto const& [list_name, window] : expansion_windows)
-                        {
-                            sticky_rooms.insert(sticky_rooms.end(), window.begin(), window.end());
-                        }
-                        for (auto const& [room_id, subscription] : ssreq.room_subscriptions)
-                        {
-                            sticky_rooms.push_back(room_id);
-                        }
-                    }
+                    auto const sticky_rooms = sync::extension_scope_rooms(
+                        sticky_request->lists, sticky_request->rooms, expansion_windows, subscription_room_ids(ssreq));
                     has_relevant_sticky =
                         sticky_backlog_exists(store, sticky_rooms, joined_rooms, conn.sticky_delivered,
                                               sticky_now_ms(rt.homeserver), cur_event, ignored_senders);
@@ -8560,6 +8562,15 @@ namespace
 
         auto rooms_obj = canonicaljson::Object{};
         auto rooms_skipped = std::size_t{0U};
+        // The joined rooms built, in response order, serialised only once the sticky_events extension has added its
+        // senders' member events (MSC4480): a room with none of its own updates is sent when it gains one.
+        struct BuiltSlidingRoom final
+        {
+            std::string room_id{};
+            sync::SlidingSyncRoomResponse room{};
+            bool has_updates{false};
+        };
+        auto built_rooms = std::vector<BuiltSlidingRoom>{};
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
@@ -8648,10 +8659,6 @@ namespace
                                                   lazy_already_sent, ignored_senders, history_visibility,
                                                   *unread_classifier, expansion, room_last_ordering,
                                                   visible_event_ordering, device_id, &request_lookups.value());
-            if (!room.lazy_members_included.empty())
-            {
-                lazy_members_included_by_room[room_id] = room.lazy_members_included;
-            }
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, or changed
             // required_state.  Unread counts are sent when the room is included for
@@ -8664,14 +8671,7 @@ namespace
             {
                 sticky_timeline_ids[room_id] = sliding_timeline_event_ids(room.timeline_json);
             }
-            if (has_room_updates)
-            {
-                rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
-            }
-            else
-            {
-                ++rooms_skipped;
-            }
+            built_rooms.push_back({room_id, std::move(room), has_room_updates});
         }
 
         // Invited rooms named by a subscription: stripped invite state only (the same
@@ -8688,6 +8688,7 @@ namespace
             invited_subscription_ids.clear();
         }
         auto invites_reported = std::vector<std::string>{};
+        auto invite_rooms = canonicaljson::Object{};
         auto const invite_room_state = invited_subscription_ids.empty()
                                            ? std::optional<InviteRoomStateIndex>{}
                                            : std::optional<InviteRoomStateIndex>{std::in_place, store, user};
@@ -8715,7 +8716,7 @@ namespace
             invite_room.initial = true;
             invite_room.invite_state_json =
                 json_serialize(json_arr(build_invite_state_events_array(store, room_id, user)));
-            rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
+            invite_rooms.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
             invites_reported.push_back(seen_key);
         }
 
@@ -8733,13 +8734,36 @@ namespace
         auto sticky_outcome = SlidingStickyOutcome{};
         if (sticky_request != nullptr)
         {
-            auto const scope_rooms = sticky_scope_rooms(*sticky_request, response_room_ids, room_access);
+            auto response_windows = std::map<std::string, std::vector<std::string>>{};
+            for (auto const& [list_name, result] : list_results)
+            {
+                response_windows.emplace(list_name, result.windowed_room_ids);
+            }
+            auto const scope_rooms =
+                sticky_scope_rooms(*sticky_request, response_windows, subscription_room_ids(ssreq), room_access);
             auto sticky_viewer = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
-            sticky_outcome = build_sliding_sticky(store,
-                                                  {*sticky_request, sticky_now_ms(rt.homeserver),
-                                                   visible_event_ordering, scope_rooms, conn.sticky_delivered,
-                                                   sticky_timeline_ids, ignored_senders},
-                                                  sticky_viewer);
+            sticky_outcome =
+                build_sliding_sticky(store,
+                                     {*sticky_request, sticky_now_ms(rt.homeserver), visible_event_ordering,
+                                      scope_rooms, conn.sticky_delivered, sticky_timeline_ids, ignored_senders},
+                                     sticky_viewer);
+            // MSC4480: the senders of the sticky events sent count as timeline senders for lazy-loaded members.
+            for (auto& built : built_rooms)
+            {
+                auto const senders = sticky_outcome.senders.find(built.room_id);
+                if (senders == sticky_outcome.senders.end())
+                {
+                    continue;
+                }
+                auto const lazy_sent_it = conn.lazy_members_sent.find(built.room_id);
+                auto const& lazy_already_sent =
+                    lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
+                if (sync::add_sticky_sender_members(store, built.room_id, user, senders->second, lazy_already_sent,
+                                                    ignored_senders, sticky_viewer, built.room) > 0U)
+                {
+                    built.has_updates = true;
+                }
+            }
             if (!sticky_outcome.extension.empty())
             {
                 // ADR-0853: answered under the name or names the request used.
@@ -8754,6 +8778,23 @@ namespace
                 }
             }
         }
+
+        for (auto& built : built_rooms)
+        {
+            if (!built.room.lazy_members_included.empty())
+            {
+                lazy_members_included_by_room[built.room_id] = built.room.lazy_members_included;
+            }
+            if (built.has_updates)
+            {
+                rooms_obj.push_back(json_member(built.room_id, sliding_sync_room_to_value(std::move(built.room))));
+            }
+            else
+            {
+                ++rooms_skipped;
+            }
+        }
+        std::ranges::move(invite_rooms, std::back_inserter(rooms_obj));
 
         auto const to_device_count = extension_responses && extension_responses->to_device.has_value()
                                          ? extension_responses->to_device->events_json.size()
@@ -21771,9 +21812,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (sticky.duration_ms.has_value())
                 {
                     rewritten.sticky = StickySendOptions{
-                        *sticky.duration_ms,
-                        database::StickyEventCaps{rt.limits.max_sticky_events_per_sender,
-                                                  rt.limits.max_sticky_events_per_room}};
+                        *sticky.duration_ms, database::StickyEventCaps{rt.limits.max_sticky_events_per_sender,
+                                                                       rt.limits.max_sticky_events_per_room}
+                    };
                 }
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",

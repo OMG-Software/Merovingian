@@ -171,14 +171,21 @@ auto StickyEventTable::erase(std::string_view event_id) -> bool
 auto StickyEventTable::erase_sender(std::string_view sender) -> std::size_t
 {
     auto const book = m_by_sender.find(sender);
-    if (book == m_by_sender.end())
-    {
-        return 0U;
-    }
-    // Copy the IDs first: erasing unindexes the book being walked.
+    return book == m_by_sender.end() ? 0U : erase_book(book->second);
+}
+
+auto StickyEventTable::erase_room(std::string_view room_id) -> std::size_t
+{
+    auto const book = m_by_room.find(room_id);
+    return book == m_by_room.end() ? 0U : erase_book(book->second);
+}
+
+auto StickyEventTable::erase_book(Ordering const& book) -> std::size_t
+{
+    // Copy the IDs first: erasing unindexes the book being walked, and removes it once it is empty.
     auto ids = std::vector<std::string>{};
-    ids.reserve(book->second.size());
-    for (auto const& key : book->second)
+    ids.reserve(book.size());
+    for (auto const& key : book)
     {
         ids.push_back(key.second);
     }

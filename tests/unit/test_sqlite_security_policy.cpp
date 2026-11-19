@@ -16,8 +16,8 @@
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/LandlockHardening.hpp"
+#include "merovingian/platform/LandlockHardeningOps.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -622,10 +622,10 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
                 CHECK(snapshot->events.front().prev_event_ids == std::vector<std::string>{"$prev:example.org"});
                 CHECK(snapshot->events.front().auth_event_ids == std::vector<std::string>{"$create:example.org"});
                 CHECK(snapshot->events.front().signatures.size() == 1U);
-                CHECK(tables_read == std::vector<std::string>{"rooms", "membership", "invites", "events",
-                                                              "current_state", "state_groups", "state_group_state",
-                                                              "event_state_groups", "forward_extremities",
-                                                              "event_edges", "event_auth", "event_signatures"});
+                CHECK(tables_read == std::vector<std::string>{
+                                         "rooms", "membership", "invites", "events", "current_state", "state_groups",
+                                         "state_group_state", "event_state_groups", "forward_extremities",
+                                         "sticky_events", "event_edges", "event_auth", "event_signatures"});
             }
         }
 
@@ -640,10 +640,11 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
                                                              "state_group_state",
                                                              "event_state_groups",
                                                              "forward_extremities",
+                                                             "sticky_events",
                                                              "event_edges",
                                                              "event_auth",
                                                              "event_signatures"};
-            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{12U}));
+            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{13U}));
             {
                 auto writer = RawSqlite{path};
                 REQUIRE(writer.handle != nullptr);
@@ -657,9 +658,8 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
             {
                 INFO("failed table: " << all_tables[failed]);
                 CHECK_FALSE(snapshot.has_value());
-                CHECK(tables_read ==
-                      std::vector<std::string>{all_tables.begin(),
-                                               all_tables.begin() + static_cast<std::ptrdiff_t>(failed)});
+                CHECK(tables_read == std::vector<std::string>{
+                                         all_tables.begin(), all_tables.begin() + static_cast<std::ptrdiff_t>(failed)});
             }
         }
     }

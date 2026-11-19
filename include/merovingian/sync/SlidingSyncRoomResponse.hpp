@@ -55,6 +55,11 @@ struct SlidingSyncRoomResponse final
     // committed lazy_members_sent[room_id] so a later response for the same
     // member doesn't bypass the delta floor again.
     std::unordered_set<std::string> lazy_members_included{};
+    // Server-internal, never serialised. Whether the room's combined required_state named
+    // ["m.room.member","$LAZY"], and the users whose m.room.member event required_state_json holds, whatever pair
+    // matched it. `add_sticky_sender_members` reads both (MSC4480).
+    bool lazy_load_members{false};
+    std::unordered_set<std::string> required_state_members{};
 };
 
 } // namespace merovingian::sync

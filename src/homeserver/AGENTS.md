@@ -835,8 +835,9 @@ the user may be joined but not entitled to an old event, and a user who has left
 may still read what they saw. Today these are `/messages`, `/context`, `/event`, `/search`,
 `/relations`, `/threads`, `/sync`, sliding sync, `initialSync`, `/members`, `/joined_members`,
 `/state`, `/state/{type}/{key}` and `/timestamp_to_event` (a user who cannot read the room gets 403; an event
-`HistoryVisibility` withholds is stepped over). A new endpoint of that kind gets a conformance scenario in
-`tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
+`HistoryVisibility` withholds is stepped over). An unexpired MSC4354 sticky event is visible to every user joined now,
+inside `HistoryVisibility` (ADR-0858); never add the exemption in a handler. A new endpoint of that kind gets a
+conformance scenario in `tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
 deliberate exception (its rows are created at delivery for a then-joined user); say so if you
 add another.
 

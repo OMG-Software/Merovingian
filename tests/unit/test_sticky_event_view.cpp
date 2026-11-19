@@ -3,8 +3,8 @@
 //
 // How a sticky event's remaining lifetime is shown to clients (MSC4354, ADR-0853, ADR-0855): the clock the readers use,
 // and `attach_sticky_remaining`, which adds both remaining-time fields to an event's `unsigned` only while the event
-// has an unexpired row, keeping what `unsigned` already holds. The proposal is not in Matrix v1.19, so these are
-// project-level checks.
+// has an unexpired row, keeping what `unsigned` already holds, and `carries_sticky_remaining`. The proposal is not in
+// Matrix v1.19, so these are project-level checks.
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
@@ -193,6 +193,53 @@ SCENARIO("an event with an unexpired sticky row is served both remaining-time fi
             THEN("it is replaced by an object holding only both fields")
             {
                 REQUIRE(text_of(event) == std::string{bare_event} + R"(,"unsigned":{)" + both_fields + "}}");
+            }
+        }
+    }
+}
+
+// The serializers use `carries_sticky_remaining` to drop an event the sticky section offers when its row expired
+// between selection and serialization, so the section never carries an event without its remaining time (ADR-0858).
+SCENARIO("an event carries its sticky remaining time only when attach_sticky_remaining added it",
+         "[database][sticky-events]")
+{
+    GIVEN("a sticky row with 2500 ms left")
+    {
+        auto opened = store_with_row(expires_ms);
+
+        WHEN("the remaining time is attached while the row is unexpired")
+        {
+            auto event = client_event();
+            db::attach_sticky_remaining(opened.store, event_id, event);
+
+            THEN("the event carries it")
+            {
+                REQUIRE(db::carries_sticky_remaining(cj::Value{std::move(event)}));
+            }
+        }
+
+        WHEN("the clock reaches the expiry before the remaining time is attached")
+        {
+            opened.store.test_sticky_clock_ms = expires_ms;
+            auto event = with_unsigned(cj::Value{cj::Object{}});
+            db::attach_sticky_remaining(opened.store, event_id, event);
+
+            THEN("the event does not carry it")
+            {
+                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{std::move(event)}));
+            }
+        }
+
+        WHEN("the value is not an object, or its unsigned is not an object or holds only the unstable name")
+        {
+            auto unstable = cj::Object{};
+            unstable.push_back(cj::make_member("msc4354_sticky_duration_ttl_ms", cj::Value{std::int64_t{1}}));
+
+            THEN("none carries it")
+            {
+                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{std::string{"event"}}));
+                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{with_unsigned(cj::Value{std::string{"x"}})}));
+                REQUIRE_FALSE(db::carries_sticky_remaining(cj::Value{with_unsigned(cj::Value{std::move(unstable)})}));
             }
         }
     }

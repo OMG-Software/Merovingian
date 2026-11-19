@@ -4,8 +4,8 @@
 #include "merovingian/sync/SlidingSyncParser.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
 
 #include <algorithm>
@@ -384,6 +384,11 @@ namespace
                 }
             }
         }
+        // MSC4508: a key that is present but not an array of strings names nothing, as an empty array does.
+        if (auto const* v = find_member(source, "lists"); v != nullptr)
+        {
+            req.lists = extract_unique_strings(*v);
+        }
         if (auto const* v = find_member(source, "rooms"); v != nullptr)
         {
             req.rooms = extract_unique_strings(*v);
@@ -727,9 +732,14 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
             {
                 return "the sticky_events limit must be at least 1";
             }
-            if (extensions.sticky_events->rooms.size() > limits.room_subscriptions)
+            auto const& sticky = *extensions.sticky_events;
+            if (sticky.rooms.has_value() && sticky.rooms->size() > limits.room_subscriptions)
             {
                 return "too many rooms in the sticky_events extension";
+            }
+            if (sticky.lists.has_value() && sticky.lists->size() > limits.lists)
+            {
+                return "too many lists in the sticky_events extension";
             }
         }
     }

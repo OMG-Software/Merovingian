@@ -1524,8 +1524,9 @@ namespace
             }
             for (auto const& row : durations.rows)
             {
-                auto const duration =
-                    row.size() >= delayed_event_sticky_duration_row_columns ? parse_sticky_duration_ms(row[1]) : std::nullopt;
+                auto const duration = row.size() >= delayed_event_sticky_duration_row_columns
+                                          ? parse_sticky_duration_ms(row[1])
+                                          : std::nullopt;
                 if (row.empty() || row[0].empty() || !duration.has_value())
                 {
                     ++store.sticky_event_rows_skipped_at_load;
@@ -2541,6 +2542,25 @@ namespace
             if (row.size() >= 2U)
             {
                 snapshot.forward_extremities.push_back({row[0], row[1]});
+            }
+        }
+
+        // The room's sticky events (ADR-0858), read as hydration reads them; a row that cannot be read exactly is
+        // left out, never repaired.
+        auto sticky = connection.execute({"postgresql_reload_sticky_events",
+                                          "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM "
+                                          "sticky_events WHERE room_id = $1 ORDER BY event_id",
+                                          {{room_id_str, false}}});
+        if (!sticky.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("sticky_events");
+        for (auto const& row : sticky.rows)
+        {
+            if (auto parsed = parse_sticky_event_row(row); parsed.has_value())
+            {
+                snapshot.sticky_events.push_back(std::move(*parsed));
             }
         }
 

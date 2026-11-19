@@ -3139,6 +3139,16 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
         auto const sender = event != store.events.end() ? event->sender_user_id : std::string{};
         std::ignore = store.forward_extremities.insert(std::move(tip), sender);
     }
+    // The room's sticky rows are the snapshot's (ADR-0858). A row of another room, or one a store refuses, is not
+    // taken: the snapshot read the room's rows only.
+    std::ignore = store.sticky_events.erase_room(room_id);
+    for (auto& row : snapshot.sticky_events)
+    {
+        if (row.room_id == room_id)
+        {
+            std::ignore = store.sticky_events.insert(std::move(row));
+        }
+    }
 }
 
 auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomReloadSnapshot> snapshots) -> std::size_t
@@ -3186,6 +3196,13 @@ auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomRelo
         std::ranges::move(snapshot.state_group_state, std::back_inserter(group_entries));
         std::ranges::move(snapshot.event_state_groups, std::back_inserter(mappings));
         std::ranges::move(snapshot.forward_extremities, std::back_inserter(tips));
+        for (auto& row : snapshot.sticky_events)
+        {
+            if (row.room_id == snapshot.room_id)
+            {
+                std::ignore = store.sticky_events.insert(std::move(row));
+            }
+        }
     }
     std::ignore = store.events.insert_all(std::move(events));
     std::ignore = store.state_groups.insert_all(std::move(groups));

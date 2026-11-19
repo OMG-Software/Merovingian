@@ -66,6 +66,10 @@ namespace merovingian::sync
 // It fails closed: an event with a broken group chain, whose membership or visibility event
 // cannot be found, or (with no state group) whose user's membership timeline cannot be followed,
 // is not visible.
+//
+// One exception comes before the rules (MSC4354, ADR-0858): an accepted event with an unexpired sticky row is
+// visible to a user joined to its room now, whatever the visibility, for as long as it stays sticky. A withheld
+// event and an unapplied redaction stay hidden.
 class HistoryVisibility final
 {
 public:
@@ -156,6 +160,9 @@ private:
     [[nodiscard]] auto joined_when_sent(database::PersistentEvent const& event) -> bool;
     [[nodiscard]] auto allows(HistoryVisibilityValue visibility, std::string_view membership,
                               database::PersistentEvent const& event) -> bool;
+    // MSC4354 (ADR-0858): an accepted event with an unexpired sticky row of its own room, while the user is joined to
+    // that room now. History visibility is not applied to it.
+    [[nodiscard]] auto is_sticky_for_joined_user(database::PersistentEvent const& event) -> bool;
 
     database::PersistentStore const& store_;
     std::string user_id_;
@@ -167,6 +174,8 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string_view>> join_ancestors_{};
     std::unordered_map<std::string, std::optional<Departure>> departures_{};
     std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
+    // The sticky clock, read once on first use so every event of a request is judged at one instant.
+    std::optional<std::int64_t> sticky_now_ms_{};
 };
 
 } // namespace merovingian::sync

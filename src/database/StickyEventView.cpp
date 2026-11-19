@@ -6,6 +6,7 @@
 #include "merovingian/database/PersistentStickyEvent.hpp"
 #include "merovingian/events/StickyEvent.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -60,7 +61,8 @@ auto attach_sticky_remaining(PersistentStore const& store, std::string_view even
         {
             for (auto const& member : *current)
             {
-                if (member.key != events::sticky_remaining_field && member.key != events::unstable_sticky_remaining_field)
+                if (member.key != events::sticky_remaining_field &&
+                    member.key != events::unstable_sticky_remaining_field)
                 {
                     unsigned_object.push_back(member);
                 }
@@ -77,6 +79,28 @@ auto attach_sticky_remaining(PersistentStore const& store, std::string_view even
         return;
     }
     client_event.push_back(canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
+}
+
+auto carries_sticky_remaining(canonicaljson::Value const& client_event) -> bool
+{
+    auto const* event = std::get_if<canonicaljson::Object>(&client_event.storage());
+    if (event == nullptr)
+    {
+        return false;
+    }
+    for (auto const& member : *event)
+    {
+        if (member.key != "unsigned")
+        {
+            continue;
+        }
+        auto const* unsigned_object = std::get_if<canonicaljson::Object>(&member.value->storage());
+        return unsigned_object != nullptr &&
+               std::ranges::any_of(*unsigned_object, [](canonicaljson::ObjectMember const& field) {
+                   return field.key == events::sticky_remaining_field;
+               });
+    }
+    return false;
 }
 
 } // namespace merovingian::database

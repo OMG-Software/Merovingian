@@ -26,13 +26,13 @@ event ordering is at or before the response's upper bound and whose sender the u
 
 An event in this response's `timeline.events` is left out of the section. The timeline filter is applied first, so a
 sticky event the filter removed from the timeline is in the section. The `state` and `timeline` filters do not apply
-to the section. Events are ordered oldest first. History visibility is not applied, as MSC4354 says, and there is no
-section for invited, knocked or left rooms.
+to the section. Events are ordered oldest first. History visibility is not applied, as MSC4354 says (on every endpoint,
+[ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)), and there is no section for invited, knocked or left rooms.
 
-The section has no cursor: classic `/sync` has none, so events left out would be skipped by `next_batch`. It carries the
-newest 100 a response chooses
-([ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)), and the room cap
-bounds what a room holds.
+The section has no cursor: classic `/sync` has none, so events left out would be skipped by `next_batch`. It carries
+every event a response chooses, and the room cap
+([ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)) bounds what a room
+holds ([ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)).
 
 A room whose only news is sticky events is not suppressed as empty. With `lazy_load_members`, a sticky event's sender
 gets their membership event as a timeline sender does. A new sticky event wakes a long poll as any new event does; an
@@ -41,7 +41,7 @@ expiry wakes nothing.
 ### Sliding sync
 
 The extension takes `enabled`, `limit` (default 100, at least 1; a larger value is lowered to 100) and the `lists` and
-`rooms` scope the other extensions take. The connection state remembers, per room, the sticky event IDs it has
+`rooms` scope of MSC4508 ([ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)). The connection state remembers, per room, the sticky event IDs it has
 delivered. For each room in scope that the user is joined to, the response holds the unexpired, unignored sticky events
 not already delivered on this connection and not in this response's timeline for that room, oldest first, at most
 `limit`. Delivering an event in the timeline also marks it delivered. Expired IDs are dropped from the remembered set.
@@ -56,8 +56,7 @@ So:
 
 ## Consequences
 
-* Classic `/sync` carries at most the newest 100 sticky events of a room, the cap MSC4354 suggests (ADR-0857); a client
-  that needs more uses sliding sync.
+* Classic `/sync` carries every unexpired sticky event a response chooses, at most the room cap (ADR-0857, ADR-0858).
 * The unstable and stable `/sync` keys carry the same array
   ([ADR-0853](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)).
 
@@ -66,3 +65,4 @@ So:
 * Related: [ADR-0853](0853-sticky-events-are-served-on-the-unstable-names-released-clients-use-and-the-stable-names.md)
 * Related: [ADR-0854](0854-a-sticky-event-is-a-row-beside-the-event-expiring-an-hour-at-most-after-it-was-first-seen.md)
 * Amended by [ADR-0857](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)
+* Amended by [ADR-0858](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)

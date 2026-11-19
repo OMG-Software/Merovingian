@@ -837,11 +837,12 @@ namespace
         {
             return true;
         }
-        auto const now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::system_clock::now().time_since_epoch())
-                                .count();
+        auto const now_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
         auto const loaded = load_rows(
-            connection, "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM sticky_events ORDER BY event_id",
+            connection,
+            "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM sticky_events ORDER BY event_id",
             [&store, now_ms](sqlite3_stmt& row) {
                 auto columns = std::array<std::string, sticky_event_row_columns>{};
                 for (auto index = std::size_t{0U}; index < columns.size(); ++index)
@@ -867,7 +868,8 @@ namespace
         {
             return loaded;
         }
-        return load_rows(connection, "SELECT delay_id, sticky_duration_ms FROM delayed_event_sticky_durations ORDER BY delay_id",
+        return load_rows(connection,
+                         "SELECT delay_id, sticky_duration_ms FROM delayed_event_sticky_durations ORDER BY delay_id",
                          [&store](sqlite3_stmt& row) {
                              auto columns = std::array<std::string, delayed_event_sticky_duration_row_columns>{};
                              for (auto index = std::size_t{0U}; index < columns.size(); ++index)
@@ -1588,6 +1590,25 @@ namespace
                         "SELECT room_id, event_id FROM forward_extremities WHERE room_id = ?1 ORDER BY event_id",
                         [&](sqlite3_stmt& row) {
                             snapshot.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
+                        }))
+        {
+            return std::nullopt;
+        }
+        // The room's sticky events (ADR-0858), read as hydration reads them; a row that cannot be read exactly is
+        // left out, never repaired.
+        if (!read_table("sticky_events",
+                        "SELECT event_id, room_id, sender, received_at_ms, expires_at_ms FROM sticky_events "
+                        "WHERE room_id = ?1 ORDER BY event_id",
+                        [&](sqlite3_stmt& row) {
+                            auto columns = std::array<std::string, sticky_event_row_columns>{};
+                            for (auto index = std::size_t{0U}; index < columns.size(); ++index)
+                            {
+                                columns[index] = column_text(row, static_cast<int>(index));
+                            }
+                            if (auto parsed = parse_sticky_event_row(columns); parsed.has_value())
+                            {
+                                snapshot.sticky_events.push_back(std::move(*parsed));
+                            }
                         }))
         {
             return std::nullopt;

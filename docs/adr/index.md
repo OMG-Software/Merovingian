@@ -732,3 +732,4 @@
 * [0855 - Sticky events reach clients once per sync position, and in full on joining or entering scope](0855-sticky-events-reach-clients-once-per-sync-position-and-in-full-on-joining-or-entering-scope.md)
 * [0856 - A server pushes its own unexpired sticky events to a server that joins, and records only accepted ones](0856-a-server-pushes-its-own-unexpired-sticky-events-to-a-server-that-joins-and-records-only-accepted-ones.md)
 * [0857 - A room holds a bounded number of sticky events, shared fairly between servers](0857-a-room-holds-a-bounded-number-of-sticky-events-shared-fairly-between-servers.md)
+* [0858 - Unexpired sticky events skip history visibility, reach every client whole, and follow MSC4508 scope](0858-unexpired-sticky-events-skip-history-visibility-reach-every-client-whole-and-follow-msc4508-scope.md)

@@ -27,6 +27,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <string>
@@ -126,6 +128,14 @@ public:
         return hs::handle_client_server_request(runtime(),
                                                 {std::move(method), std::move(target), token, std::move(body)})
             .response;
+    }
+
+    // Alice sets the room's history visibility.
+    auto set_history_visibility(std::string_view visibility) -> void
+    {
+        REQUIRE(send("PUT", "/_matrix/client/v3/rooms/" + m_room_id + "/state/m.room.history_visibility", m_alice_token,
+                     R"({"history_visibility":")" + std::string{visibility} + R"("})")
+                    .status == 200U);
     }
 
     auto bob_joins() -> void
@@ -283,7 +293,7 @@ SCENARIO("a joined room's sticky section holds the sticky events its timeline do
     }
 }
 
-SCENARIO("a room's sticky section holds at most its newest 100 sticky events", "[sticky-events][integration]")
+SCENARIO("a room's sticky section holds every unexpired sticky event, past 100", "[sticky-events][integration]")
 {
     GIVEN("alice's room with 101 sticky messages and bob joined before them")
     {
@@ -299,11 +309,11 @@ SCENARIO("a room's sticky section holds at most its newest 100 sticky events", "
         {
             auto const body = fixture.filtered_sync(fixture.bob_token(), no_timeline_filter);
 
-            THEN("the section holds the newest 100, oldest first, under both names, and the first message is left out")
+            THEN("the section holds all 101, oldest first, under both names")
             {
-                auto const newest = std::vector<std::string>{std::next(sent.begin()), sent.end()};
-                REQUIRE(sticky_of(fixture, body) == newest);
-                REQUIRE(sticky_of(fixture, body, "msc4354_sticky") == newest);
+                // MSC4354: every unexpired sticky event is delivered; classic /sync has no cursor for more (ADR-0858).
+                REQUIRE(sticky_of(fixture, body) == sent);
+                REQUIRE(sticky_of(fixture, body, "msc4354_sticky") == sent);
             }
         }
     }
@@ -719,10 +729,8 @@ SCENARIO("sliding sync sends a room that re-enters the extension's scope only wh
     {
         auto fixture = Fixture{};
         auto const m1 = fixture.sticky_message("one");
-        auto const in_scope =
-            list_request(R"("sticky_events":{"enabled":true,"rooms":[")" + fixture.room_id() + R"("]})");
-        auto const out_of_scope =
-            list_request(R"("sticky_events":{"enabled":true,"rooms":["!elsewhere:example.org"]})");
+        auto const in_scope = list_request(R"("sticky_events":{"enabled":true,"lists":["all"]})");
+        auto const out_of_scope = list_request(R"("sticky_events":{"enabled":true,"lists":[]})");
         auto const first = parsed(fixture.sliding(fixture.alice_token(), in_scope));
         REQUIRE(sliding_ids(fixture, first) == std::vector<std::string>{m1});
         auto const second = parsed(fixture.sliding(fixture.alice_token(), out_of_scope, *string_member(first, "pos")));
@@ -789,6 +797,169 @@ SCENARIO("a new sliding sync connection is sent every sticky event again", "[sti
             THEN("the event is sent again")
             {
                 REQUIRE(sliding_ids(fixture, third) == std::vector<std::string>{message});
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A list request whose list lazy-loads members, with `extension_json` and nothing in the timeline.
+[[nodiscard]] auto lazy_list_request(std::string_view extension_json) -> std::string
+{
+    return R"({"conn_id":"lazy","lists":{"all":{"ranges":[[0,10]],"timeline_limit":0,)"
+           R"("required_state":[["m.room.member","$LAZY"]]}},"extensions":{)" +
+           std::string{extension_json} + "}}";
+}
+
+// How many m.room.member events for `user` the room's required_state holds; 0 when the room is not in `rooms`.
+[[nodiscard]] auto required_member_count(Fixture const& fixture, cj::Object const& body, std::string_view user)
+    -> std::size_t
+{
+    auto const* rooms = object_member_as_object(body, "rooms");
+    auto const* room = rooms != nullptr ? object_member_as_object(*rooms, fixture.room_id()) : nullptr;
+    auto const* state = room != nullptr ? object_member_as_array(*room, "required_state") : nullptr;
+    if (state == nullptr)
+    {
+        return 0U;
+    }
+    return static_cast<std::size_t>(std::ranges::count_if(*state, [user](cj::Value const& value) {
+        auto const* event = std::get_if<cj::Object>(&value.storage());
+        auto const* type = event != nullptr ? string_member(*event, "type") : nullptr;
+        auto const* key = event != nullptr ? string_member(*event, "state_key") : nullptr;
+        return type != nullptr && *type == "m.room.member" && key != nullptr && *key == user;
+    }));
+}
+
+} // namespace
+
+// MSC4508: `lists` and `rooms` name the lists and room subscriptions an extension applies to; absent is all, an empty
+// array is none, and a room named without a subscription is not reached (ADR-0858).
+SCENARIO("the sliding sync sticky_events extension follows its lists and rooms scope", "[sticky-events][integration]")
+{
+    GIVEN("alice's room, in her list `all`, with a sticky message")
+    {
+        auto fixture = Fixture{};
+        auto const message = fixture.sticky_message("one");
+        auto const& room = fixture.room_id();
+
+        WHEN("the extension names the list")
+        {
+            auto const body = parsed(fixture.sliding(
+                fixture.alice_token(), list_request(R"("sticky_events":{"enabled":true,"lists":["all"]})")));
+            THEN("the event is sent")
+            {
+                REQUIRE(sliding_ids(fixture, body) == std::vector<std::string>{message});
+            }
+        }
+
+        WHEN("the extension names no list, another list, or the room without a subscription")
+        {
+            auto const none = parsed(
+                fixture.sliding(fixture.alice_token(), list_request(R"("sticky_events":{"enabled":true,"lists":[]})")));
+            auto const other = parsed(fixture.sliding(
+                fixture.alice_token(), list_request(R"("sticky_events":{"enabled":true,"lists":["other"]})", "c2")));
+            auto const unsubscribed = parsed(fixture.sliding(
+                fixture.alice_token(),
+                list_request(R"("sticky_events":{"enabled":true,"lists":[],"rooms":[")" + room + R"("]})", "c3")));
+            THEN("nothing is sent")
+            {
+                REQUIRE(sliding_ids(fixture, none).empty());
+                REQUIRE(sliding_ids(fixture, other).empty());
+                REQUIRE(sliding_ids(fixture, unsubscribed).empty());
+            }
+        }
+
+        WHEN("the extension names no list but the room's subscription")
+        {
+            auto const request = R"({"conn_id":"sub","room_subscriptions":{")" + room +
+                                 R"(":{"timeline_limit":0,"required_state":[]}},"extensions":{"sticky_events":)" +
+                                 R"({"enabled":true,"lists":[],"rooms":[")" + room + R"("]}}})";
+            auto const body = parsed(fixture.sliding(fixture.alice_token(), request));
+            THEN("the event is sent")
+            {
+                REQUIRE(sliding_ids(fixture, body) == std::vector<std::string>{message});
+            }
+        }
+    }
+}
+
+// MSC4480: the senders of the sticky events sent count as timeline senders for lazy-loaded members, so their member
+// events go in required_state and the room is sent for them even with an empty timeline (ADR-0858).
+SCENARIO("sliding sync lazy-loads the member events of sticky senders", "[sticky-events][integration]")
+{
+    GIVEN("bob joined alice's room and synced it with lazy-loaded members, then alice sent a sticky message")
+    {
+        auto fixture = Fixture{};
+        fixture.bob_joins();
+        auto const first = parsed(fixture.sliding(fixture.bob_token(), lazy_list_request("")));
+        REQUIRE(required_member_count(fixture, first, alice) == 0U);
+        auto const message = fixture.sticky_message("one");
+
+        WHEN("bob asks for the extension from his position")
+        {
+            auto const second = parsed(fixture.sliding(fixture.bob_token(), lazy_list_request(stable_extension),
+                                                       *string_member(first, "pos")));
+
+            THEN("the event is sent and the room carries alice's member event, though its timeline is empty")
+            {
+                REQUIRE(sliding_ids(fixture, second) == std::vector<std::string>{message});
+                REQUIRE(required_member_count(fixture, second, alice) == 1U);
+            }
+
+            AND_WHEN("alice sends another sticky message and bob asks again")
+            {
+                auto const another = fixture.sticky_message("two");
+                auto const third = parsed(fixture.sliding(fixture.bob_token(), lazy_list_request(stable_extension),
+                                                          *string_member(second, "pos")));
+                THEN("alice's member event is not sent again")
+                {
+                    REQUIRE(sliding_ids(fixture, third) == std::vector<std::string>{another});
+                    REQUIRE(required_member_count(fixture, third, alice) == 0U);
+                }
+            }
+        }
+    }
+}
+
+// MSC4354: "History visibility checks MUST NOT be applied to unexpired sticky events"; any joined user may see them
+// while they remain sticky (ADR-0858).
+SCENARIO("a user who joins later reads an unexpired sticky event whatever the history visibility",
+         "[sticky-events][integration]")
+{
+    GIVEN("a joined-visibility room with a sticky and a plain message sent before bob joined")
+    {
+        auto fixture = Fixture{};
+        fixture.set_history_visibility("joined");
+        auto const sticky = fixture.sticky_message("one", t0 + 60'000);
+        auto const plain = fixture.plain_message("two");
+        auto const event_path = "/_matrix/client/v3/rooms/" + fixture.room_id() + "/event/";
+        fixture.bob_joins();
+
+        WHEN("bob reads both through /event, and the sticky one through /context")
+        {
+            auto const sticky_event = fixture.send("GET", event_path + sticky, fixture.bob_token());
+            auto const plain_event = fixture.send("GET", event_path + plain, fixture.bob_token());
+            auto const context = fixture.send(
+                "GET", "/_matrix/client/v3/rooms/" + fixture.room_id() + "/context/" + sticky, fixture.bob_token());
+
+            THEN("the sticky event is served and the plain one is not")
+            {
+                REQUIRE(sticky_event.status == 200U);
+                REQUIRE(*string_member(parse_object(sticky_event.body), "event_id") == sticky);
+                REQUIRE(plain_event.status == 404U);
+                REQUIRE(context.status == 200U);
+            }
+        }
+
+        WHEN("the clock reaches its expiry and bob reads it")
+        {
+            fixture.runtime().homeserver.database.persistent_store.test_sticky_clock_ms = t0 + 60'000;
+            auto const sticky_event = fixture.send("GET", event_path + sticky, fixture.bob_token());
+            THEN("it is hidden again, as joined visibility asks")
+            {
+                REQUIRE(sticky_event.status == 404U);
             }
         }
     }
