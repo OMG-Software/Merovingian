@@ -1085,8 +1085,12 @@ SCENARIO("Sliding sync receipts and typing extensions serve the joined rooms of 
                                                                        0U, 10U, store, {}, scope);
             REQUIRE(responses.receipts.has_value());
             REQUIRE(responses.typing.has_value());
-            auto const receipts = reported_rooms(responses.receipts.value().rooms_json);
-            REQUIRE(reported_rooms(responses.typing.value().rooms_json) == receipts);
+            // Each read behind its own check, which clang-tidy can see (a REQUIRE is not one).
+            auto const receipts = responses.receipts.has_value() ? reported_rooms(responses.receipts->rooms_json)
+                                                                 : std::vector<std::string>{};
+            auto const typing = responses.typing.has_value() ? reported_rooms(responses.typing->rooms_json)
+                                                             : std::vector<std::string>{};
+            REQUIRE(typing == receipts);
             return receipts;
         };
 

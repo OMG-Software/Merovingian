@@ -26,6 +26,42 @@ using namespace merovingian::sync;
     return std::optional<std::vector<std::string>>{std::move(names)};
 }
 
+// What the parser read for one scoped extension (`receipts` or `typing`): `present` is false when it read none.
+struct ParsedScope final
+{
+    bool present{false};
+    bool enabled{false};
+    std::optional<std::vector<std::string>> lists{};
+    std::optional<std::vector<std::string>> rooms{};
+};
+
+template <typename ScopedRequest>
+[[nodiscard]] auto parsed_scope(std::optional<ScopedRequest> const& request) -> ParsedScope
+{
+    if (!request.has_value())
+    {
+        return ParsedScope{};
+    }
+    return ParsedScope{.present = true, .enabled = request->enabled, .lists = request->lists, .rooms = request->rooms};
+}
+
+// The receipts and typing extensions of a parse result. Each optional is read only behind its own check, where
+// clang-tidy can see it: a REQUIRE on has_value() is not one.
+template <typename ParseResult>
+[[nodiscard]] auto parsed_receipts_and_typing(ParseResult const& result) -> std::pair<ParsedScope, ParsedScope>
+{
+    if (!result.has_value())
+    {
+        return {};
+    }
+    auto const& extensions = result->extensions;
+    if (!extensions.has_value())
+    {
+        return {};
+    }
+    return {parsed_scope(extensions->receipts), parsed_scope(extensions->typing)};
+}
+
 } // namespace
 
 // ── parse_sliding_sync_request ────────────────────────────────────────────────
@@ -216,13 +252,12 @@ SCENARIO("Sliding sync parser extracts extension requests", "[sync][sliding-sync
                 REQUIRE(ext->e2ee->enabled);
                 REQUIRE(ext->account_data.has_value());
                 REQUIRE(ext->account_data->enabled);
-                REQUIRE(ext->receipts.has_value());
-                auto const& receipts = ext->receipts.value();
+                auto const [receipts, typing] = parsed_receipts_and_typing(result);
+                REQUIRE(receipts.present);
                 REQUIRE(receipts.enabled);
                 REQUIRE(receipts.rooms == named({"!r1:example.com"}));
                 REQUIRE_FALSE(receipts.lists.has_value());
-                REQUIRE(ext->typing.has_value());
-                auto const& typing = ext->typing.value();
+                REQUIRE(typing.present);
                 REQUIRE(typing.enabled);
                 REQUIRE(typing.rooms == named({"!r2:example.com"}));
                 REQUIRE_FALSE(typing.lists.has_value());
@@ -253,12 +288,9 @@ SCENARIO("Sliding sync parser reads the typing and receipts extensions' scope ke
             THEN("each key is absent, empty or its names, as sent")
             {
                 REQUIRE(result.has_value());
-                auto const& ext = result->extensions;
-                REQUIRE(ext.has_value());
-                REQUIRE(ext->receipts.has_value());
-                REQUIRE(ext->typing.has_value());
-                auto const& receipts = ext->receipts.value();
-                auto const& typing = ext->typing.value();
+                auto const [receipts, typing] = parsed_receipts_and_typing(result);
+                REQUIRE(receipts.present);
+                REQUIRE(typing.present);
                 REQUIRE(receipts.lists == named({"all"}));
                 REQUIRE(receipts.rooms == named({}));
                 REQUIRE(typing.lists == named({}));
