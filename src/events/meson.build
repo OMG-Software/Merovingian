@@ -8,6 +8,7 @@ events_sources = files(
   'MemberJoinSender.cpp',
   'RedactionValidity.cpp',
   'StateResolution.cpp',
+  'StickyEvent.cpp',
   'UnsignedData.cpp',
 )
 
