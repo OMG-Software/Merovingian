@@ -1286,3 +1286,13 @@ identity server's third-party invite into a real `m.room.member` invite.
 - Tests: `tests/conformance/test_third_party_invite_exchange_conformance.cpp` (a good signature invites; a signature by
   another key, a changed object, another `mxid`, an unknown token and another sender are each refused),
   `tests/integration/test_third_party_invite_flow.cpp`, `tests/unit/test_third_party_invite_parsing.cpp`.
+
+## Sticky events (MSC4354, ADR-0853, ADR-0854)
+
+A locally composed sticky event carries two top-level fields, `sticky` and `msc4354_sticky`, both `{"duration_ms": N}` with
+N as the client gave it. `compose_signed_event` adds them from a typed parameter (never from a client's own top-level
+keys) before the content hash, the reference hash and the signature are computed, so all three cover them. They are not
+among the keys any room version's redaction keeps, so a redaction removes them, and the event's `sticky_events` row is
+deleted when the redaction is applied. `events::sticky_duration_of` is the one reader (state events and malformed or
+disagreeing fields are not sticky) and `events::sticky_expiry_ms` the one expiry function. `homeserver::record_sticky_event_of_pdu`
+writes the row of a persisted PDU; the send path calls it after persisting.

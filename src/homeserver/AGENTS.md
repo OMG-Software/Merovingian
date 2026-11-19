@@ -29,6 +29,8 @@ This is the largest and most complex module — read this file carefully before 
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, OAuth 2.0 session rows whose device holds no live access or refresh token (judged again in the hold that deletes them, ADR-0808), and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
 | `DelayedEvents.cpp` | Delayed events (MSC4140, ADR-0823 to ADR-0826): `schedule_delayed_event`, `manage_delayed_event` (send, cancel, restart), `delayed_event_lookup`, the clock `delayed_event_now_ms` (and its seam `test_delayed_event_clock_ms`), `wake_delayed_events`, `send_due_delayed_events`, and `run_delayed_events_job`, the body of the `delayed-events` `PeriodicJob` in `main.cpp`. The caller holds `runtime.mutex` for all but the job body, which takes it for one send a run |
 | `ClientServerRuntime.cpp` (delayed events) | The MSC4140 routes (ADR-0823): S1 and S2 `PUT .../delayed_event/...`, the `org.matrix.msc4140.delay` branch of `PUT /send` and `/state`, M1 to M3 `POST .../delayed_events/{delayId}[/{action}]` and G1 and G2 `GET .../delayed_events/{delayId}`, with the `/versions` flags and `/capabilities` entries. See "Delayed events" below |
+| `StickyEventRecording.cpp` | `record_sticky_event_of_pdu` (MSC4354, ADR-0854): given a persisted PDU, its event ID and a received time, decides stickiness with `events::sticky_duration_of` and writes the `sticky_events` row with `database::record_sticky_event` (room, sender and `origin_server_ts` read from the PDU, expiry from `events::sticky_expiry_ms`). Independent of any client request, so federation ingest reuses it. See "Sticky events" below |
+| `StickyEventPrune.cpp` | `prune_sticky_events`, the body of the `sticky-events` `PeriodicJob` in `main.cpp` (every 60 s, one transaction under `runtime.mutex`) |
 | `ClientServerRuntimeInternal.hpp` | Call-throughs from `ClientServerRuntime.cpp`'s anonymous namespace that `DelayedEvents.cpp` shares with the `/send` and `/state` routes: `rate_limit_route_template` (`normalized_target`), `route_event_body` (`event_body_from_content`), `event_txn_part_is_too_long`, `errcode_for_refusal_status`, and the two reasons the `/send` route gives for a too-long type or transaction ID. Not public API |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
 | `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response` / `oauth_empty_response`: every OAuth JSON (or empty) answer, with `no-store` (ADR-0781) |
@@ -1290,6 +1292,29 @@ The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call t
   `client_rate_limits.per_user.` line in `tests/complement/merovingian.conf.template`.
 - `/versions` flags and `/capabilities` entries read `rt.limits.delayed_events_enabled`,
   `max_delayed_event_delay_ms` and `max_scheduled_delayed_events_per_user`; disabled is false and zeros.
+
+## Sticky events (ADR-0853, ADR-0854)
+
+- **The parameter is read by `sticky_query_of` (either name, name and value percent-decoded) and never falls through.**
+  `PUT .../send/...` validates it (`sticky_query_refusal`: disabled 403 `M_FORBIDDEN`, anything but one whole number of
+  1 to 2^53-1 under one name 400 `M_INVALID_PARAM`) before the client transaction lookup and hands the duration on as
+  `LocalHttpRequest::sticky` (a `StickySendOptions`, set only by the dispatcher, never read from the wire), which
+  `send_event` passes through `send_event_as_user` to `compose_signed_event`. Never let a client's top-level keys
+  into a composed event. The delayed branch (`delayed_query_form`) and the dedicated routes read the same parameter
+  and store it in `PersistentDelayedEvent::sticky_duration_ms`; `attempt_send` sends the row through the same path.
+- **Every other route that sends from the caller's body** (`PUT .../state/...` in every form, `POST .../send`,
+  `PUT .../redact/...`) answers the parameter `400 M_INVALID_PARAM` through `sticky_parameter_refusal`, whether or not the
+  feature is on; a new such route calls it too.
+- **The row is written in the hold that stores the event** (`send_event_as_user`, right after `persist_composed_event`)
+  by `record_sticky_event_of_pdu`, with the event clock's reading as the received time. A false return is logged as
+  `sticky_event.record_failed` (room and event ID only) and never fails the send. A redaction applied to the target
+  deletes the row in `reconcile_redaction` (`RedactionService.cpp`), the one place a local or a federated redaction
+  takes effect.
+- **Serving** is `database::attach_sticky_remaining`, called by `client_event_with_id` after `attach_redacted_because`,
+  so every endpoint that serializes an event through it carries `unsigned.sticky_duration_remaining_ms` and
+  `unsigned.msc4354_sticky_duration_ttl_ms`. A path that builds an event's client form another way (sliding sync's
+  `client_event_json`) must call it too. "Now" is `database::sticky_clock_now_ms`, which tests move through
+  `PersistentStore::test_sticky_clock_ms`.
 
 ## Typing expiry (R13, ADR-0199)
 
