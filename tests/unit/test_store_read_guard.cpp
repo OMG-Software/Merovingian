@@ -115,6 +115,17 @@ struct MainAndWorker final
     {
         return worker_open.store;
     }
+
+    // The worker reloads the room: its snapshot is read from the database, then applied to the worker's store.
+    auto reload_room_on_worker() -> void
+    {
+        auto snapshot = db::load_room_snapshot(worker(), room_id);
+        REQUIRE(snapshot.has_value());
+        if (snapshot.has_value())
+        {
+            db::apply_room_snapshot(worker(), std::move(*snapshot));
+        }
+    }
 };
 
 } // namespace
@@ -147,7 +158,7 @@ SCENARIO("a room reload reads the database without touching the store and swaps 
         {
             auto snapshot = db::load_room_snapshot(fixture.worker(), room_id);
             REQUIRE(snapshot.has_value());
-            db::apply_room_snapshot(fixture.worker(), std::move(snapshot).value());
+            db::apply_room_snapshot(fixture.worker(), std::move(*snapshot));
 
             THEN("the worker store now enforces the ACL")
             {
@@ -175,9 +186,7 @@ SCENARIO("a room reload gives the worker the room's sticky rows and takes away a
 
         WHEN("the worker reloads the room")
         {
-            auto snapshot = db::load_room_snapshot(fixture.worker(), room_id);
-            REQUIRE(snapshot.has_value());
-            db::apply_room_snapshot(fixture.worker(), std::move(snapshot).value());
+            fixture.reload_room_on_worker();
 
             THEN("the worker holds the row as main stored it")
             {
@@ -191,9 +200,7 @@ SCENARIO("a room reload gives the worker the room's sticky rows and takes away a
             AND_WHEN("main deletes the row and the worker reloads the room again")
             {
                 REQUIRE(db::delete_sticky_event(fixture.main_open.store, "$call"));
-                auto again = db::load_room_snapshot(fixture.worker(), room_id);
-                REQUIRE(again.has_value());
-                db::apply_room_snapshot(fixture.worker(), std::move(again).value());
+                fixture.reload_room_on_worker();
 
                 THEN("the worker holds no row")
                 {

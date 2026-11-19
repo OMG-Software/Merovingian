@@ -8,6 +8,7 @@
 // cut, and the worker's assembler refuses pages out of order or rows of another room.
 
 #include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStickyEvent.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/ipc/RoomSnapshotAssembler.hpp"
@@ -149,7 +150,8 @@ SCENARIO("A room snapshot crosses the IPC channel exactly", "[ipc][c44][worker-s
                 REQUIRE(assembled->event_state_groups.size() == 1U);
                 REQUIRE(assembled->forward_extremities.size() == 1U);
                 REQUIRE(assembled->forward_extremities.front().event_id == "$second");
-                auto const& sticky_rows = assembled.value().sticky_events;
+                auto const sticky_rows =
+                    assembled.has_value() ? assembled->sticky_events : std::vector<db::PersistentStickyEvent>{};
                 REQUIRE(sticky_rows.size() == 1U);
                 auto const& sticky = sticky_rows.front();
                 REQUIRE(sticky.event_id == "$second");
