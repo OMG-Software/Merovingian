@@ -25,9 +25,9 @@ value. Test fixtures that do not exercise persistence select it through
   migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
   schema-state transitions, enabling backfill and corrective migrations
   should a later migration need one.
-- The schema has four steps. `schema::current_schema_version()` is `4`, and
-  `migrations/` holds `001_initial_schema.sql`, `002_oauth_tables.sql`, `003_delayed_events.sql` and
-  `004_livekit_delegations.sql`.
+- The schema has five steps. `schema::current_schema_version()` is `5`, and
+  `migrations/` holds `001_initial_schema.sql`, `002_oauth_tables.sql`, `003_delayed_events.sql`,
+  `004_livekit_delegations.sql` and `005_sticky_events.sql`.
 - Version `1` (`initial_schema`) is the frozen v1 schema. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
@@ -43,14 +43,14 @@ value. Test fixtures that do not exercise persistence select it through
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
-  `src/database/Migration.cpp` has four upgrade steps (version `1`,
-  `initial_schema`; version `2`, `oauth_tables`; version `3`, `delayed_events`; version `4`, `livekit_delegations`)
-  and four downgrade steps, newest first (`drop_livekit_delegations` to version `3`, `drop_delayed_events` to
-  version `2`, `drop_oauth_tables` to version `1`, then `drop_initial_schema` to version `0`, which drops every v1
-  table).
+  `src/database/Migration.cpp` has five upgrade steps (version `1`,
+  `initial_schema`; version `2`, `oauth_tables`; version `3`, `delayed_events`; version `4`, `livekit_delegations`;
+  version `5`, `sticky_events`) and five downgrade steps, newest first (`drop_sticky_events` to version `4`,
+  `drop_livekit_delegations` to version `3`, `drop_delayed_events` to version `2`, `drop_oauth_tables` to version `1`,
+  then `drop_initial_schema` to version `0`, which drops every v1 table).
   `migrations/001_initial_schema.sql` is the frozen record of v1,
-  `002_oauth_tables.sql` of version 2, `003_delayed_events.sql` of version 3 and `004_livekit_delegations.sql` of
-  version 4; a unit test requires each file to
+  `002_oauth_tables.sql` of version 2, `003_delayed_events.sql` of version 3, `004_livekit_delegations.sql` of
+  version 4 and `005_sticky_events.sql` of version 5; a unit test requires each file to
   match the build's step statement for statement.
 - Version `2` (`oauth_tables`, 1.1.0) adds the OAuth 2.0 tables
   ([ADR-0776](adr/0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)),
@@ -137,6 +137,40 @@ value. Test fixtures that do not exercise persistence select it through
     `created_ms` that is not decimal digits fitting 64 bits, or a duplicate delay ID or key (the first by delay ID
     wins). The count skipped is `PersistentStore::livekit_delegation_rows_skipped_at_load`, logged once at start-up as
     `livekit_delegations.rows_skipped_at_load`.
+- Version `5` (`sticky_events`, ADR-0854) adds the tables behind MSC4354 sticky events, and changes no existing table:
+  - `sticky_events` (`event_id TEXT PRIMARY KEY`, then `room_id`, `sender`, `received_at_ms` and `expires_at_ms`, all
+    `TEXT NOT NULL`: the two times are wall-clock milliseconds since the epoch as decimal text), with
+    `idx_sticky_events_room_id` on `room_id` and `idx_sticky_events_sender` on `sender`. One row per sticky event this
+    server accepted; there is no foreign key, the store keeps its rules in code.
+  - `delayed_event_sticky_durations` (`delay_id TEXT PRIMARY KEY`, `sticky_duration_ms TEXT NOT NULL`): the sticky
+    duration of a scheduled delayed event. It is a table of its own because the migration framework has no add-column
+    step and `delayed_events` is released. `PersistentDelayedEvent::sticky_duration_ms` carries it in memory.
+  - Caps, enforced by `record_sticky_event` and again when hydrating (`StickyEventTable.hpp`): `event_id`, `room_id`
+    and `sender` 1 to 255 bytes with no NUL byte, and both times one or more decimal digits fitting 63 bits. A sticky
+    duration is one or more decimal digits, at least 1, fitting 63 bits. A row outside them is refused, never
+    truncated.
+  - Writes (`StickyEventStore.hpp`, bound parameters only, memory changed only after the commit returns true):
+    `record_sticky_event(store, row, max_per_sender, now_ms)` inserts the row and deletes the sender's oldest unexpired
+    rows (earliest `expires_at_ms`, ties by event ID) in one transaction so the sender holds at most `max_per_sender`
+    unexpired rows afterwards; the new row takes part in the ordering, so a row that is itself the oldest is not
+    stored; a row with an event ID already held, or one expiring at or before `now_ms`, writes nothing and succeeds.
+    `delete_sticky_event` (a redaction), `delete_sticky_events_of_user` (account deactivation, beside
+    `delete_delayed_events_of_user`; always runs the `DELETE` so a row hydration skipped goes too) and
+    `prune_expired_sticky_events(store, now_ms)`, which deletes every row expiring at or before `now_ms`, in memory or
+    only in the file (the columns are text, so it compares decimal text by length and then lexically), and every
+    `delayed_event_sticky_durations` row whose delayed event is missing or not scheduled.
+  - A delayed event's side row is inserted in the transaction of `store_delayed_event` when the row has a sticky
+    duration, and deleted in the transaction that cancels it, records its outcome or deletes the user's rows.
+    `record_delayed_event_outcome` keeps the ADR-0825 exception: memory is finalised, and loses its duration, even when
+    its commit fails.
+  - In memory: `PersistentStore::sticky_events` (`StickyEventTable`), hydrated on both backends (neither loads it, or
+    the durations, for the federation worker profile), with no lock of its own (`runtime.mutex` serialises it). It
+    indexes the rows by event ID, by room and by sender (both ordered by expiry, then event ID) and by expiry; every
+    reader takes the clock and never returns an expired row, and none scans the table (`rows_examined`). Hydration
+    does not load a row that has already expired, and does not count it. It skips and counts a row it cannot read
+    exactly, and a malformed duration; a duration whose delayed event is missing or finalised is ignored. The count is
+    `PersistentStore::sticky_event_rows_skipped_at_load`, logged once at start-up as
+    `sticky_events.rows_skipped_at_load`.
 - The schema registry is split by version
   ([ADR-0778](adr/0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)):
   `initial_schema_definitions()` is what v1 created, and the SQLite and
@@ -982,9 +1016,9 @@ value. Test fixtures that do not exercise persistence select it through
   (`[fixture]`, one per backend) open it, run `migrate_*_schema_to`, start the runtime on it and read back the users,
   access tokens, rooms, events, media, account data, pusher and device keys the manifest lists, then send a new
   event signed with the old release's key. Opening the 1.0.3 database applies migration 002 (the OAuth 2.0 tables), so
-  the scenarios first assert the v1 to v4 steps ran: the schema version is `current_schema_version()`, the ledger gained the
-  `oauth_tables`, `delayed_events` and `livekit_delegations` rows, and `oauth_clients`, `oauth_sessions`, `delayed_events`
-  and `livekit_delegations` exist and take a row (the fixture held none of them before). They then assert everything the manifest lists is still served.
+  the scenarios first assert the v1 to v5 steps ran: the schema version is `current_schema_version()`, the ledger gained the
+  `oauth_tables`, `delayed_events`, `livekit_delegations` and `sticky_events` rows, and `oauth_clients`, `oauth_sessions`,
+  `delayed_events`, `livekit_delegations`, `sticky_events` and `delayed_event_sticky_durations` exist and take a row (the fixture held none of them before). They then assert everything the manifest lists is still served.
   The PostgreSQL scenario needs `MEROVINGIAN_TEST_POSTGRESQL_URI` and reports itself skipped without it.
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
@@ -1299,7 +1333,8 @@ migration's table cannot go unclassified:
   `receipts`, `appservice_directory`, `media_pending_uploads`, `oauth_clients` and `oauth_sessions` (migration
   002; every OAuth 2.0 endpoint runs in main), `delayed_events` (migration 003; the federation worker sends no events
   and holds no signing key, so it never reads a scheduled event), `livekit_delegations` (migration 004; the token
-  service runs in main and the worker keeps no delayed event alive), plus six tables `Schema.cpp`
+  service runs in main and the worker keeps no delayed event alive), `sticky_events` and `delayed_event_sticky_durations`
+  (migration 005; the worker never serves a client or decides what is sticky), plus six tables `Schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
