@@ -29,7 +29,8 @@ inline constexpr std::string_view unstable_sticky_remaining_field = "msc4354_sti
 [[nodiscard]] auto sticky_duration_of(canonicaljson::Value const& pdu) -> std::optional<std::int64_t>;
 
 // A duration a client wrote as a query value or body text: one or more ASCII digits, nothing else (no sign, space or
-// `+`), fitting in 64 bits, and at least 1. Leading zeros are accepted, as for `org.matrix.msc4140.delay`.
+// `+`), at least 1 and at most 2^53 - 1, the largest integer canonical JSON allows, since the value is written into
+// the PDU. Leading zeros are accepted, as for `org.matrix.msc4140.delay`.
 [[nodiscard]] auto parse_sticky_duration_text(std::string_view text) -> std::optional<std::int64_t>;
 
 // When a sticky event stops being sticky: min(received_at_ms, origin_server_ts) + min(duration_ms, the cap). The sum

@@ -266,16 +266,18 @@ SCENARIO("a client's sticky duration text is whole decimal digits of at least 1"
                 REQUIRE(parse_sticky_duration_text("1") == std::optional<std::int64_t>{1});
                 REQUIRE(parse_sticky_duration_text("3600000") == std::optional<std::int64_t>{3'600'000});
                 REQUIRE(parse_sticky_duration_text("007") == std::optional<std::int64_t>{7});
-                REQUIRE(parse_sticky_duration_text("9223372036854775807") == std::optional<std::int64_t>{int64_max});
+                REQUIRE(parse_sticky_duration_text("9007199254740991") ==
+                        std::optional<std::int64_t>{9'007'199'254'740'991});
             }
         }
     }
 
-    GIVEN("text that is not a whole decimal of at least 1 that fits 64 bits")
+    GIVEN("text that is not a whole decimal from 1 to 2^53 - 1, canonical JSON's largest integer")
     {
         auto const values = std::vector<std::string>{"",      "0",     "00",    "-1",   "+1",   " 1", "1 ", "1.5",
                                                      "1e3",   "0x10",  "abc",   "1a",   "٣",    "9223372036854775808",
-                                                     "99999999999999999999", "-0"};
+                                                     "99999999999999999999", "-0", "9007199254740992",
+                                                     "9223372036854775807"};
 
         WHEN("each is parsed")
         {

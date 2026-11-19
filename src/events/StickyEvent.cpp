@@ -20,6 +20,7 @@ namespace
 {
 
     constexpr auto duration_key = std::string_view{"duration_ms"};
+    constexpr auto max_json_integer = std::int64_t{9'007'199'254'740'991}; // (2^53)-1, canonical JSON's largest
     constexpr auto state_key_field = std::string_view{"state_key"};
 
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -116,7 +117,9 @@ auto parse_sticky_duration_text(std::string_view text) -> std::optional<std::int
     }
     auto parsed = std::int64_t{0};
     auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
-    if (error != std::errc{} || end != text.data() + text.size() || parsed < 1)
+    // The value goes into the PDU as a JSON integer, and canonical JSON allows none above 2^53 - 1: a larger one would
+    // compose an event no server can read.
+    if (error != std::errc{} || end != text.data() + text.size() || parsed < 1 || parsed > max_json_integer)
     {
         return std::nullopt;
     }
