@@ -589,6 +589,24 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("--bounding-set=-all", before_attest)
         self.assertIn(f"{GATE_SCRIPT} /usr/bin/merovingian-server", before_attest)
 
+    def test_each_fedora_rpm_leaves_the_livekit_unit_disabled_under_an_enable_everything_preset(self) -> None:
+        # GIVEN each Fedora RPM job, whose image has no systemd unless the job installs it.
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "rpm")
+        install_deps = job.split("- name: Install build dependencies")[1].split("- uses:")[0]
+        before_attest = job.split("- name: Attest RPM package")[0]
+
+        # WHEN the RPM is installed (ADR-0860)
+        # THEN systemd is present, so %systemd_post applies the preset policy; "enable *" is in
+        # force for the install; the server's unit coming out enabled proves the policy ran, and
+        # the LiveKit unit must still come out disabled.
+        self.assertRegex(install_deps, r"(?m)\ssystemd$")
+        preset = "printf 'enable *\\n' > /usr/lib/systemd/system-preset/00-merovingian-ci.preset"
+        install = "dnf install -y ./merovingian-*.rpm"
+        self.assertIn(preset, before_attest)
+        self.assertLess(before_attest.index(preset), before_attest.index(install))
+        self.assertIn('test "$(systemctl is-enabled merovingian.service)" = enabled', before_attest)
+        self.assertIn('test "$(systemctl is-enabled merovingian-livekit.service || true)" = disabled', before_attest)
+
     def test_the_required_fedora_rpm_check_covers_every_image(self) -> None:
         # GIVEN the main ruleset requires a check called "Fedora RPM package", and a matrix
         # job reports one check per image, none of them with that name.

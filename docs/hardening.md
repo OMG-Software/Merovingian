@@ -941,6 +941,9 @@ file system's:
   owners with mode `0400`.
 * the RPM `%post` leaves the unit out of `%systemd_post`, so a host preset
   policy of `enable *` cannot start the SFU before the operator has set it up.
+  The Fedora package job in `packages.yml` installs each RPM under exactly that
+  policy and fails unless `merovingian.service` comes out enabled (the policy
+  ran) and `merovingian-livekit.service` disabled.
   The OpenRC script has none of the unit's sandboxing, only the account.
 
 `tests/tooling/test_livekit_companion.py` checks the unit, the OpenRC script,
