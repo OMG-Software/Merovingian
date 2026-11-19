@@ -23,7 +23,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `LiveKitDelegationStore.cpp` | `store_livekit_delegation` (one transaction replaces the row of the same key and of the same delay ID), `delete_livekit_delegation`, `delete_livekit_delegations_of_user` (always runs the DELETE, so a row hydration skipped goes too) |
 | `LiveKitDelegationRowText.cpp` | `parse_livekit_delegation_row`, the strict reading of a stored row both loaders use; a bad row is skipped and counted (`livekit_delegation_rows_skipped_at_load`), never repaired |
 | `StickyEventTable.cpp` | `StickyEventTable`, the in-memory copy of `sticky_events` (migration 005, ADR-0854): by event ID, by room and by sender (each ordered by expiry, then event ID) and by expiry; every reader takes `now_ms` and never returns an expired row; `rows_examined`; the cap `max_sticky_event_field_bytes` 255 and `sticky_event_is_storable` |
-| `StickyEventStore.cpp` | `record_sticky_event` (one transaction inserts the row and expires the sender's oldest unexpired rows past `max_per_sender`, then the room's fair-share victims past `max_per_room`, ADR-0857), `delete_sticky_event`, `delete_sticky_events_of_user` (always runs the DELETE) and `prune_expired_sticky_events` (also deletes orphaned `delayed_event_sticky_durations` rows) |
+| `StickyEventStore.cpp` | `record_sticky_event` (one transaction inserts the row and expires the sender's oldest unexpired rows past `max_per_sender`, then the room's fair-share victims past `max_per_room`, ADR-0857; returns a `StickyEventRecordOutcome` naming the other rooms that lost a row, ADR-0862), `delete_sticky_event`, `delete_sticky_events_of_user` (always runs the DELETE) and `prune_expired_sticky_events` (also deletes orphaned `delayed_event_sticky_durations` rows) |
 | `StickyEventView.cpp` | `attach_sticky_remaining` (adds `sticky_duration_remaining_ms` and `msc4354_sticky_duration_ttl_ms` to an unexpired sticky event's `unsigned`, called by `client_event_with_id`) and `sticky_clock_now_ms` (the clock the sticky readers judge against; `PersistentStore::test_sticky_clock_ms` overrides it in tests) |
 | `StickyEventRowText.cpp` | `parse_sticky_event_row` and `parse_sticky_duration_ms`, the strict readings both loaders use; a bad row is skipped and counted (`sticky_event_rows_skipped_at_load`), never repaired |
 | `OAuthStore.cpp` | The OAuth 2.0 store functions and their caps (`max_oauth_client_metadata_bytes` 16 KiB, `max_oauth_scope_bytes` 2048, `max_oauth_client_id_bytes` 128): insert-or-keep clients, the once-a-day touch, delete a set of clients, sessionless clients oldest first, and the session row's prepare/remember pair |
@@ -256,7 +256,10 @@ row; tests prove cost with `rows_examined`. The store functions change memory on
 returns true. `record_sticky_event` inserts and expires the sender's oldest unexpired rows and then, while the room is
 over `max_per_room`, the oldest row of the server holding the most rows in the room, in ONE transaction (the new row
 takes part in both orderings, so a row that is itself chosen is not stored; ADR-0857). Never evict the room's globally
-oldest row instead: a flooding server would push out every other server's call memberships. An expiry at or before
+oldest row instead: a flooding server would push out every other server's call memberships. It returns a
+`StickyEventRecordOutcome`: `recorded`, and `other_rooms`, each room other than the row's own that lost a row to the
+sender cap (the room cap only takes the row's own room's rows). The caller tells the federation worker each of those
+rooms changed, or its snapshot keeps serving the removed rows (ADR-0862). An expiry at or before
 `now_ms` (judged first) or an event ID already held is a successful no-op. **Every path that deactivates an account
 calls `delete_sticky_events_of_user`** beside `delete_delayed_events_of_user`, and a redaction calls
 `delete_sticky_event`. The prune compares the TEXT expiry as decimal text (length, then lexically), never with a cast,

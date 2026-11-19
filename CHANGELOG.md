@@ -56,6 +56,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A client's sticky duration above 2^53-1 is refused, so a composed event stays canonical JSON (ADR-0853).
 * A joining server that the federation policy or the room's ACL denies is sent no sticky events, and only events this
   server sent and still holds in that room are ever pushed (ADR-0856).
+* A redaction whose target has not been received is never sent as a sticky event: the sticky exemption skips history
+  visibility only (ADR-0862).
+* A sticky event that expires a sender's row in another room refreshes the federation worker's snapshot of that room,
+  so the worker stops serving the removed event (ADR-0862).
 
 ## Bug fixes
 
@@ -104,6 +108,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   longer refuses every transaction's PDUs for a held lock (ADR-0848).
 * The directory, profile, device keys, user devices and one-time-key claim federation providers take `runtime.mutex`
   themselves, as the other store readers do, so main never reads its store unlocked through them (ADR-0711).
+* A sliding sync sticky backlog larger than `limit` is delivered over several responses when no stream advances: such
+  a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
+* A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
+  state has none, rather than at the oldest sticky event (ADR-0862).
 
 ## Release notes
 

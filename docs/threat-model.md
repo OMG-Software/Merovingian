@@ -2461,7 +2461,9 @@ Threat: MSC4354 lifts history visibility from unexpired sticky events, so a user
 events sent before the join under `joined` or `invited` visibility. Mitigation: the exemption is in the two filters only
 (`HistoryVisibility`, `ServerEventFilter`), for an `accepted` event with an unexpired row of its own room and a user or
 origin joined to that room now; a user who left, a rejected or soft-failed event and an expired row are judged by the
-rules as before, and a withheld redaction stays withheld (ADR-0858). Residual risk: content a sender marks sticky is
+rules as before, and a withheld redaction stays withheld (ADR-0858), the `/sync` and sliding sync sticky sections
+included (ADR-0862). A row the sender cap expires in another room is a change to that room, so the worker's snapshot of
+it drops the row and the worker stops exempting the event (ADR-0862). Residual risk: content a sender marks sticky is
 readable by later joiners for up to an hour, as the proposal intends; a client should not mark private content sticky.
 
 ### Moderation through the state API, oversized local events, and ungated room administration (audit CSAZ-6, CSAZ-9, CSAZ-12)

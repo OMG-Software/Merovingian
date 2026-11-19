@@ -568,6 +568,7 @@ shell = find_program('sh')
       'unit/test_stream_token.cpp',
       'unit/test_to_device_position.cpp',
       'unit/test_sliding_sync.cpp',
+      'unit/test_sliding_sync_pos.cpp',
       'unit/test_sliding_sync_to_device_pagination.cpp',
       'unit/test_to_device_numeric_order.cpp',
       'unit/test_sliding_sync_room_builder.cpp',

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/sync/SlidingSyncLimits.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 #include "merovingian/sync/SlidingSyncRange.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
 #include "merovingian/sync/StreamToken.hpp"
@@ -45,9 +46,9 @@ namespace merovingian::sync
 [[nodiscard]] auto sliding_sync_retained_bytes(std::map<std::string, SlidingSyncList> const& lists) noexcept
     -> std::uint64_t;
 
-// Extract and decode the ?pos= query parameter from a request target.
-// Returns nullopt when pos is absent or cannot be decoded as a StreamToken.
-[[nodiscard]] auto parse_sliding_sync_pos(std::string_view target) -> std::optional<StreamToken>;
+// Extract and decode the ?pos= query parameter from a request target (`decode_sliding_sync_pos`: a stream token and an
+// optional page, ADR-0862). Returns nullopt when pos is absent or cannot be decoded.
+[[nodiscard]] auto parse_sliding_sync_pos(std::string_view target) -> std::optional<SlidingSyncPos>;
 
 // Extract ?timeout= from a request target. Returns nullopt when absent or
 // not a non-negative integer.

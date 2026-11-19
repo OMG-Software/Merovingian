@@ -1308,8 +1308,10 @@ The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call t
   `PUT .../redact/...`) answers the parameter `400 M_INVALID_PARAM` through `sticky_parameter_refusal`, whether or not the
   feature is on; a new such route calls it too.
 - **The row is written in the hold that stores the event** (`send_event_as_user`, right after `persist_composed_event`)
-  by `record_sticky_event_of_pdu`, with the event clock's reading as the received time. A false return is logged as
-  `sticky_event.record_failed` (room and event ID only) and never fails the send. A redaction applied to the target
+  by `record_sticky_event_of_pdu`, with the event clock's reading as the received time. An outcome that is not
+  `recorded` is logged as `sticky_event.record_failed` (room and event ID only) and never fails the send. Each of its
+  `other_rooms` (a room where the sender cap expired the sender's row) gets `notify_room_changed`, here and in
+  federation ingest, so the worker's snapshot of that room drops the row (ADR-0862). A redaction applied to the target
   deletes the row in `reconcile_redaction` (`RedactionService.cpp`), the one place a local or a federated redaction
   takes effect.
 - **Serving** is `database::attach_sticky_remaining`, called by `client_event_with_id` after `attach_redacted_because`,

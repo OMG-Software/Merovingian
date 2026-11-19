@@ -19,6 +19,7 @@ Spec authority:
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
+| `SlidingSyncPos.cpp` | `encode_sliding_sync_pos` / `decode_sliding_sync_pos`: a sliding sync `pos`, a stream token and an optional `.<page>` read strictly (ADR-0862) |
 | `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
@@ -28,7 +29,7 @@ Spec authority:
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
 | `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). The caller keeps the joined ones |
-| `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
+| `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it and not withheld redactions, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
@@ -39,8 +40,8 @@ Spec authority:
 
 ## Stream token format
 
-`next_batch` and `since` for `/sync` (and sliding sync `pos`) are `StreamToken`s: lowercase hex components
-`<event_ordering>_<membership_ordering>_<sync_stream_id>` and, when the database has one (always, in production),
+`next_batch` and `since` for `/sync` are `StreamToken`s, and a sliding sync `pos` is one with an optional page
+(below): lowercase hex components `<event_ordering>_<membership_ordering>_<sync_stream_id>` and, when the database has one (always, in production),
 `_<epoch>`. The epoch is the database's stream token epoch (ADR-0592): a random value drawn at first start and
 replaced by `merovingian-server --after-restore`. A token whose epoch is not the store's (`stream_token_epoch`),
 including one with no epoch, is foreign whatever its positions: `/sync` serves it as an initial sync, sliding sync
@@ -49,6 +50,12 @@ sliding sync `to_device` extension's `since`/`next_batch` is a `ToDevicePosition
 epoch>`, `ToDevicePosition.hpp`), and one from another epoch acknowledges nothing. Any token that lets the
 server delete or skip something carries the epoch and is compared with the store's before it is trusted; a
 pagination token (`/messages`, `/relations`, `prev_batch`), which only names where to read from, does not.
+
+A sliding sync `pos` is a `SlidingSyncPos` (`SlidingSyncPos.hpp`, ADR-0862): the stream token, then `.<page>` when the
+page is not 0. A response that delivers sticky events while no stream advanced carries the request's page plus one, so
+the next request acknowledges it rather than reading as a retry; every other response has page 0. The page names a
+response only: every stream comparison reads the token. Read a `pos` with `decode_sliding_sync_pos`, never
+`decode_stream_token`, and never put a page on a classic `/sync` token.
 
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `StreamToken.hpp` — never parse or construct tokens manually.
@@ -424,8 +431,12 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   filter is applied first; the `state` and `timeline` filters do not touch the section. No history-visibility check
   and no count cap: every chosen event is sent, since classic `/sync` has no cursor and one left out would never be
   sent; `server.sticky_events.max_per_room` bounds it (ADR-0857, ADR-0858). Joined rooms only. A room with only a
-  sticky event is not suppressed as empty, and a sticky sender is a lazy-loaded sender. `StreamToken` has no sticky
+  sticky event is not suppressed as empty, and a sticky sender is a lazy-loaded sender: a sender with no delivered
+  timeline event gets the member at the timeline's start when that state holds one, else the member as of the
+  response (`sticky_sender_members_at_position`, ADR-0862), never one read at the sticky event. `StreamToken` has no sticky
   component: do not add one.
+- **A redaction that has not been applied is never a candidate** (`sticky_candidates_of_room` asks
+  `database::redaction_is_withheld`, ADR-0862): the sticky exemption skips history visibility, not withholding.
 - **Both surfaces add an event only when its served form `carries_sticky_remaining`** (ADR-0858): the clock is read
   again at serialization, and an event that expired after it was chosen is left out (and not recorded as delivered).
 - **Sliding sync** (`sticky_events` or `org.matrix.msc4354.sticky_events`; both names in one request are one request
@@ -434,7 +445,9 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   and at most 100; below 1 is refused by `sliding_sync_request_limit_violation`). The set lives in the pending response
   like every other connection state, so a repeated `pos` is built from the committed set and answers the same events.
   A request without the extension starts the set afresh; an out-of-scope room keeps its set, less expired IDs. A
-  backlog (`sticky_backlog_exists`, over the previous window and subscriptions or the named rooms) answers a long poll
+  backlog is sent over several responses; when no stream advanced, each carries a `pos` page so the next request
+  acknowledges it (ADR-0862). A backlog (`sticky_backlog_exists`, over the previous window and subscriptions or the
+  named rooms) answers a long poll
   at once, except for a request at the same `pos` as a response that already delivered sticky events
   (`sticky_answered`): a pos no stream advanced is not acknowledged by a repeat, and answering again would spin the
   client. Scope is MSC4508's, from `extension_scope_rooms` over the response's list windows and subscriptions, then

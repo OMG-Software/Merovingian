@@ -16,6 +16,7 @@ sync_sources = files(
   'SlidingSyncConnectionTable.cpp',
   'SlidingSyncExtensions.cpp',
   'SlidingSyncParser.cpp',
+  'SlidingSyncPos.cpp',
   'SlidingSyncRoomBuilder.cpp',
   'SlidingSyncRequestLookups.cpp',
   'SlidingSyncRoomList.cpp',

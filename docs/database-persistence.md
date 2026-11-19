@@ -155,7 +155,9 @@ value. Test fixtures that do not exercise persistence select it through
     unexpired rows afterwards; then, while the room would hold more than `caps.max_per_room`, the oldest row of the
     server holding the most rows in the room (the new row's server when tied for most, else the smallest name;
     ADR-0857). The new row takes part in both orderings, so a row that is itself chosen is not stored; a row expiring
-    at or before `now_ms` (judged first), or with an event ID already held, writes nothing and succeeds.
+    at or before `now_ms` (judged first), or with an event ID already held, writes nothing and succeeds. It returns a
+    `StickyEventRecordOutcome`: `recorded`, and `other_rooms`, each room other than the row's own that lost a row to
+    the sender cap, for the caller to report changed to the federation worker (ADR-0862).
     `delete_sticky_event` (a redaction), `delete_sticky_events_of_user` (account deactivation, beside
     `delete_delayed_events_of_user`; always runs the `DELETE` so a row hydration skipped goes too) and
     `prune_expired_sticky_events(store, now_ms)`, which deletes every row expiring at or before `now_ms`, in memory or

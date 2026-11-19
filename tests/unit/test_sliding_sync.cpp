@@ -310,8 +310,8 @@ SCENARIO("parse_sliding_sync_pos extracts and decodes the pos query parameter", 
             THEN("the token is decoded correctly")
             {
                 REQUIRE(result.has_value());
-                REQUIRE(result->event_ordering == 42U);
-                REQUIRE(result->sync_stream_id == 3U);
+                REQUIRE(result->token.event_ordering == 42U);
+                REQUIRE(result->token.sync_stream_id == 3U);
             }
         }
     }

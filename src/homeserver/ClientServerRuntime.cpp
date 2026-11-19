@@ -198,6 +198,7 @@
 #include "merovingian/sync/SlidingSyncExtensions.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
 #include "merovingian/sync/SlidingSyncRequestLookups.hpp"
@@ -6155,6 +6156,40 @@ namespace
         return members;
     }
 
+    // The member events of the senders of MSC4354 sticky events who sent nothing in the timeline (`senders`), for a
+    // lazy classic `/sync` that is not `state_after`: a sticky event may lie outside the timeline, or inside its range
+    // but hidden by the timeline filter, and its sender may have joined after the timeline's start (or, with no
+    // timeline, after an older sticky event), so no one event's state stands for them (ADR-0862). A sender whose member
+    // the state at `first_event` (the timeline's first event, when there is a timeline) holds already has it in
+    // `state`; any other gets theirs as of `position`, as the state path does with no timeline. The room is joined (the
+    // sticky section is joined rooms only), so that member is the resolved one at the position. Returns the members
+    // to append to the room's `state`.
+    [[nodiscard]] auto sticky_sender_members_at_position(database::PersistentStore const& store,
+                                                         sync::EventTypeFilter const& filter, std::string_view room_id,
+                                                         std::uint64_t position,
+                                                         database::PersistentEvent const* first_event,
+                                                         std::vector<std::string> const& senders,
+                                                         LazyRoomSelector& selector) -> canonicaljson::Array
+    {
+        auto members = canonicaljson::Array{};
+        auto const access = sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U};
+        for (auto const& sender : senders)
+        {
+            if (first_event != nullptr &&
+                member_event_at_timeline_start(store, room_id, *first_event, sender).has_value())
+            {
+                continue;
+            }
+            auto const event_id =
+                member_event_at_position(store, room_id, access, position, sender, UnreadableMember::current_stands_in);
+            if (event_id.has_value())
+            {
+                add_lazy_sender_member(store, filter, *event_id, sender, selector, members);
+            }
+        }
+        return members;
+    }
+
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
@@ -7274,6 +7309,7 @@ namespace
                                            ? joined_state_changes(store, room.room_id, since_ordering, sync_position)
                                            : std::vector<std::string>{};
             auto lazy_senders = std::vector<std::string>{};
+            auto sticky_only_senders = std::vector<std::string>{};
             auto selector = std::optional<LazyRoomSelector>{};
             if (lazy.enabled() &&
                 (state_path || window_begin != matched.end() || !state_changes.empty() || !sticky_events.empty()))
@@ -7283,10 +7319,14 @@ namespace
                 {
                     plan.senders.insert((*it)->sender_user_id);
                 }
-                // A sticky event's sender is a sender of a delivered event as a timeline sender is (ADR-0855).
+                // A sticky event's sender is a sender of a delivered event as a timeline sender is (ADR-0855). One who
+                // sent nothing in the timeline is resolved apart (ADR-0862).
                 for (auto const* const sticky : sticky_events)
                 {
-                    plan.senders.insert(sticky->sender_user_id);
+                    if (plan.senders.insert(sticky->sender_user_id).second)
+                    {
+                        sticky_only_senders.push_back(sticky->sender_user_id);
+                    }
                 }
                 lazy_senders.assign(plan.senders.begin(), plan.senders.end());
                 plan.own_user_id = std::string{user};
@@ -7331,18 +7371,34 @@ namespace
                                     ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id,
                                                                            **window_begin, lazy_ref)
                                     : std::nullopt;
-                state_events = at_start.has_value()
-                                   ? std::move(*at_start)
-                                   : build_state_events_at_position(store, filter.room.state, room.room_id,
-                                                                    sync_position, lazy_ref);
+                auto const has_timeline = at_start.has_value();
+                state_events = has_timeline ? std::move(*at_start)
+                                            : build_state_events_at_position(store, filter.room.state, room.room_id,
+                                                                             sync_position, lazy_ref);
+                // With no timeline the state is as of the position and holds every sender's member already.
+                if (selector.has_value() && has_timeline)
+                {
+                    std::ranges::move(sticky_sender_members_at_position(store, filter.room.state, room.room_id,
+                                                                        sync_position, *window_begin,
+                                                                        sticky_only_senders, *selector),
+                                      std::back_inserter(state_events));
+                }
             }
             else if (selector.has_value())
             {
                 // Nothing else is sent, so the lazy members are the whole of `state`: no state is built or scanned.
-                // The members as of the timeline's start, or as of the oldest sticky event when there is no timeline.
-                state_events = build_lazy_sender_members(
-                    store, filter.room.state, window_begin != matched.end() ? **window_begin : *sticky_events.front(),
-                    lazy_senders, *selector);
+                // The members as of the timeline's start, and a sticky-only sender's as of the response's position
+                // when that state lacks it; with no timeline, every sender is sticky-only (ADR-0862).
+                auto const* const first_event = window_begin != matched.end() ? *window_begin : nullptr;
+                if (first_event != nullptr)
+                {
+                    state_events =
+                        build_lazy_sender_members(store, filter.room.state, *first_event, lazy_senders, *selector);
+                }
+                std::ranges::move(sticky_sender_members_at_position(store, filter.room.state, room.room_id,
+                                                                    sync_position, first_event, sticky_only_senders,
+                                                                    *selector),
+                                  std::back_inserter(state_events));
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
@@ -8169,12 +8225,21 @@ namespace
         });
     }
 
+    // The last page a sliding sync `pos` can carry (ADR-0862); a response past it goes back to page 0.
+    constexpr auto max_sliding_sync_pos_page = std::numeric_limits<std::uint64_t>::max();
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
-                                         std::optional<sync::StreamToken> const& pos, std::uint64_t timeout_ms,
-                                         bool can_wait) -> DispatchResult
+                                         std::optional<sync::SlidingSyncPos> const& request_pos,
+                                         std::uint64_t timeout_ms, bool can_wait) -> DispatchResult
     {
         auto& store = rt.homeserver.database.persistent_store;
+        // Every stream comparison reads the token; the page only names a response (ADR-0862).
+        auto const pos =
+            request_pos.has_value() ? std::optional<sync::StreamToken>{request_pos->token} : std::nullopt;
+        // The request's pos as this server writes it, the key a pending response is matched on.
+        auto const requested_pos =
+            request_pos.has_value() ? sync::encode_sliding_sync_pos(*request_pos) : std::string{};
 
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users, Server behaviour). Resolved once per request and
@@ -8260,7 +8325,6 @@ namespace
         // cancelled initial response cannot turn into an empty room window.
         if (conn.pending_response.has_value())
         {
-            auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
             // A response may have the same pos as the request that produced it
             // when no stream advanced. In that case the next request is
             // indistinguishable from a transport retry, so keep replaying the
@@ -8302,7 +8366,6 @@ namespace
         // pos is left out: with no stream advanced, the response carried the same pos,
         // the repeat cannot acknowledge it, and answering at once again would spin the
         // client. The committed state still resends the expansion when the room is built.
-        auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
         auto const answered_for_this_pos =
             conn.pending_response.has_value() && conn.pending_response->request_pos == requested_pos
                 ? conn.pending_response->expansions_answered
@@ -8808,8 +8871,22 @@ namespace
         // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS
         // at the top of this function, so the token can only move forward
         // between responses on the same server lifetime.
-        auto const new_pos =
-            sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch});
+        // ADR-0862: a response that delivers sticky events changes the connection's state. When no stream advanced,
+        // its token is the request's, and the next request at it would read as a retry of this one and never
+        // acknowledge it, so a backlog wider than the limit would stall. Such a response carries the request's page
+        // plus one; a retry of the request carries the old page and is answered from the committed state as before.
+        auto const response_token = sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch};
+        auto response_page = std::uint64_t{0U};
+        if (request_pos.has_value() && sticky_outcome.delivered_any)
+        {
+            auto const same_stream_position =
+                sync::encode_stream_token(request_pos->token) == sync::encode_stream_token(response_token);
+            if (same_stream_position && request_pos->page < max_sliding_sync_pos_page)
+            {
+                response_page = request_pos->page + 1U;
+            }
+        }
+        auto const new_pos = sync::encode_sliding_sync_pos(sync::SlidingSyncPos{response_token, response_page});
 
         auto lists_obj = canonicaljson::Object{};
         for (auto& [lname, result] : list_results)
@@ -8892,7 +8969,7 @@ namespace
                                {"device_id",             std::string{device_id},                                 false},
                                {"connection_scope",      ssreq.conn_id.has_value() ? "client" : "default",       false},
                                {"conn_id_bytes",         std::to_string(ssreq.conn_id.value_or("").size()),      false},
-                               {"requested_pos",         pos.has_value() ? sync::encode_stream_token(*pos) : "", false},
+                               {"requested_pos",         requested_pos,                                          false},
                                {"returned_pos",          new_pos,                                                false},
                                {"connection_event_pos",  std::to_string(conn.last_event_ordering),               false},
                                {"connection_sync_pos",   std::to_string(conn.last_sync_stream_id),               false},
@@ -21574,7 +21651,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto pos = sync::parse_sliding_sync_pos(req.target);
         if (!pos.has_value() && sliding_req->pos.has_value())
         {
-            pos = sync::decode_stream_token(*sliding_req->pos);
+            pos = sync::decode_sliding_sync_pos(*sliding_req->pos);
         }
         auto const timeout =
             std::min(sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U)),

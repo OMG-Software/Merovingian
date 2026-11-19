@@ -199,7 +199,7 @@ SCENARIO("sliding sync position parsing remains independent of resource policy",
                 REQUIRE(parsed.has_value());
                 REQUIRE_FALSE(merovingian::sync::sliding_sync_request_limit_violation(*parsed, limits).has_value());
                 REQUIRE(pos.has_value());
-                REQUIRE(pos->event_ordering == 1U);
+                REQUIRE(pos->token.event_ordering == 1U);
             }
         }
     }

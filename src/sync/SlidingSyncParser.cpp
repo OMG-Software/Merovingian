@@ -751,14 +751,14 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     return std::nullopt;
 }
 
-auto parse_sliding_sync_pos(std::string_view target) -> std::optional<StreamToken>
+auto parse_sliding_sync_pos(std::string_view target) -> std::optional<SlidingSyncPos>
 {
     auto const raw = qparam(target, "pos");
     if (raw.empty())
     {
         return std::nullopt;
     }
-    return decode_stream_token(raw);
+    return decode_sliding_sync_pos(raw);
 }
 
 auto parse_sliding_sync_timeout(std::string_view target) -> std::optional<std::uint64_t>

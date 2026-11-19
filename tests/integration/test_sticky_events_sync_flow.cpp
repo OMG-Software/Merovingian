@@ -434,6 +434,66 @@ SCENARIO("a room whose only news is a sticky event is not dropped", "[sticky-eve
     }
 }
 
+SCENARIO("a lazy-loading /sync carries the member event of a sticky sender who joined after the timeline's start",
+         "[sticky-events][integration][lazy]")
+{
+    // MSC4480: a sticky event's sender is a timeline sender for lazy-loaded members. The member is the one in force
+    // when the client can place it: at the timeline's start when that state holds it, else as of the response
+    // (ADR-0862).
+    GIVEN("alice synced, then sent a sticky message, then bob joined and sent one")
+    {
+        auto fixture = Fixture{};
+        auto const before = fixture.sync(fixture.alice_token());
+        auto const plain =
+            fixture.send("PUT", "/_matrix/client/v3/rooms/" + fixture.room_id() + "/send/m.test.plain/p1",
+                         fixture.alice_token(), R"({"body":"before bob"})");
+        REQUIRE(plain.status == 200U);
+        auto const alices = fixture.sticky_message("one");
+        fixture.bob_joins();
+        auto& store = fixture.runtime().homeserver.database.persistent_store;
+        auto const bobs_sent =
+            fixture.send("PUT", "/_matrix/client/v3/rooms/" + fixture.room_id() + "/send/m.room.message/b1",
+                         fixture.bob_token(), R"({"msgtype":"m.text","body":"two"})");
+        REQUIRE(bobs_sent.status == 200U);
+        auto const bobs = *string_member(parse_object(bobs_sent.body), "event_id");
+        REQUIRE(db::record_sticky_event(store, {bobs, fixture.room_id(), "@bob:example.org", t0, t0 + one_hour_ms},
+                                        {200U}, t0)
+                    .recorded);
+        auto const bob_join = db::find_current_state_event_id(store, fixture.room_id(), "m.room.member",
+                                                              "@bob:example.org");
+        REQUIRE(bob_join.has_value());
+        auto const since = *string_member(before, "next_batch");
+
+        WHEN("alice syncs from her token with lazy members and a timeline filter that matches nothing")
+        {
+            auto const body = fixture.filtered_sync(
+                fixture.alice_token(),
+                R"({"room":{"state":{"lazy_load_members":true},"timeline":{"types":["m.nothing"]}}})", since);
+            THEN("both sticky events are sent, and bob's join is in the state")
+            {
+                REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{alices, bobs});
+                auto const state = ids_at(body, {"rooms", "join", fixture.room_id(), "state", "events"});
+                REQUIRE(std::ranges::find(state, *bob_join) != state.end());
+            }
+        }
+
+        WHEN("alice syncs with lazy members and a timeline of only the message sent before bob joined")
+        {
+            auto const body = fixture.filtered_sync(
+                fixture.alice_token(),
+                R"({"room":{"state":{"lazy_load_members":true},"timeline":{"types":["m.test.plain"]}}})", since);
+            THEN("the timeline starts before bob joined, and bob's join is still in the state")
+            {
+                auto const timeline = ids_at(body, {"rooms", "join", fixture.room_id(), "timeline", "events"});
+                REQUIRE(timeline.size() == 1U);
+                REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{alices, bobs});
+                auto const state = ids_at(body, {"rooms", "join", fixture.room_id(), "state", "events"});
+                REQUIRE(std::ranges::find(state, *bob_join) != state.end());
+            }
+        }
+    }
+}
+
 SCENARIO("with sticky events disabled /sync has no section", "[sticky-events][integration]")
 {
     GIVEN("a room with a sticky message and the feature off")
@@ -689,6 +749,50 @@ SCENARIO("sliding sync sends a backlog over several responses and answers a poll
             THEN("a further poll waits")
             {
                 REQUIRE(poll.status == hs::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}
+
+SCENARIO("sliding sync pages a backlog of one event at a time while no stream advances",
+         "[sticky-events][integration][pos]")
+{
+    // ADR-0862: a page that delivers sticky events at its request's stream position carries a pos of its own, so the
+    // next request acknowledges it; without it the third event would never be sent.
+    GIVEN("alice's room with three sticky messages, a limit of one and no timeline")
+    {
+        auto fixture = Fixture{};
+        auto const m1 = fixture.sticky_message("one");
+        auto const m2 = fixture.sticky_message("two");
+        auto const m3 = fixture.sticky_message("three");
+        auto const request = list_request(R"("sticky_events":{"enabled":true,"limit":1})");
+        auto const first = parsed(fixture.sliding(fixture.alice_token(), request));
+        auto const first_pos = *string_member(first, "pos");
+        REQUIRE(sliding_ids(fixture, first) == std::vector<std::string>{m1});
+        auto const second = parsed(fixture.sliding(fixture.alice_token(), request, first_pos));
+        auto const second_pos = *string_member(second, "pos");
+        REQUIRE(sliding_ids(fixture, second) == std::vector<std::string>{m2});
+
+        WHEN("the client acknowledges the second page")
+        {
+            auto const third = parsed(fixture.sliding(fixture.alice_token(), request, second_pos));
+            THEN("the second page had a pos of its own, and the third page carries the last event")
+            {
+                REQUIRE(second_pos != first_pos);
+                REQUIRE(sliding_ids(fixture, third) == std::vector<std::string>{m3});
+            }
+        }
+
+        WHEN("the second request is retried at the first pos, and the client then goes on from its answer")
+        {
+            auto const retried = parsed(fixture.sliding(fixture.alice_token(), request, first_pos));
+            auto const after_retry =
+                parsed(fixture.sliding(fixture.alice_token(), request, *string_member(retried, "pos")));
+            THEN("the retry is answered with the same event and pos, and the next page with the last event")
+            {
+                REQUIRE(sliding_ids(fixture, retried) == std::vector<std::string>{m2});
+                REQUIRE(*string_member(retried, "pos") == second_pos);
+                REQUIRE(sliding_ids(fixture, after_retry) == std::vector<std::string>{m3});
             }
         }
     }

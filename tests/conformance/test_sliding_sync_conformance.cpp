@@ -187,8 +187,8 @@ SCENARIO("MSC4186 pos token encodes and decodes round-trip", "[sync][sliding-syn
             {
                 // Spec MUST: pos MUST be opaque and round-trip via query parameter.
                 REQUIRE(result.has_value());
-                REQUIRE(result->event_ordering == 100U);
-                REQUIRE(result->sync_stream_id == 50U);
+                REQUIRE(result->token.event_ordering == 100U);
+                REQUIRE(result->token.sync_stream_id == 50U);
             }
         }
     }
@@ -270,8 +270,8 @@ SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 UR
             {
                 // Spec MUST: pos is an opaque query-parameter; its value is path-independent.
                 REQUIRE(result.has_value());
-                REQUIRE(result->event_ordering == 200U);
-                REQUIRE(result->sync_stream_id == 75U);
+                REQUIRE(result->token.event_ordering == 200U);
+                REQUIRE(result->token.sync_stream_id == 75U);
             }
         }
     }
