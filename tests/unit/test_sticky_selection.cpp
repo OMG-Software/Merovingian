@@ -57,7 +57,9 @@ auto add_sticky_event(db::PersistentStore& store, std::string const& event_id, s
     event.sender_user_id = "@alice:example.org";
     event.stream_ordering = ordering;
     event.json = std::string{R"({"type":")"} + std::string{type} + R"(","content":{}})";
-    REQUIRE(store.events.insert(std::move(event)));
+    // Inserted outside REQUIRE, whose expansion repeats its expression.
+    auto const inserted = store.events.insert(std::move(event));
+    REQUIRE(inserted);
     REQUIRE(store.sticky_events.insert(
         {event_id, std::string{sticky_room}, "@alice:example.org", sticky_now_ms - 1'000, sticky_now_ms + 60'000}));
 }

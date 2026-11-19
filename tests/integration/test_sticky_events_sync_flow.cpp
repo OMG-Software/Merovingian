@@ -462,6 +462,7 @@ SCENARIO("a lazy-loading /sync carries the member event of a sticky sender who j
         auto const bob_join = db::find_current_state_event_id(store, fixture.room_id(), "m.room.member",
                                                               "@bob:example.org");
         REQUIRE(bob_join.has_value());
+        auto const bob_join_id = bob_join.value_or(std::string{});
         auto const since = *string_member(before, "next_batch");
 
         WHEN("alice syncs from her token with lazy members and a timeline filter that matches nothing")
@@ -473,7 +474,7 @@ SCENARIO("a lazy-loading /sync carries the member event of a sticky sender who j
             {
                 REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{alices, bobs});
                 auto const state = ids_at(body, {"rooms", "join", fixture.room_id(), "state", "events"});
-                REQUIRE(std::ranges::find(state, *bob_join) != state.end());
+                REQUIRE(std::ranges::find(state, bob_join_id) != state.end());
             }
         }
 
@@ -488,7 +489,7 @@ SCENARIO("a lazy-loading /sync carries the member event of a sticky sender who j
                 REQUIRE(timeline.size() == 1U);
                 REQUIRE(sticky_of(fixture, body) == std::vector<std::string>{alices, bobs});
                 auto const state = ids_at(body, {"rooms", "join", fixture.room_id(), "state", "events"});
-                REQUIRE(std::ranges::find(state, *bob_join) != state.end());
+                REQUIRE(std::ranges::find(state, bob_join_id) != state.end());
             }
         }
     }

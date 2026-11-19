@@ -40,8 +40,9 @@ SCENARIO("a sliding sync pos without a page is its stream token", "[sync][slidin
             {
                 REQUIRE(text == encode_stream_token(token));
                 REQUIRE(read.has_value());
-                REQUIRE(encode_stream_token(read->token) == encode_stream_token(token));
-                REQUIRE(read->page == 0U);
+                auto const decoded = read.value_or(SlidingSyncPos{});
+                REQUIRE(encode_stream_token(decoded.token) == encode_stream_token(token));
+                REQUIRE(decoded.page == 0U);
             }
         }
     }
@@ -61,8 +62,9 @@ SCENARIO("a sliding sync pos with a page round-trips", "[sync][sliding-sync][pos
             {
                 REQUIRE(text == encode_stream_token(token) + "." + std::to_string(page));
                 REQUIRE(read.has_value());
-                REQUIRE(encode_stream_token(read->token) == encode_stream_token(token));
-                REQUIRE(read->page == page);
+                auto const decoded = read.value_or(SlidingSyncPos{});
+                REQUIRE(encode_stream_token(decoded.token) == encode_stream_token(token));
+                REQUIRE(decoded.page == page);
             }
         }
     }

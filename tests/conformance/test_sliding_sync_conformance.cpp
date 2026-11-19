@@ -22,8 +22,9 @@
 // |                  = true for matrix-rust-sdk compatibility              |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -187,8 +188,9 @@ SCENARIO("MSC4186 pos token encodes and decodes round-trip", "[sync][sliding-syn
             {
                 // Spec MUST: pos MUST be opaque and round-trip via query parameter.
                 REQUIRE(result.has_value());
-                REQUIRE(result->token.event_ordering == 100U);
-                REQUIRE(result->token.sync_stream_id == 50U);
+                auto const decoded = result.value_or(merovingian::sync::SlidingSyncPos{}).token;
+                REQUIRE(decoded.event_ordering == 100U);
+                REQUIRE(decoded.sync_stream_id == 50U);
             }
         }
     }
@@ -270,8 +272,9 @@ SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 UR
             {
                 // Spec MUST: pos is an opaque query-parameter; its value is path-independent.
                 REQUIRE(result.has_value());
-                REQUIRE(result->token.event_ordering == 200U);
-                REQUIRE(result->token.sync_stream_id == 75U);
+                auto const decoded = result.value_or(merovingian::sync::SlidingSyncPos{}).token;
+                REQUIRE(decoded.event_ordering == 200U);
+                REQUIRE(decoded.sync_stream_id == 75U);
             }
         }
     }
