@@ -122,6 +122,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
 * A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
   state has none, rather than at the oldest sticky event (ADR-0862).
+* Sliding sync lists now hold the rooms a user is invited to, with `invite_state` only and sorted by the invite's
+  position, and a new invite (createRoom or `/invite`) ends a waiting long poll at once (ADR-0864).
+* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
+  sent as a new joined room (ADR-0864).
 
 ## Release notes
 

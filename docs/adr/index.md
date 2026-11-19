@@ -737,3 +737,4 @@
 * [0861 - The typing and receipts extensions follow MSC4508 scope, and wake a long poll only within it](0861-the-typing-and-receipts-extensions-follow-msc4508-scope-and-wake-a-long-poll-only-within-it.md)
 * [0862 - A sliding sync pos carries a page, and sticky delivery keeps redactions withheld, refreshes trimmed rooms and loads sticky senders](0862-a-sliding-sync-pos-carries-a-page-and-sticky-delivery-keeps-redactions-withheld-refreshes-trimmed-rooms-and-loads-sticky-senders.md)
 * [0863 - A room entering the typing or receipts scope is sent what it lacks](0863-a-room-entering-the-typing-or-receipts-scope-is-sent-what-it-lacks.md)
+* [0864 - Sliding sync lists hold invited rooms as stripped state, and a new or ended invite wakes the long poll](0864-sliding-sync-lists-hold-invited-rooms-as-stripped-state-and-a-new-or-ended-invite-wakes-the-long-poll.md)

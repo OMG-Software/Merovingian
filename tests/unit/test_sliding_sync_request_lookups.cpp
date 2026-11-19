@@ -6,6 +6,7 @@
 // Spec: MSC4186 list `filters` (is_invite, is_encrypted, room_types) and the `by_notification_count` sort.
 
 #include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/database/PersistentRoom.hpp"
@@ -20,6 +21,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -127,9 +129,12 @@ SCENARIO("A request's lookups answer the filters from the user's own rows", "[sy
                 spaces += lookups.room_type(room_name(number)) == "m.space" ? 1U : 0U;
             }
 
-            THEN("every third room is encrypted and every fourth is a space")
+            THEN("every third room is encrypted and every fourth is a space, except the two encrypted rooms alice is "
+                 "only invited to, which answer from an invite that holds no stripped state here (ADR-0864)")
             {
-                REQUIRE(encrypted == 20U);
+                // Rooms 15 and 45 are encrypted and alice is invited to them; the invited rooms are odd, so none is
+                // a space.
+                REQUIRE(encrypted == 18U);
                 REQUIRE(spaces == 15U);
             }
         }
@@ -165,6 +170,72 @@ SCENARIO("A request's lookups read only the user's own receipt rows", "[sync][sl
             {
                 REQUIRE(lookups.read_markers(room_name(0U)).unthreaded == 1U);
                 REQUIRE(lookups.read_markers(room_name(2U)).unthreaded == 0U);
+            }
+        }
+    }
+}
+
+// ADR-0864: a user only invited to a room may be told what the invite's stripped state says, never the room's current
+// state or events. A list ranks and filters an invited room by its invite.
+SCENARIO("A request's lookups answer an invited room from its invite, not from the room",
+         "[sync][sliding-sync][invites][unit]")
+{
+    GIVEN("a room alice is invited to at position 7, now named Current, encrypted and a space, with a newer event, "
+          "whose invite's stripped state names it Invited with a plain create event")
+    {
+        auto store = db::PersistentStore{};
+        auto const id = room_name(1U);
+        store.rooms.push_back(db::PersistentRoom{id, "@bob:example.org", false});
+        store.memberships.push_back(db::PersistentMembership{id, alice, "invite", 7U});
+        add_state(store, id, "m.room.encryption", "$enc");
+        add_state(store, id, "m.room.create", "$create");
+        add_state(store, id, "m.room.name", "$name");
+        auto name = db::PersistentEvent{};
+        name.event_id = "$name";
+        name.room_id = id;
+        name.sender_user_id = "@bob:example.org";
+        name.json = R"({"type":"m.room.name","state_key":"","content":{"name":"Current"}})";
+        name.stream_ordering = 50U;
+        store.events.push_back(std::move(name));
+        auto invite = db::PersistentInvite{};
+        invite.room_id = id;
+        invite.user_id = alice;
+        invite.sender_user_id = "@bob:example.org";
+        invite.event_id = "$invite";
+        invite.stream_ordering = 7U;
+        invite.invite_state_events_json = {
+            R"({"type":"m.room.create","state_key":"","sender":"@bob:example.org","content":{}})",
+            R"({"type":"m.room.name","state_key":"","sender":"@bob:example.org","content":{"name":"Invited"}})"};
+        REQUIRE(db::upsert_invite(store, std::move(invite)));
+        db::rebuild_membership_index(store);
+        db::rebuild_state_index(store);
+        auto lookups = sync::SlidingSyncRequestLookups{store, alice};
+
+        WHEN("its sort keys and filters are asked for")
+        {
+            auto const& room_name_key = lookups.room_name(id);
+            auto const encrypted = lookups.is_encrypted(id);
+            auto const& type = lookups.room_type(id);
+            auto const recency = lookups.recency(id, {});
+
+            THEN("each is the invite's: its stripped name and create event, and the invite's position")
+            {
+                REQUIRE(lookups.invited_rooms() == std::vector<std::string>{id});
+                REQUIRE(room_name_key == "Invited");
+                REQUIRE_FALSE(encrypted);
+                REQUIRE(type.empty());
+                REQUIRE(recency == 7U);
+                REQUIRE(lookups.recency_rows_visited() == 0U);
+            }
+        }
+        WHEN("the request withholds the invite")
+        {
+            lookups.withhold_invite(id);
+
+            THEN("the room is no longer an invite of this request")
+            {
+                REQUIRE_FALSE(lookups.is_invited(id));
+                REQUIRE(lookups.invited_rooms().empty());
             }
         }
     }
