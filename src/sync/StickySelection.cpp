@@ -22,6 +22,12 @@ auto sticky_candidates_of_room(database::PersistentStore const& store, std::stri
         {
             continue;
         }
+        // The sticky exemption skips history visibility only: a redaction that has not been applied stays withheld
+        // (rooms/v3.md "Handling redactions"; ADR-0862), as HistoryVisibility::can_see withholds it.
+        if (database::redaction_is_withheld(store, found->event_id))
+        {
+            continue;
+        }
         candidates.push_back({found->event_id, found->sender_user_id, found->stream_ordering});
     }
     return candidates;

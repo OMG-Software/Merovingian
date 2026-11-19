@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// `select_sticky_for_sync` (ADR-0855): which sticky events one room's sync response carries.
+// `select_sticky_for_sync` (ADR-0855): which sticky events one room's sync response carries, and
+// `sticky_candidates_of_room`: which of a room's sticky rows may be chosen at all.
 
+#include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentStickyEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/StickyCandidate.hpp"
 #include "merovingian/sync/StickyChoice.hpp"
 #include "merovingian/sync/StickySelection.hpp"
@@ -14,13 +18,17 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
+namespace db = merovingian::database;
 using merovingian::sync::select_sticky_for_sync;
+using merovingian::sync::sticky_candidates_of_room;
 using merovingian::sync::StickyCandidate;
 
 constexpr auto no_limit = std::numeric_limits<std::size_t>::max();
@@ -34,6 +42,34 @@ constexpr auto no_limit = std::numeric_limits<std::size_t>::max();
         {"$d", "@mallory:example.org", 40U},
         {"$b", "@bob:example.org",     20U},
     };
+}
+
+constexpr auto sticky_room = std::string_view{"!room:example.org"};
+constexpr auto sticky_now_ms = std::int64_t{1'000'000};
+
+// An accepted event of `sticky_room` with an unexpired sticky row.
+auto add_sticky_event(db::PersistentStore& store, std::string const& event_id, std::string_view type,
+                      std::uint64_t ordering) -> void
+{
+    auto event = db::PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = std::string{sticky_room};
+    event.sender_user_id = "@alice:example.org";
+    event.stream_ordering = ordering;
+    event.json = std::string{R"({"type":")"} + std::string{type} + R"(","content":{}})";
+    REQUIRE(store.events.insert(std::move(event)));
+    REQUIRE(store.sticky_events.insert(
+        {event_id, std::string{sticky_room}, "@alice:example.org", sticky_now_ms - 1'000, sticky_now_ms + 60'000}));
+}
+
+[[nodiscard]] auto candidate_ids(std::vector<StickyCandidate> const& chosen) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& candidate : chosen)
+    {
+        ids.push_back(candidate.event_id);
+    }
+    return ids;
 }
 
 } // namespace
@@ -119,6 +155,38 @@ SCENARIO("a limit keeps the oldest and says more remain", "[sync][sticky-events]
             {
                 REQUIRE(choice.event_ids.size() == 4U);
                 REQUIRE_FALSE(choice.more);
+            }
+        }
+    }
+}
+
+SCENARIO("a sticky redaction that has not been applied is not a candidate", "[sync][sticky-events][security]")
+{
+    // The sticky exemption skips history visibility, never the rule that a redaction reaches clients only once it
+    // applies (rooms/v3.md "Handling redactions"; ADR-0858).
+    GIVEN("a room with a sticky message and a sticky redaction whose target has not arrived")
+    {
+        auto store = db::PersistentStore{};
+        add_sticky_event(store, "$message", "m.rtc.member", 10U);
+        add_sticky_event(store, "$redaction", "m.room.redaction", 20U);
+        store.redactions.withheld.insert("$redaction");
+
+        WHEN("the room's candidates are read")
+        {
+            auto const chosen = sticky_candidates_of_room(store, sticky_room, sticky_now_ms);
+            THEN("only the message is a candidate")
+            {
+                REQUIRE(candidate_ids(chosen) == std::vector<std::string>{"$message"});
+            }
+        }
+
+        WHEN("the redaction is applied and no longer withheld")
+        {
+            store.redactions.withheld.erase("$redaction");
+            auto const chosen = sticky_candidates_of_room(store, sticky_room, sticky_now_ms);
+            THEN("both are candidates")
+            {
+                REQUIRE(candidate_ids(chosen) == std::vector<std::string>{"$message", "$redaction"});
             }
         }
     }
