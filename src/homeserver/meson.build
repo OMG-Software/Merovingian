@@ -21,6 +21,8 @@ homeserver_sources = files(
   'DeferredPduRetry.cpp',
   'DeferredPduRetryJob.cpp',
   'DelayedEvents.cpp',
+  'StickyEventPrune.cpp',
+  'StickyEventRecording.cpp',
   'EmailPush.cpp',
   'EmailPushJob.cpp',
   'PasswordReset.cpp',

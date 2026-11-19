@@ -33,6 +33,7 @@
 #include "merovingian/homeserver/LocalDatabaseScope.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/StickyEventPrune.hpp"
 #include "merovingian/homeserver/PushRetryJob.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
@@ -963,6 +964,23 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Deletes expired sticky-event rows and orphaned delayed-event sticky durations (MSC4354, ADR-0854), every 60 s,
+    // taking the runtime lock for one transaction. Readers ignore an expired row whether or not this has run. It only
+    // ever touches `runtime`, which outlives this function. Declared after the pools so it is stopped and joined
+    // before them.
+    auto sticky_events_job = merovingian::homeserver::PeriodicJob{
+        "sticky-events", [&runtime](merovingian::homeserver::StopFlag const&) {
+            return merovingian::homeserver::prune_sticky_events(runtime.homeserver);
+        }};
+    if (!sticky_events_job.start())
+    {
+        LOG_CRITICAL("Sticky events thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Checks the MSC4195 delegated delayed leaves (ADR-0832): drops those that can no longer be acted on, asks LiveKit
     // with GetParticipant about at most `livekit_delegation_checks_per_run` due ones with the runtime lock free, and
     // restarts or sends their events. It sleeps at most 30 s and is woken when a delegation is stored or a webhook
@@ -1173,6 +1191,8 @@ struct ListenerBinding final
     // The wake hook is cleared above; a send in progress ends first (it makes no network call). Events still
     // scheduled stay in the database and are sent by the next start (ADR-0825).
     delayed_events_job.stop();
+    // Nothing wakes it; a sweep in progress ends first (one transaction, no network call).
+    sticky_events_job.stop();
     // The wake hook is cleared above; a LiveKit call in progress ends first, under its own 10 s deadline. Delegations
     // are stored and checked again by the next start (ADR-0832).
     livekit_delegations_job.stop();

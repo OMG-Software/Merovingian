@@ -1048,6 +1048,7 @@ shell = find_program('sh')
       'integration/test_delayed_events_flow.cpp',
       'integration/test_sticky_events_sync_flow.cpp',
       'integration/test_delayed_events_routes_flow.cpp',
+      'integration/test_sticky_events_send_flow.cpp',
       'integration/test_livekit_token_flow.cpp',
       'integration/test_livekit_delegation_flow.cpp',
       'integration/test_security_issues_460_463_flow.cpp',

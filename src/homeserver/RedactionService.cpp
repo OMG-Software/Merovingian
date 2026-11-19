@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/database/StickyEventStore.hpp"
 #include "merovingian/events/RedactionContext.hpp"
 #include "merovingian/events/RedactionVerdict.hpp"
 #include "merovingian/events/Authorization.hpp"
@@ -222,6 +223,17 @@ namespace
             return;
         }
         database::mark_redaction_applied(store, redaction_id, target_event_id);
+        // MSC4354 (ADR-0854): redaction removes the sticky fields, so the event stops being sticky when the redaction
+        // is applied to it. This is the one place a redaction takes effect, for local and federated redactions alike.
+        // A failed delete is logged without event content; the row then expires on its own.
+        if (store.sticky_events.contains(target_event_id) && !database::delete_sticky_event(store, target_event_id))
+        {
+            observability::log_diagnostic("redaction", "redaction.sticky_delete_failed",
+                                          {
+                                              {"target_event_id", target_event_id, false}
+            },
+                                          observability::LogEventSeverity::warning);
+        }
         observability::log_diagnostic(
             "redaction", "redaction.applied",
             {

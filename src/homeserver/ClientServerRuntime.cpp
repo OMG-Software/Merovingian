@@ -12896,6 +12896,108 @@ namespace
         return delayed_event_answer(req, rt, result, DelayedEventSuccess::delay_id);
     }
 
+    // ---- Sticky events (MSC4354, ADR-0853, ADR-0854): the routes only read the parameter and hand the duration on.
+
+    inline constexpr auto sticky_query_parameter = std::string_view{"sticky_duration_ms"};
+    inline constexpr auto unstable_sticky_query_parameter = std::string_view{"org.matrix.msc4354.sticky_duration_ms"};
+
+    // What a request's sticky duration parameter says, under either name. `present` is true when either name appears at
+    // all, with any value: such a request never falls through to an ordinary send. `duration_ms` is empty when the
+    // parameter is repeated, given under both names, or its value is not a whole decimal number in
+    // `events::parse_sticky_duration_text`'s range.
+    struct StickyQuery final
+    {
+        bool present{false};
+        std::optional<std::int64_t> duration_ms{};
+    };
+
+    // Reads the parameter, with the name percent-decoded as well as the value so an encoded spelling cannot slip past.
+    // Looks at the first two occurrences of either name only.
+    [[nodiscard]] auto sticky_query_of(std::string_view target) -> StickyQuery
+    {
+        auto values = std::vector<std::string>{};
+        auto const query_pos = target.find('?');
+        if (query_pos != std::string_view::npos)
+        {
+            auto query = target.substr(query_pos + 1U);
+            while (!query.empty() && values.size() < 2U)
+            {
+                auto const amp = query.find('&');
+                auto const pair = query.substr(0U, amp);
+                auto const equals = pair.find('=');
+                auto const name = core::percent_decode(pair.substr(0U, equals));
+                if (name == sticky_query_parameter || name == unstable_sticky_query_parameter)
+                {
+                    values.push_back(core::percent_decode(equals == std::string_view::npos ? std::string_view{}
+                                                                                           : pair.substr(equals + 1U)));
+                }
+                if (amp == std::string_view::npos)
+                {
+                    break;
+                }
+                query.remove_prefix(amp + 1U);
+            }
+        }
+        if (values.empty())
+        {
+            return {};
+        }
+        auto result = StickyQuery{.present = true, .duration_ms = std::nullopt};
+        if (values.size() == 1U)
+        {
+            result.duration_ms = events::parse_sticky_duration_text(values.front());
+        }
+        return result;
+    }
+
+    inline constexpr auto sticky_invalid_reason =
+        std::string_view{"sticky_duration_ms must be given once, as a whole number of milliseconds of at least 1"};
+
+    // The 403 a server with sticky events turned off answers, and nothing otherwise. Never an ordinary send.
+    [[nodiscard]] auto sticky_disabled_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (rt.limits.sticky_events_enabled)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Sticky events are not enabled on this homeserver.");
+    }
+
+    // The refusal of a request that carries the sticky parameter and cannot be sent sticky: disabled is 403, a bad
+    // value 400. Nothing when the parameter is absent. A request that passes carries `sticky.duration_ms`.
+    [[nodiscard]] auto sticky_query_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                            StickyQuery const& sticky) -> std::optional<DispatchResult>
+    {
+        if (!sticky.present)
+        {
+            return std::nullopt;
+        }
+        if (auto disabled = sticky_disabled_refusal(req, rt); disabled.has_value())
+        {
+            return disabled;
+        }
+        if (!sticky.duration_ms.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{sticky_invalid_reason});
+        }
+        return std::nullopt;
+    }
+
+    // A route that sends something other than a message event from PUT /send (PUT .../state/..., POST .../send, PUT
+    // .../redact/...) refuses the sticky parameter, whether or not the feature is on: ignoring it would let a client
+    // believe it sent a sticky event (ADR-0853).
+    [[nodiscard]] auto sticky_parameter_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (!sticky_query_of(req.target).present)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                            "only a message event sent with PUT /send or the delayed_event endpoint can be sticky");
+    }
+
     // L1 and L2: a `/send` or `/state` request that carries `org.matrix.msc4140.delay` (ADR-0823). Answers nothing for
     // a request without the parameter. With it, the request is always a delayed one: whatever is wrong with it, it is
     // never sent now.
@@ -12913,6 +13015,11 @@ namespace
         {
             return delayed_event_answer(req, rt, *refusal, DelayedEventSuccess::delay_id);
         }
+        auto const sticky = sticky_query_of(req.target);
+        if (auto refusal = sticky_query_refusal(req, rt, sticky); refusal.has_value())
+        {
+            return refusal;
+        }
         if (!delay.delay_ms.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
@@ -12920,6 +13027,7 @@ namespace
                                 "least 1");
         }
         auto request = DelayedEventScheduleRequest{};
+        request.sticky_duration_ms = sticky.duration_ms;
         request.room_id = std::string{room_id};
         request.event_type = std::string{event_type};
         request.txn_id = std::string{txn_id};
@@ -12951,6 +13059,10 @@ namespace
         std::uint64_t delay_ms{0U};
         std::string content_json{};
         std::optional<std::string> state_key{};
+        // MSC4354 (ADR-0853): either name given at all, and its value when valid (a JSON integer of 1 to 2^53-1,
+        // under one name only).
+        bool sticky_present{false};
+        std::optional<std::int64_t> sticky_duration_ms{};
     };
 
     // `delay_ms` (a JSON integer of at least 1) and `content` (a JSON object) are required; `state_key`, when present,
@@ -12980,6 +13092,17 @@ namespace
                 return std::nullopt;
             }
             parsed.state_key = *text;
+        }
+        auto const* stable_sticky = object_member(*object, sticky_query_parameter);
+        auto const* unstable_sticky = object_member(*object, unstable_sticky_query_parameter);
+        parsed.sticky_present = stable_sticky != nullptr || unstable_sticky != nullptr;
+        if ((stable_sticky != nullptr) != (unstable_sticky != nullptr))
+        {
+            auto const* given = stable_sticky != nullptr ? stable_sticky : unstable_sticky;
+            if (auto const* number = std::get_if<std::int64_t>(&given->storage()); number != nullptr)
+            {
+                parsed.sticky_duration_ms = events::parse_sticky_duration_text(std::to_string(*number));
+            }
         }
         return parsed;
     }
@@ -13044,7 +13167,21 @@ namespace
                                 "the body must be an object with an integer delay_ms of at least 1, an object content "
                                 "and, optionally, a string state_key");
         }
+        if (body->sticky_present)
+        {
+            if (auto disabled = sticky_disabled_refusal(req, rt); disabled.has_value())
+            {
+                return std::move(*disabled);
+            }
+            if (!body->sticky_duration_ms.has_value() || body->state_key.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "sticky_duration_ms must be given once, as an integer of at least 1, and only for "
+                                    "a message event");
+            }
+        }
         auto request = DelayedEventScheduleRequest{};
+        request.sticky_duration_ms = body->sticky_duration_ms;
         request.room_id = path.room_id;
         request.event_type = path.event_type;
         request.txn_id = path.txn_id;
@@ -16215,6 +16352,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 // MSC4140 (ADR-0823): both flags say whether scheduling is on.
                                 json_member("org.matrix.msc4140", json_bool(rt.limits.delayed_events_enabled)),
                                 json_member("org.matrix.msc4140.stable", json_bool(rt.limits.delayed_events_enabled)),
+                                // MSC4354 (ADR-0853): sticky events, on the unstable name Element Call reads.
+                                json_member("org.matrix.msc4354", json_bool(rt.limits.sticky_events_enabled)),
                                 json_member("org.matrix.simplified_msc3575", json_bool(true)),
                             })),
             })));
@@ -21478,6 +21617,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return std::move(*refused);
                 }
+                if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
@@ -21562,6 +21705,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return std::move(*delayed);
                 }
+                // MSC4354 (ADR-0853): validated before the transaction lookup and never sent as an ordinary event.
+                auto const sticky = sticky_query_of(req.target);
+                if (auto refused = sticky_query_refusal(req, rt, sticky); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 auto const massaged = massaged_timestamp(req);
                 if (!massaged.valid)
                 {
@@ -21609,6 +21758,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
                 rewritten.origin_server_ts = massaged.value;
+                if (sticky.duration_ms.has_value())
+                {
+                    rewritten.sticky = StickySendOptions{
+                        *sticky.duration_ms, static_cast<std::size_t>(rt.limits.max_sticky_events_per_sender)};
+                }
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                                {
@@ -21644,6 +21798,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
+                // MSC4354 (ADR-0853): a state event is never sticky, delayed or not; refuse before anything else.
+                if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // L2 (MSC4140, ADR-0823): as L1, for every form of the state path (a state key, an empty one, none).
                 if (auto delayed =
                         delayed_query_form(rt, req, *user, path->room_id, path->event_type, {}, path->state_key);
@@ -21724,6 +21883,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             suffix.substr(suffix.size() - send_s.size()) == send_s)
         {
             if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+            {
+                return std::move(*refused);
+            }
+            if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
             {
                 return std::move(*refused);
             }

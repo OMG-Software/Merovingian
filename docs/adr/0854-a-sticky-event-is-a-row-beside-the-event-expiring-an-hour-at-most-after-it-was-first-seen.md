@@ -16,7 +16,9 @@ the server keep what it needs to deliver sticky events, and what bounds that?
 this server accepted: `event_id` (primary key), `room_id`, `sender`, `received_at_ms` and `expires_at_ms`, all `TEXT`
 like the other tables. The row is written in the same step that persists the event, so the clock reading is taken once:
 
-* A locally composed event: `received_at_ms` is the `origin_server_ts` the server stamped on it.
+* A locally composed event: `received_at_ms` is the event clock's reading when the server composed it, not the
+  stamped `origin_server_ts`. They differ only when an application service sets `?ts=`, and taking the clock means a
+  chosen timestamp cannot extend the event's life.
 * An event from federation: `received_at_ms` is the wall-clock time the main process accepted it, never a time the
   sending server supplied.
 * `expires_at_ms = min(received_at_ms, origin_server_ts) + min(duration_ms, 3600000)`. A remote server cannot extend
