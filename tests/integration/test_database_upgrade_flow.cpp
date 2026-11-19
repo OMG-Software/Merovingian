@@ -828,6 +828,8 @@ SCENARIO("A SQLite schema is built at v1 and stops there", "[database][upgrade][
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
                 REQUIRE_FALSE(has_table(migrated.state, "delayed_events"));
                 REQUIRE_FALSE(has_table(migrated.state, "livekit_delegations"));
+                REQUIRE_FALSE(has_table(migrated.state, "sticky_events"));
+                REQUIRE_FALSE(has_table(migrated.state, "delayed_event_sticky_durations"));
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'") == 0);
             }
         }
@@ -993,12 +995,15 @@ SCENARIO("A SQLite database migrated from v1 holds exactly the schema a fresh on
                 REQUIRE(migrated.ok);
                 REQUIRE(fresh.ok);
                 REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
-                REQUIRE(migrated.store.schema.applied_migrations.back().name == "livekit_delegations");
-                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM schema_migrations") == 4);
+                REQUIRE(migrated.store.schema.applied_migrations.back().name == "sticky_events");
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM schema_migrations") == 5);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM delayed_events") == 0);
                 REQUIRE(migrated.store.delayed_events.size() == 0U);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM livekit_delegations") == 0);
                 REQUIRE(migrated.store.livekit_delegations.size() == 0U);
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM sticky_events") == 0);
+                REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM delayed_event_sticky_durations") == 0);
+                REQUIRE(migrated.store.sticky_events.size() == 0U);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_clients") == 0);
                 REQUIRE(sqlite_count(migrated_path, "SELECT count(*) FROM oauth_sessions") == 0);
                 REQUIRE(migrated.store.oauth.client_count() == 0U);
@@ -1114,6 +1119,8 @@ SCENARIO("A PostgreSQL schema is built at v1 and stops there", "[database][upgra
                 REQUIRE_FALSE(has_table(migrated.state, "oauth_sessions"));
                 REQUIRE_FALSE(has_table(migrated.state, "delayed_events"));
                 REQUIRE_FALSE(has_table(migrated.state, "livekit_delegations"));
+                REQUIRE_FALSE(has_table(migrated.state, "sticky_events"));
+                REQUIRE_FALSE(has_table(migrated.state, "delayed_event_sticky_durations"));
                 REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
                                                      "table_schema = 'public' AND table_name LIKE 'oauth%'") == 0);
             }
@@ -1248,9 +1255,12 @@ SCENARIO("A PostgreSQL database migrated from v1 holds exactly the schema a fres
                 REQUIRE(migrated.ok);
                 REQUIRE(fresh.ok);
                 REQUIRE(migrated.store.schema.version == merovingian::database::current_schema_version());
-                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM schema_migrations") == 4);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM schema_migrations") == 5);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM delayed_events") == 0);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM livekit_delegations") == 0);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM sticky_events") == 0);
+                REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM delayed_event_sticky_durations") ==
+                        0);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_clients") == 0);
                 REQUIRE(pg_count(migrated_scratch.conninfo(), "SELECT count(*) FROM oauth_sessions") == 0);
                 auto const migrated_shape = pg_schema_shape(migrated_scratch.conninfo());
@@ -1366,6 +1376,8 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
             sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE '%delayed_events%'");
         auto const delegation_objects_before =
             sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE '%livekit_delegations%'");
+        auto const sticky_objects_before =
+            sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE '%sticky%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
@@ -1390,6 +1402,16 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                                      "'slot', 'member', '1000')") &&
                 sqlite_count(path, "SELECT count(*) FROM livekit_delegations WHERE delay_id = 'upgrade-probe'") == 1 &&
                 sqlite_execute(path, "DELETE FROM livekit_delegations WHERE delay_id = 'upgrade-probe'");
+            // Version 5's two tables take a row and give it back the same way.
+            auto const sticky_events_usable =
+                sqlite_execute(path, "INSERT INTO sticky_events VALUES ('$upgrade-probe', '!r:x', '@u:x', '1000', "
+                                     "'2000')") &&
+                sqlite_count(path, "SELECT count(*) FROM sticky_events WHERE event_id = '$upgrade-probe'") == 1 &&
+                sqlite_execute(path, "DELETE FROM sticky_events WHERE event_id = '$upgrade-probe'") &&
+                sqlite_execute(path, "INSERT INTO delayed_event_sticky_durations VALUES ('upgrade-probe', '60000')") &&
+                sqlite_count(path, "SELECT count(*) FROM delayed_event_sticky_durations WHERE delay_id = "
+                                   "'upgrade-probe'") == 1 &&
+                sqlite_execute(path, "DELETE FROM delayed_event_sticky_durations WHERE delay_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 sqlite_fixture_config(path, master_key, expected.server_name));
             REQUIRE(started.started);
@@ -1404,10 +1426,11 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                 REQUIRE(oauth_objects_before == 0);
                 REQUIRE(delayed_objects_before == 0);
                 REQUIRE(delegation_objects_before == 0);
+                REQUIRE(sticky_objects_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
                 REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
                 REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
-                REQUIRE(migrated.state.applied_migrations.back().name == "livekit_delegations");
+                REQUIRE(migrated.state.applied_migrations.back().name == "sticky_events");
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM schema_migrations") ==
                         static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_clients") == 0);
@@ -1417,6 +1440,10 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
                 REQUIRE(oauth_tables_usable);
                 REQUIRE(delayed_events_usable);
                 REQUIRE(livekit_delegations_usable);
+                REQUIRE(sticky_events_usable);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sticky_events") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN "
+                                           "('idx_sticky_events_room_id', 'idx_sticky_events_sender')") == 2);
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM livekit_delegations") == 0);
                 REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
                                            "name = 'idx_livekit_delegations_user_id'") == 1);
@@ -1463,6 +1490,9 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
         auto const delegation_tables_before =
             pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
                                          "table_schema = 'public' AND table_name = 'livekit_delegations'");
+        auto const sticky_tables_before =
+            pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
+                                         "table_schema = 'public' AND table_name LIKE '%sticky%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
@@ -1487,6 +1517,18 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
                 pg_count(scratch.conninfo(),
                          "SELECT count(*) FROM livekit_delegations WHERE delay_id = 'upgrade-probe'") == 1 &&
                 pg_execute(scratch.conninfo(), "DELETE FROM livekit_delegations WHERE delay_id = 'upgrade-probe'");
+            auto const sticky_events_usable =
+                pg_execute(scratch.conninfo(), "INSERT INTO sticky_events VALUES ('$upgrade-probe', '!r:x', '@u:x', "
+                                               "'1000', '2000')") &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM sticky_events WHERE event_id = '$upgrade-probe'") ==
+                    1 &&
+                pg_execute(scratch.conninfo(), "DELETE FROM sticky_events WHERE event_id = '$upgrade-probe'") &&
+                pg_execute(scratch.conninfo(),
+                           "INSERT INTO delayed_event_sticky_durations VALUES ('upgrade-probe', '60000')") &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM delayed_event_sticky_durations WHERE delay_id = "
+                                             "'upgrade-probe'") == 1 &&
+                pg_execute(scratch.conninfo(),
+                           "DELETE FROM delayed_event_sticky_durations WHERE delay_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 postgresql_fixture_config(uri_file, master_key, expected.server_name));
             REQUIRE(started.started);
@@ -1501,15 +1543,17 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
                 REQUIRE(oauth_tables_before == 0);
                 REQUIRE(delayed_tables_before == 0);
                 REQUIRE(delegation_tables_before == 0);
+                REQUIRE(sticky_tables_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
                 REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
                 REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
-                REQUIRE(migrated.state.applied_migrations.back().name == "livekit_delegations");
+                REQUIRE(migrated.state.applied_migrations.back().name == "sticky_events");
                 REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations") ==
                         static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
                 REQUIRE(oauth_tables_usable);
                 REQUIRE(delayed_events_usable);
                 REQUIRE(livekit_delegations_usable);
+                REQUIRE(sticky_events_usable);
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);

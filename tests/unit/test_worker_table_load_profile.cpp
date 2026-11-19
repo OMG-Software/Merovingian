@@ -208,6 +208,10 @@ namespace
         // ADR-0832: LiveKit delegations (migration 004). Main only: the token service runs in main and the worker
         // keeps no delayed event alive.
         "livekit_delegations",
+        // ADR-0854: sticky events (migration 005) and the sticky durations of delayed events. Main only: the
+        // federation worker never serves a client and never decides what is sticky.
+        "sticky_events",
+        "delayed_event_sticky_durations",
         // Vestigial: declared in src/database/Schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside
@@ -282,6 +286,8 @@ SCENARIO("The federation_worker load profile excludes every table outside the al
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("oauth_sessions", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("delayed_events", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("livekit_delegations", profile));
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("sticky_events", profile));
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("delayed_event_sticky_durations", profile));
         }
         AND_THEN("an arbitrary non-allowlisted table is excluded, proving this is a fail-closed allowlist "
                  "rather than a denylist")

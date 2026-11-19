@@ -46,6 +46,10 @@ namespace
     constexpr auto livekit_delegations_version = std::uint32_t{4U};
     constexpr auto livekit_delegations_name = std::string_view{"livekit_delegations"};
 
+    // Migration 005 (ADR-0854): migrations/005_sticky_events.sql records it.
+    constexpr auto sticky_events_version = std::uint32_t{5U};
+    constexpr auto sticky_events_name = std::string_view{"sticky_events"};
+
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
         -> std::optional<PreparedStatement>
     {
@@ -360,19 +364,30 @@ auto downgrade_livekit_delegations_migration() -> MigrationStep
     return schema_step_dropping(livekit_delegations_version, "drop_livekit_delegations");
 }
 
-// The next migration is v5: add its upgrade step at the end here, its downgrade
-// (to v4) at the front of the downgrade catalog, and its tables to
+auto sticky_events_migration() -> MigrationStep
+{
+    return schema_step_creating(sticky_events_version, sticky_events_name);
+}
+
+auto downgrade_sticky_events_migration() -> MigrationStep
+{
+    return schema_step_dropping(sticky_events_version, "drop_sticky_events");
+}
+
+// The next migration is v6: add its upgrade step at the end here, its downgrade
+// (to v5) at the front of the downgrade catalog, and its tables to
 // schema_definitions_added_by. Never change an earlier step.
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(), oauth_tables_migration(), delayed_events_migration(),
-            livekit_delegations_migration()};
+            livekit_delegations_migration(), sticky_events_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_livekit_delegations_migration(), downgrade_delayed_events_migration(),
-            downgrade_oauth_tables_migration(), downgrade_initial_schema_migration()};
+    return {downgrade_sticky_events_migration(), downgrade_livekit_delegations_migration(),
+            downgrade_delayed_events_migration(), downgrade_oauth_tables_migration(),
+            downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

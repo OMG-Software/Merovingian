@@ -32,6 +32,9 @@ namespace merovingian::database
 // Migration 004: the LiveKit delegations table (ADR-0832).
 [[nodiscard]] auto livekit_delegations_migration() -> MigrationStep;
 [[nodiscard]] auto downgrade_livekit_delegations_migration() -> MigrationStep;
+// Migration 005: the sticky-events tables (ADR-0854).
+[[nodiscard]] auto sticky_events_migration() -> MigrationStep;
+[[nodiscard]] auto downgrade_sticky_events_migration() -> MigrationStep;
 [[nodiscard]] auto upgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto downgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto migration_plan_for(SchemaState const& state) -> MigrationPlan;

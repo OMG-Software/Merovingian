@@ -64,6 +64,17 @@ downgrade `downgrade_livekit_delegations_migration()` (`drop_livekit_delegations
 downgrade catalog, and the file equal to the step. The table is classified in the worker's never-reads set (the token
 service runs in main), not in the allowlist.
 
+## Migration 005: sticky events (ADR-0854)
+
+`005_sticky_events.sql` creates `sticky_events` (five `TEXT` columns, `event_id` the primary key),
+`delayed_event_sticky_durations` (two `TEXT` columns, `delay_id` the primary key) and the indexes
+`idx_sticky_events_room_id` and `idx_sticky_events_sender`. It follows migration 004's pattern exactly: its own arrays
+`sticky_event_tables` and `sticky_event_indexes` in `Schema.cpp`, a case in both `*_added_by` functions and in
+`schema_table_definition`, the step `sticky_events_migration()` built with `schema_step_creating` and its downgrade
+`downgrade_sticky_events_migration()` (`drop_sticky_events`, to version 4) at the front of the downgrade catalog, and
+the file equal to the step. The side table exists because the framework has no add-column step and `delayed_events` is
+released. Both tables are classified in the worker's never-reads set, not in the allowlist.
+
 ## File naming
 
 ```
@@ -72,7 +83,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `004`.
+Current highest: `005`.
 
 ## File format
 

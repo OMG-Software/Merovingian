@@ -22,7 +22,7 @@ namespace
     // never an edit to core_tables that changes what v1 creates. Each later
     // version's tables and indexes are an array of their own, below core_indexes
     // (ADR-0778).
-    constexpr auto schema_version = std::uint32_t{4U};
+    constexpr auto schema_version = std::uint32_t{5U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -307,6 +307,26 @@ namespace
         SchemaIndexDefinition{"idx_livekit_delegations_user_id", "livekit_delegations", "user_id"},
     };
 
+    // Migration 005 (ADR-0854): sticky events (MSC4354). `sticky_events` is one row per sticky event this server
+    // accepted; `received_at_ms` and `expires_at_ms` are decimal text like every other number in the schema.
+    // `delayed_event_sticky_durations` holds the sticky duration of a scheduled delayed event in a table of its own,
+    // because the migration framework has no add-column step and `delayed_events` is already released. No foreign
+    // key: the store keeps its rules in code.
+    constexpr auto sticky_event_tables = std::array{
+        SchemaTableDefinition{"sticky_events",
+                              "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender TEXT NOT NULL, "
+                              "received_at_ms TEXT NOT NULL, expires_at_ms TEXT NOT NULL"},
+        SchemaTableDefinition{"delayed_event_sticky_durations",
+                              "delay_id TEXT PRIMARY KEY, sticky_duration_ms TEXT NOT NULL"},
+    };
+
+    // The delete at account deactivation reads the rows of a sender, and the room index serves a room-scoped delete or
+    // diagnostic read; a redaction reads by event ID (the primary key). Every other lookup is answered from memory.
+    constexpr auto sticky_event_indexes = std::array{
+        SchemaIndexDefinition{"idx_sticky_events_room_id", "sticky_events", "room_id"},
+        SchemaIndexDefinition{"idx_sticky_events_sender", "sticky_events", "sender"},
+    };
+
     template <typename Definition, std::size_t Size>
     auto append_all(std::vector<Definition>& into, std::array<Definition, Size> const& from) -> void
     {
@@ -320,7 +340,8 @@ namespace
         };
         return std::ranges::any_of(core_indexes, same) || std::ranges::any_of(oauth_indexes, same) ||
                std::ranges::any_of(delayed_event_indexes, same) ||
-               std::ranges::any_of(livekit_delegation_indexes, same);
+               std::ranges::any_of(livekit_delegation_indexes, same) ||
+               std::ranges::any_of(sticky_event_indexes, same);
     }
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)
@@ -370,6 +391,10 @@ auto schema_definitions_added_by(std::uint32_t version) -> std::vector<SchemaTab
     {
         append_all(tables, livekit_delegation_tables);
     }
+    else if (version == 5U)
+    {
+        append_all(tables, sticky_event_tables);
+    }
     return tables;
 }
 
@@ -391,6 +416,10 @@ auto schema_indexes_added_by(std::uint32_t version) -> std::vector<SchemaIndexDe
     else if (version == 4U)
     {
         append_all(indexes, livekit_delegation_indexes);
+    }
+    else if (version == 5U)
+    {
+        append_all(indexes, sticky_event_indexes);
     }
     return indexes;
 }
@@ -468,6 +497,10 @@ auto schema_table_definition(std::string_view table_name) noexcept -> std::optio
         delegation != livekit_delegation_tables.end())
     {
         return *delegation;
+    }
+    if (auto const sticky = std::ranges::find_if(sticky_event_tables, named); sticky != sticky_event_tables.end())
+    {
+        return *sticky;
     }
     return std::nullopt;
 }

@@ -644,3 +644,25 @@ test(
     + '" | grep -q "current_version=0 target_version=4 steps=4"',
   ],
 )
+
+# Migration 005: a plan from v4 takes the checked-in 005 file alone, and a plan from an empty database takes all five
+# (ADR-0854).
+test(
+  'db-migrate-plans-v4-to-v5-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 4 5 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=4 target_version=5 steps=1"',
+  ],
+)
+
+test(
+  'db-migrate-plans-empty-to-v5-from-files-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    db_migrate_executable + ' --plan 0 5 --migrations "' + migrations_directory
+    + '" | grep -q "current_version=0 target_version=5 steps=5"',
+  ],
+)
