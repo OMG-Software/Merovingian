@@ -46,6 +46,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A room keeps at most `max_per_room` unexpired sticky events; one more expires the oldest of the server holding the
   most, so a server flooding a room displaces only its own, never another server's call memberships (ADR-0857).
 * A client's sticky duration above 2^53-1 is refused, so a composed event stays canonical JSON (ADR-0853).
+* A joining server that the federation policy or the room's ACL denies is sent no sticky events, and only events this
+  server sent and still holds in that room are ever pushed (ADR-0856).
 
 ## Bug fixes
 

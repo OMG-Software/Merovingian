@@ -24,6 +24,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/PersistentStickyEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/StickyEventStore.hpp"
 #include "merovingian/database/StickyEventTable.hpp"
 #include "merovingian/events/EventId.hpp"
 #include "merovingian/events/StickyEvent.hpp"
@@ -37,6 +38,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/StickyEventPush.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
@@ -369,6 +371,14 @@ public:
         return m_room_id;
     }
 
+    // Pushes this server's sticky events in the room to `destination`, as a join of a new server does, under
+    // `runtime.mutex`; how many were queued.
+    [[nodiscard]] auto push_to(std::string_view destination) -> std::size_t
+    {
+        auto const lock = std::lock_guard{homeserver().mutex};
+        return hs::push_local_sticky_events_to_server(homeserver(), m_room_id, destination);
+    }
+
 private:
     std::string m_alice_token{};
     std::string m_room_id{};
@@ -659,6 +669,83 @@ SCENARIO("A server that joins a room is sent this server's own unexpired sticky 
             THEN("D is sent none")
             {
                 REQUIRE(fixture.queued_pdus_for(server_d).empty());
+            }
+        }
+    }
+}
+
+SCENARIO("The push to a joining server sends nothing to a server the operator or the room refuses",
+         "[sticky-events][federation][integration][outbound][security]")
+{
+    GIVEN("alice's room with one unexpired sticky event of hers")
+    {
+        auto fixture = Fixture{};
+        auto const sticky = fixture.alice_sends_sticky("a", one_hour);
+
+        WHEN("the operator's federation policy denies server D")
+        {
+            fixture.homeserver().federation.config.denied_servers.emplace_back(server_d);
+            auto const pushed = fixture.push_to(server_d);
+
+            THEN("D is queued nothing")
+            {
+                REQUIRE(pushed == 0U);
+                REQUIRE(fixture.queued_pdus_for(server_d).empty());
+            }
+        }
+
+        WHEN("the room's server ACL denies server D")
+        {
+            REQUIRE(request(fixture.runtime(), "PUT",
+                            "/_matrix/client/v3/rooms/" + fixture.room_id() + "/state/m.room.server_acl",
+                            fixture.alice_token(), R"({"allow":["*"],"deny":["d.example.org"]})")
+                        .status == 200U);
+            auto const pushed = fixture.push_to(server_d);
+
+            THEN("D is queued nothing, and an allowed server is still sent the event")
+            {
+                REQUIRE(pushed == 0U);
+                REQUIRE(fixture.queued_pdus_for(server_d).empty());
+                REQUIRE(fixture.push_to(server_c) == 1U);
+                REQUIRE(fixture.queued_pdus_for(server_c).back() == fixture.stored_form(sticky));
+            }
+        }
+
+        WHEN("the destination is empty, or this server itself")
+        {
+            auto const to_nobody = fixture.push_to("");
+            auto const to_self = fixture.push_to(fixture.homeserver().config.server().server_name);
+
+            THEN("nothing is queued")
+            {
+                REQUIRE(to_nobody == 0U);
+                REQUIRE(to_self == 0U);
+                REQUIRE(fixture.queued_pdus_for(fixture.homeserver().config.server().server_name).empty());
+            }
+        }
+
+        WHEN("there is no dispatch worker")
+        {
+            fixture.homeserver().dispatch_worker.reset();
+
+            THEN("nothing is queued")
+            {
+                REQUIRE(fixture.push_to(server_d) == 0U);
+            }
+        }
+
+        WHEN("the table holds a row of alice's whose event this server does not hold")
+        {
+            REQUIRE(db::record_sticky_event(
+                fixture.store(),
+                {"$missing:example.org", fixture.room_id(), "@alice:example.org", t0, t0 + one_hour - 1}, {60U, 1000U},
+                t0));
+            auto const pushed = fixture.push_to(server_d);
+
+            THEN("only the event it holds is sent")
+            {
+                REQUIRE(pushed == 1U);
+                REQUIRE(fixture.queued_pdus_for(server_d) == std::vector<std::string>{fixture.stored_form(sticky)});
             }
         }
     }
