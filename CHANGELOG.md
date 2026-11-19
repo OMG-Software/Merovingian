@@ -151,8 +151,19 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   withdrawn outside every window updates the list; a new invite answers it only if a list's filters hold it.
 * A sliding sync response that reports an invite, a knock or a departure at an unchanged position carries a new page,
   so the next request acknowledges it rather than receiving the room again (ADR-0864, ADR-0867).
+* Sliding sync lists now hold the rooms a user is invited to, with `invite_state` only and sorted by the invite's
+  position, and a new invite (createRoom or `/invite`) that a list or a room subscription could hold ends a waiting
+  long poll at once (ADR-0864).
 * A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and stays in the list as `leave`, as
   MSC4186 says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
+* Any change of a user's own membership other than a new invite answers their sliding sync long poll, so an invite
+  withdrawn outside every window updates the list; a new invite answers it only if a room subscription names its room
+  or a list's filters hold it.
+* A sliding sync response that reports an invite, a knock or a departure at an unchanged position carries a new page,
+  so the next request acknowledges it rather than receiving the room again; the connection records an invite at its
+  own position, so an invite stored while another write is still committing is not sent twice (ADR-0864, ADR-0867).
+* A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
+  never a pass over every room the server holds (ADR-0665).
 * Sliding sync's e2ee extension sends no `device_lists` without a `pos`, and `timeout` without a `pos` is ignored
   (MSC4543, MSC4186, ADR-0865).
 
