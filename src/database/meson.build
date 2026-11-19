@@ -9,6 +9,7 @@ database_sources = files(
   'LiveKitDelegationTable.cpp',
   'StickyEventRowText.cpp',
   'StickyEventStore.cpp',
+  'StickyEventView.cpp',
   'StickyEventTable.cpp',
   'EventTable.cpp',
   'EventStateGroupTable.cpp',

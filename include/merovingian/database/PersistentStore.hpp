@@ -598,6 +598,9 @@ struct PersistentStore final
     // StickyEventStore.hpp; it has no lock of its own, so in main `runtime.mutex` serialises it. The federation worker
     // never holds it.
     StickyEventTable sticky_events{};
+    // A test seam: the wall clock, in milliseconds, that `sticky_clock_now_ms` returns instead of the system clock, so a
+    // test serves a sticky event before and after its expiry. Empty in production.
+    std::optional<std::int64_t> test_sticky_clock_ms{};
     // How many `sticky_events` and `delayed_event_sticky_durations` rows the last hydration skipped because they were
     // not read exactly (an empty, over-long or NUL-holding field, a number that is not digits or is out of range, a
     // duplicate event ID, a sticky duration below 1 or a delayed-event ID that is empty). A row that had already

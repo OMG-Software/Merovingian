@@ -20,6 +20,7 @@
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/RemoteInviteResult.hpp"
 #include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
+#include "merovingian/homeserver/StickySendOptions.hpp"
 #include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
 #include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
@@ -356,18 +357,24 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 [[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult;
 // `origin_server_ts`, when given, is stamped on the event instead of the event clock's reading
 // (Application Service API, "Timestamp massaging"). The caller has validated it; ordering is unchanged.
+// `sticky`, when given, makes the event a sticky event (MSC4354, ADR-0853, ADR-0854): both top-level fields are composed
+// into it before it is hashed and signed, and once it is stored `record_sticky_event_of_pdu` records its row. A state
+// event is never made sticky (the dispatcher refuses the request before this).
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts = std::nullopt)
-    -> OperationResult;
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts = std::nullopt,
+                              std::optional<StickySendOptions> sticky = std::nullopt) -> OperationResult;
 // The five functions below are module-internal: `DelayedEvents.cpp` (delayed events, MSC4140, ADR-0825) is their only
 // caller. The caller holds runtime.mutex.
 //
 // `send_event`'s core with the sender already known: `event_json` is a `{"type", "content", "state_key"?}` body, and
 // the event is stamped with the event clock's reading (never a caller's `origin_server_ts`). `via_appservice` is set
-// when an application service asserted the sender (ADR-0628).
+// when an application service asserted the sender (ADR-0628). `sticky` is as for `send_event`: a delayed event
+// scheduled with a sticky duration is sent through it, so its lifetime starts when it is sent (ADR-0854).
 [[nodiscard]] auto send_event_as_resolved_user(HomeserverRuntime& runtime, std::string const& user_id,
                                                std::string_view room_id, std::string_view event_json,
-                                               bool via_appservice) -> OperationResult;
+                                               bool via_appservice,
+                                               std::optional<StickySendOptions> sticky = std::nullopt)
+    -> OperationResult;
 // What `send_event_as_resolved_user` answers, with the same logging, when the room is not held (404 shape, reason
 // "unknown room") or `user_id` is not joined to it (403, "not joined"); nullopt when neither. The same function
 // `send_event_as_resolved_user` itself asks.
