@@ -672,10 +672,16 @@ SCENARIO("A withdrawn invite outside every window answers a sliding sync long-po
                       R"({"user_id":"@benandez:example.org"})");
             auto const next = poll(rt, fixture.benandez_token, top_only, pos, 5000U);
 
-            THEN("the poll is answered with the list's new count")
+            THEN("the poll is answered, and the room stays in the list as a left room at the top of the window")
             {
+                // MSC4186 "Lists": a list holds rooms the user was kicked from, sorted by the leave (ADR-0867).
                 REQUIRE(next.status == hs::DispatchResult::Status::complete);
-                REQUIRE(list_count(next.response.body, "top") == 1);
+                REQUIRE(list_count(next.response.body, "top") == 2);
+                auto const entry = room_entry(next.response.body, invited_room);
+                REQUIRE(entry.present);
+                auto const* membership = string_member(entry.value, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
             }
         }
     }
