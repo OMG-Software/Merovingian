@@ -3,7 +3,7 @@
 //
 // Sticky events (MSC4354, MSC4480) in `/sync` and sliding sync (ADR-0855), end to end: a real runtime and store, events
 // sent through the API and then recorded as sticky with `database::record_sticky_event` (the send path that records them
-// itself is tested with it). Time is `HomeserverRuntime::test_delayed_event_clock_ms`; no scenario sleeps. The feature is
+// itself is tested with it). Time is `PersistentStore::test_sticky_clock_ms`; no scenario sleeps. The feature is
 // not in the Matrix v1.19 specification, so there is no conformance scenario.
 
 #include "../support/InMemoryDatabaseConfig.hpp"
@@ -111,7 +111,7 @@ public:
         auto const created = send("POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})");
         REQUIRE(created.status == 200U);
         room_id = *string_member(parse_object(created.body), "room_id");
-        m_started.runtime.homeserver.test_delayed_event_clock_ms = static_cast<std::uint64_t>(t0);
+        m_started.runtime.homeserver.database.persistent_store.test_sticky_clock_ms = t0;
     }
 
     [[nodiscard]] auto runtime() noexcept -> hs::ClientServerRuntime&
@@ -331,7 +331,7 @@ SCENARIO("an ignored sender's and an expired sticky event are left out", "[stick
 
         WHEN("the clock passes its expiry")
         {
-            fixture.runtime().homeserver.test_delayed_event_clock_ms = static_cast<std::uint64_t>(t0 + 61'000);
+            fixture.runtime().homeserver.database.persistent_store.test_sticky_clock_ms = t0 + 61'000;
             auto const body = fixture.filtered_sync(fixture.bob_token, no_timeline_filter);
             THEN("the section is absent")
             {
@@ -427,7 +427,94 @@ namespace
 
 constexpr auto stable_extension = std::string_view{R"("sticky_events":{"enabled":true})"};
 
+// The `unsigned` member `key` of the event `event_id` in the array at `path` below `root`; null when absent.
+[[nodiscard]] auto unsigned_int_at(cj::Object const& root, std::vector<std::string_view> const& path,
+                                   std::string_view event_id, std::string_view key) -> std::int64_t const*
+{
+    auto const* current = &root;
+    for (auto it = path.begin(); std::next(it) != path.end(); ++it)
+    {
+        current = object_member_as_object(*current, *it);
+        if (current == nullptr)
+        {
+            return nullptr;
+        }
+    }
+    auto const* array = object_member_as_array(*current, path.back());
+    if (array == nullptr)
+    {
+        return nullptr;
+    }
+    for (auto const& value : *array)
+    {
+        auto const* event = std::get_if<cj::Object>(&value.storage());
+        auto const* id = event != nullptr ? string_member(*event, "event_id") : nullptr;
+        if (id != nullptr && *id == event_id)
+        {
+            auto const* unsigned_object = object_member_as_object(*event, "unsigned");
+            return unsigned_object != nullptr ? int_member(*unsigned_object, key) : nullptr;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
+
+SCENARIO("a sticky event in a timeline carries its remaining time under both names", "[sticky-events][integration]")
+{
+    GIVEN("alice's room with a sticky message, a minute after it was received")
+    {
+        auto fixture = Fixture{};
+        auto const message = fixture.sticky_message("one");
+        fixture.runtime().homeserver.database.persistent_store.test_sticky_clock_ms = t0 + 60'000;
+        auto const expected = one_hour_ms - 60'000;
+
+        WHEN("alice's /sync timeline holds it")
+        {
+            auto const body = fixture.sync(fixture.alice_token);
+            auto const path = std::vector<std::string_view>{"rooms", "join", fixture.room_id, "timeline", "events"};
+            THEN("the event carries the remaining time")
+            {
+                auto const* stable = unsigned_int_at(body, path, message, "sticky_duration_remaining_ms");
+                auto const* unstable = unsigned_int_at(body, path, message, "msc4354_sticky_duration_ttl_ms");
+                REQUIRE(stable != nullptr);
+                REQUIRE(*stable == expected);
+                REQUIRE(unstable != nullptr);
+                REQUIRE(*unstable == expected);
+            }
+        }
+
+        WHEN("alice's sliding sync timeline holds it")
+        {
+            auto const body =
+                parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
+            auto const path = std::vector<std::string_view>{"rooms", fixture.room_id, "timeline"};
+            THEN("the event carries the remaining time and the extension does not repeat it")
+            {
+                auto const* stable = unsigned_int_at(body, path, message, "sticky_duration_remaining_ms");
+                auto const* unstable = unsigned_int_at(body, path, message, "msc4354_sticky_duration_ttl_ms");
+                REQUIRE(stable != nullptr);
+                REQUIRE(*stable == expected);
+                REQUIRE(unstable != nullptr);
+                REQUIRE(*unstable == expected);
+                REQUIRE(sliding_ids(fixture, body).empty());
+            }
+        }
+
+        WHEN("the sticky event has expired")
+        {
+            fixture.runtime().homeserver.database.persistent_store.test_sticky_clock_ms = t0 + one_hour_ms;
+            auto const body =
+                parsed(fixture.sliding(fixture.alice_token, list_request(stable_extension, "c1", "1")));
+            THEN("the timeline event carries no remaining time")
+            {
+                auto const path = std::vector<std::string_view>{"rooms", fixture.room_id, "timeline"};
+                REQUIRE(unsigned_int_at(body, path, message, "sticky_duration_remaining_ms") == nullptr);
+                REQUIRE(unsigned_int_at(body, path, message, "msc4354_sticky_duration_ttl_ms") == nullptr);
+            }
+        }
+    }
+}
 
 SCENARIO("the sliding sync sticky_events extension answers under the names the request used",
          "[sticky-events][integration]")

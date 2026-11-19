@@ -407,8 +407,10 @@ changes the tracker's tests with it.
 ## Sticky events (ADR-0855)
 
 `/sync` and sliding sync deliver MSC4354 sticky events through `sticky_candidates_of_room` and `select_sticky_for_sync`
-only; never loop the sticky table or the room's events. The clock is `delayed_event_now_ms` (so tests move it with
-`test_delayed_event_clock_ms`), and everything is off when `ClientApiLimits::sticky_events_enabled` is false.
+only; never loop the sticky table or the room's events. The clock is `database::sticky_clock_now_ms`, the one the send
+path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), and everything is off when
+`ClientApiLimits::sticky_events_enabled` is false. Both serializers (`client_event_with_id` and sliding sync's
+`client_event_value`) add the remaining time with `database::attach_sticky_remaining`.
 
 - **Classic `/sync`** (`classic_sticky_events`, `ClientServerRuntime.cpp`): `rooms.join.{roomId}.sticky` and
   `msc4354_sticky`, the same array, only when non-empty. Candidates are the room's unexpired rows at or below the

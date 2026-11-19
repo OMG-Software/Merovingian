@@ -1313,7 +1313,7 @@ The routes (`ClientServerRuntime.cpp`, ADR-0823) only parse a request and call t
 - **Serving** is `database::attach_sticky_remaining`, called by `client_event_with_id` after `attach_redacted_because`,
   so every endpoint that serializes an event through it carries `unsigned.sticky_duration_remaining_ms` and
   `unsigned.msc4354_sticky_duration_ttl_ms`. A path that builds an event's client form another way (sliding sync's
-  `client_event_json`) must call it too. "Now" is `database::sticky_clock_now_ms`, which tests move through
+  `client_event_value` does) must call it too. "Now" is `database::sticky_clock_now_ms`, which tests move through
   `PersistentStore::test_sticky_clock_ms`.
 
 ## Typing expiry (R13, ADR-0199)

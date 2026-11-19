@@ -10,6 +10,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/RedactionView.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
@@ -72,8 +73,9 @@ namespace
     //
     // `unsigned` is never taken from the stored copy: it is outside the event's signatures, so a remote
     // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the
-    // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), the same rule
-    // as client_event_with_id (ADR-0402). A stored row that cannot be read is withheld (empty string).
+    // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), and the sticky remaining
+    // time (attach_sticky_remaining), the same rule as client_event_with_id (ADR-0402). A stored row that cannot be
+    // read is withheld (empty string).
     [[nodiscard]] auto client_event_value(database::PersistentStore const& store,
                                           database::PersistentEvent const& event)
         -> std::optional<canonicaljson::Object>
@@ -100,6 +102,8 @@ namespace
         // carries `redacts` where older and newer clients look for it.
         database::add_redaction_compat(client_obj);
         database::attach_redacted_because(store, event.event_id, client_obj);
+        // MSC4354: an unexpired sticky event carries its remaining time, as client_event_with_id adds it (ADR-0853).
+        database::attach_sticky_remaining(store, event.event_id, client_obj);
         return client_obj;
     }
 

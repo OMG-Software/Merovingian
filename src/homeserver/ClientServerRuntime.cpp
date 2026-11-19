@@ -64,6 +64,7 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/EventId.hpp"
 #include "merovingian/events/EventSigner.hpp"
 #include "merovingian/events/StickyEvent.hpp"
@@ -6985,10 +6986,11 @@ namespace
         }));
     }
 
-    // The sticky events' wall clock: the same clock, and test seam, as the delayed events (ADR-0854).
+    // The sticky events' clock: the one the send path records with and the store's readers judge against, so a row
+    // and its delivery agree on "now" (ADR-0854). Tests move it through `PersistentStore::test_sticky_clock_ms`.
     [[nodiscard]] auto sticky_now_ms(HomeserverRuntime const& runtime) -> std::int64_t
     {
-        return static_cast<std::int64_t>(delayed_event_now_ms(runtime));
+        return database::sticky_clock_now_ms(runtime.database.persistent_store);
     }
 
     // The sticky events of a joined room that `rooms.join.{roomId}.sticky` carries (ADR-0855), oldest first: the room's
