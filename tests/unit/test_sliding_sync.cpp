@@ -12,12 +12,19 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
 using namespace merovingian::sync;
+
+// An extension scope key that is present and names `names` (`{}` is the empty array, never an absent key).
+[[nodiscard]] auto named(std::vector<std::string> names) -> std::optional<std::vector<std::string>>
+{
+    return std::optional<std::vector<std::string>>{std::move(names)};
+}
 
 } // namespace
 
@@ -210,13 +217,15 @@ SCENARIO("Sliding sync parser extracts extension requests", "[sync][sliding-sync
                 REQUIRE(ext->account_data.has_value());
                 REQUIRE(ext->account_data->enabled);
                 REQUIRE(ext->receipts.has_value());
-                REQUIRE(ext->receipts->enabled);
-                REQUIRE(ext->receipts->rooms == std::vector<std::string>{"!r1:example.com"});
-                REQUIRE_FALSE(ext->receipts->lists.has_value());
+                auto const& receipts = ext->receipts.value();
+                REQUIRE(receipts.enabled);
+                REQUIRE(receipts.rooms == named({"!r1:example.com"}));
+                REQUIRE_FALSE(receipts.lists.has_value());
                 REQUIRE(ext->typing.has_value());
-                REQUIRE(ext->typing->enabled);
-                REQUIRE(ext->typing->rooms == std::vector<std::string>{"!r2:example.com"});
-                REQUIRE_FALSE(ext->typing->lists.has_value());
+                auto const& typing = ext->typing.value();
+                REQUIRE(typing.enabled);
+                REQUIRE(typing.rooms == named({"!r2:example.com"}));
+                REQUIRE_FALSE(typing.lists.has_value());
             }
         }
     }
@@ -246,10 +255,14 @@ SCENARIO("Sliding sync parser reads the typing and receipts extensions' scope ke
                 REQUIRE(result.has_value());
                 auto const& ext = result->extensions;
                 REQUIRE(ext.has_value());
-                REQUIRE(ext->receipts->lists == std::vector<std::string>{"all"});
-                REQUIRE(ext->receipts->rooms == std::vector<std::string>{});
-                REQUIRE(ext->typing->lists == std::vector<std::string>{});
-                REQUIRE_FALSE(ext->typing->rooms.has_value());
+                REQUIRE(ext->receipts.has_value());
+                REQUIRE(ext->typing.has_value());
+                auto const& receipts = ext->receipts.value();
+                auto const& typing = ext->typing.value();
+                REQUIRE(receipts.lists == named({"all"}));
+                REQUIRE(receipts.rooms == named({}));
+                REQUIRE(typing.lists == named({}));
+                REQUIRE_FALSE(typing.rooms.has_value());
             }
         }
     }
