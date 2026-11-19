@@ -8590,14 +8590,14 @@ namespace
                 // scope wakes the poll while someone it would be sent is typing there (ADR-0863). Both test exactly
                 // what the response sends, ignored senders included: a wake that sent nothing would be answered again
                 // at once.
-                auto const& scope_history = conn.extension_scope_history;
                 auto has_relevant_receipts = false;
                 if (wants_receipts)
                 {
                     auto const& receipts = *ssreq.extensions->receipts;
                     has_relevant_receipts =
                         std::ranges::any_of(joined_in_scope(receipts.lists, receipts.rooms), [&](auto const& room_id) {
-                            auto const floor = sync::receipt_floor_for(scope_history, room_id, since_sync_stream_id);
+                            auto const floor =
+                                sync::receipt_floor_for(conn.extension_scope_history, room_id, since_sync_stream_id);
                             return std::ranges::any_of(
                                 database::receipts_in_room(rt.homeserver.database.persistent_store, room_id),
                                 [&](database::PersistentReceipt const* r) {
@@ -8617,7 +8617,7 @@ namespace
                         std::ranges::any_of(joined_in_scope(typing.lists, typing.rooms), [&](auto const& room_id) {
                             auto const position = homeserver::room_typing_stream_id_for(rt.homeserver, room_id);
                             return position > since_sync_stream_id ||
-                                   (sync::enters_typing_scope(scope_history, room_id) &&
+                                   (sync::enters_typing_scope(conn.extension_scope_history, room_id) &&
                                     typing_rooms.contains(room_id));
                         });
                 }
