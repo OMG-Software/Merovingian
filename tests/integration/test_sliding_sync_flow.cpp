@@ -14,6 +14,7 @@
 #include "merovingian/homeserver/SlidingSyncRelevance.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -3230,6 +3231,187 @@ SCENARIO("A sliding-sync long-poll still wakes for an event in a room the caller
                 REQUIRE(result.status != merovingian::homeserver::DispatchResult::Status::needs_wait);
                 REQUIRE(result.response.status == 200U);
                 REQUIRE(rooms_object(result.response.body).size() >= 1U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Alice's two rooms, which bob has joined, and alice's message in each.
+struct SharedRooms final
+{
+    std::string alice_token{};
+    std::string bob_token{};
+    std::string first{};
+    std::string second{};
+    std::string first_message{};
+    std::string second_message{};
+};
+
+[[nodiscard]] auto two_shared_rooms(merovingian::homeserver::ClientServerRuntime& rt) -> SharedRooms
+{
+    auto rooms = SharedRooms{};
+    rooms.alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+    rooms.bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+    rooms.first = create_room(rt, rooms.alice_token);
+    rooms.second = create_room(rt, rooms.alice_token);
+    invite_and_join(rt, rooms.alice_token, "bob", rooms.bob_token, rooms.first);
+    invite_and_join(rt, rooms.alice_token, "bob", rooms.bob_token, rooms.second);
+    rooms.first_message = send_message_get_id(rt, rooms.alice_token, rooms.first, "first");
+    rooms.second_message = send_message_get_id(rt, rooms.alice_token, rooms.second, "second");
+    return rooms;
+}
+
+// What bob does in `room_id` that `extension` reports: reads `message_id` (receipts) or starts typing (typing).
+auto bob_acts_in(merovingian::homeserver::ClientServerRuntime& rt, SharedRooms const& rooms, std::string_view extension,
+                 std::string const& room_id, std::string const& message_id) -> void
+{
+    if (extension == "receipts")
+    {
+        std::ignore = post_expect_ok(rt, rooms.bob_token,
+                                     "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + message_id, "{}");
+        return;
+    }
+    auto const typed = merovingian::homeserver::handle_client_server_request(
+        rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/@bob:example.org", rooms.bob_token,
+             R"({"typing":true,"timeout":30000})"});
+    REQUIRE(typed.response.status == 200U);
+}
+
+// A sliding sync request with the list `all` over the first ten rooms, a subscription to `subscribed` when it is not
+// empty, and `extension` enabled with the scope keys `scope` (members such as `"lists":[]`, or nothing).
+[[nodiscard]] auto scoped_extension_request(std::string_view conn_id, std::string_view extension,
+                                            std::string_view scope, std::string const& subscribed = {}) -> std::string
+{
+    auto body = std::string{R"({"conn_id":")"} + std::string{conn_id} +
+                R"(","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":0}})";
+    if (!subscribed.empty())
+    {
+        body += R"(,"room_subscriptions":{")" + subscribed + R"(":{"required_state":[],"timeline_limit":0}})";
+    }
+    return body + R"(,"extensions":{")" + std::string{extension} + R"(":{"enabled":true)" + (scope.empty() ? "" : ",") +
+           std::string{scope} + "}}}";
+}
+
+// The room IDs extensions.<extension>.rooms reports, sorted.
+[[nodiscard]] auto extension_room_ids(std::string const& response_body, std::string_view extension)
+    -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& member : extension_rooms(response_body, extension))
+    {
+        ids.push_back(member.key);
+    }
+    std::ranges::sort(ids);
+    return ids;
+}
+
+} // namespace
+
+// MSC4508 (ADR-0859): the typing and receipts extensions apply to the lists `lists` names and the room subscriptions
+// `rooms` names; an absent key is all, an empty array none, and a room named without a subscription is not reached.
+SCENARIO("the sliding sync typing and receipts extensions follow their lists and rooms scope",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice and bob in two rooms of alice's list `all`, where bob has read alice's message, or is typing")
+    {
+        auto const extension = std::string{GENERATE("typing", "receipts")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        bob_acts_in(rt, rooms, extension, rooms.first, rooms.first_message);
+        bob_acts_in(rt, rooms, extension, rooms.second, rooms.second_message);
+        auto const served = [&](std::string_view conn_id, std::string const& scope,
+                                std::string const& subscribed = {}) {
+            auto const result =
+                sliding_sync(rt, rooms.alice_token, scoped_extension_request(conn_id, extension, scope, subscribed));
+            REQUIRE(result.response.status == 200U);
+            return extension_room_ids(result.response.body, extension);
+        };
+        auto both = std::vector<std::string>{rooms.first, rooms.second};
+        std::ranges::sort(both);
+        auto const names_first = R"("rooms":[")" + rooms.first + R"("])";
+
+        WHEN("the extension names the list, or names a subscribed room and leaves `lists` out")
+        {
+            auto const by_list = served("by-list", R"("lists":["all"])");
+            auto const lists_absent = served("lists-absent", names_first, rooms.first);
+            THEN("both rooms are reported: an absent `lists` names every list")
+            {
+                REQUIRE(by_list == both);
+                REQUIRE(lists_absent == both);
+            }
+        }
+
+        WHEN("the extension names no list, another list, or a room without its subscription")
+        {
+            auto const none = served("none", R"("lists":[])");
+            auto const other = served("other", R"("lists":["other"])");
+            auto const unsubscribed = served("unsubscribed", R"("lists":[],)" + names_first);
+            THEN("nothing is reported")
+            {
+                REQUIRE(none.empty());
+                REQUIRE(other.empty());
+                REQUIRE(unsubscribed.empty());
+            }
+        }
+
+        WHEN("the extension names no list but one room's subscription")
+        {
+            auto const subscribed = served("subscribed", R"("lists":[],)" + names_first, rooms.first);
+            THEN("only that room is reported")
+            {
+                REQUIRE(subscribed == std::vector<std::string>{rooms.first});
+            }
+        }
+    }
+}
+
+// A receipt or typing change wakes a long-poll only where the extension would report it (MSC4508, ADR-0859): one
+// outside its scope would answer the poll with nothing, and the client would poll again at once.
+SCENARIO("a sliding sync long-poll wakes for typing and receipts only within the extension's scope",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice synced with the extension enabled, after which bob reads or types in a room of her list")
+    {
+        auto const extension = std::string{GENERATE("typing", "receipts")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        auto const poll_after_bob_acts = [&](std::string_view conn_id, std::string const& scope) {
+            auto const body = scoped_extension_request(conn_id, extension, scope);
+            auto const first = sliding_sync(rt, rooms.alice_token, body);
+            REQUIRE(first.response.status == 200U);
+            bob_acts_in(rt, rooms, extension, rooms.first, rooms.first_message);
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" +
+                                sliding_sync_pos(first.response.body);
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, rooms.alice_token, body},
+                                                                         /*can_wait=*/true);
+        };
+
+        WHEN("the extension's scope holds no list and no subscription")
+        {
+            auto const result = poll_after_bob_acts("out-of-scope", R"("lists":[])");
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+
+        WHEN("the extension names the list")
+        {
+            auto const result = poll_after_bob_acts("in-scope", R"("lists":["all"])");
+            THEN("the poll is answered with bob's room")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(extension_room_ids(result.response.body, extension) == std::vector<std::string>{rooms.first});
             }
         }
     }

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/ExtensionScopeSource.hpp"
+#include "merovingian/sync/RoomAccess.hpp"
+
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -26,5 +30,14 @@ namespace merovingian::sync
                                          std::optional<std::vector<std::string>> const& rooms,
                                          std::map<std::string, std::vector<std::string>> const& list_windows,
                                          std::vector<std::string> const& subscriptions) -> std::vector<std::string>;
+
+// The rooms of `extension_scope_rooms` over `source` that `room_access` classifies as joined, in the same order. Every
+// room-scoped extension (typing, receipts, sticky_events) serves only these: an invited, left, kicked or banned room in
+// scope is sent nothing (CSAZ-1). `room_access` is the request's `room_access_index` for the user.
+[[nodiscard]] auto joined_extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
+                                                std::optional<std::vector<std::string>> const& rooms,
+                                                ExtensionScopeSource const& source,
+                                                std::map<std::string, RoomAccess, std::less<>> const& room_access)
+    -> std::vector<std::string>;
 
 } // namespace merovingian::sync

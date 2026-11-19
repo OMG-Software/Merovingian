@@ -1742,10 +1742,12 @@ media-fetch-pool task.
 
 - **A client-named room list is capped and de-duplicated, and its rooms are classified
   through `sync::room_access_index`, built once per request, not `room_access_for` per room.**
-  The receipts and typing extensions' `rooms` arrays share the `room_subscriptions` cap.
+  The room-scoped extensions' (receipts, typing, sticky_events) `rooms` arrays share the `room_subscriptions` cap and
+  their `lists` arrays the `lists` cap, and each serves only `joined_extension_scope_rooms`: a room named in `rooms`
+  without a subscription is not reached.
   Why: `room_access_for` scans every membership row in the store, and this runs under the
   runtime lock. Uncapped arrays let one request repeat that scan thousands of times (CWE-407;
-  security audit run-1, ADR-0174).
+  security audit run-1, ADR-0174). A name is a claim, not an entitlement (CSAZ-1, ADR-0859).
   Source: `src/sync/AGENTS.md`.
 
 - **A client's search term is matched with `core::FoldedSubstringMatcher`, never `std::search`, `find` or

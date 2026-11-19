@@ -95,7 +95,7 @@ public:
     auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
     requests.to_device = merovingian::sync::ExtToDeviceRequest{true, limit, std::string{since}};
     auto const responses = merovingian::sync::build_extensions(runtime, "@bob:example.org", "BOB_DEVICE", requests, 0U,
-                                                               store.next_sync_stream_id, store, {});
+                                                               store.next_sync_stream_id, store, {}, {});
     REQUIRE(responses.to_device.has_value());
     return *responses.to_device;
 }

@@ -78,4 +78,18 @@ auto extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
     return scope;
 }
 
+auto joined_extension_scope_rooms(std::optional<std::vector<std::string>> const& lists,
+                                  std::optional<std::vector<std::string>> const& rooms,
+                                  ExtensionScopeSource const& source,
+                                  std::map<std::string, RoomAccess, std::less<>> const& room_access)
+    -> std::vector<std::string>
+{
+    auto scope = extension_scope_rooms(lists, rooms, source.list_windows, source.subscriptions);
+    std::erase_if(scope, [&room_access](std::string const& room_id) {
+        auto const found = room_access.find(room_id);
+        return found == room_access.end() || found->second != RoomAccess::joined;
+    });
+    return scope;
+}
+
 } // namespace merovingian::sync

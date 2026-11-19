@@ -179,6 +179,7 @@
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/ExtStickyEventsRequest.hpp"
 #include "merovingian/sync/ExtensionScope.hpp"
+#include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/LazyMemberTracker.hpp"
@@ -8076,23 +8077,6 @@ namespace
         return ids;
     }
 
-    // The rooms the sticky_events extension serves in one response: its scope (MSC4508, `sync::extension_scope_rooms`)
-    // over this response's list windows and room subscriptions, less every room the user has not joined (MSC4480: an
-    // invited, left, kicked or banned room in scope is sent no sticky events).
-    [[nodiscard]] auto sticky_scope_rooms(sync::ExtStickyEventsRequest const& request,
-                                          std::map<std::string, std::vector<std::string>> const& list_windows,
-                                          std::vector<std::string> const& subscriptions,
-                                          std::map<std::string, sync::RoomAccess, std::less<>> const& room_access)
-        -> std::vector<std::string>
-    {
-        auto scope = sync::extension_scope_rooms(request.lists, request.rooms, list_windows, subscriptions);
-        std::erase_if(scope, [&](std::string const& room_id) {
-            auto const found = room_access.find(room_id);
-            return found == room_access.end() || found->second != sync::RoomAccess::joined;
-        });
-        return scope;
-    }
-
     using StickyIdsByRoom = std::unordered_map<std::string, std::unordered_set<std::string>>;
 
     // What the sticky_events extension adds to one sliding sync response (ADR-0855).
@@ -8523,27 +8507,47 @@ namespace
                         has_relevant_ad = has_relevant_ad || ad.stream_id > since_sync_stream_id;
                     });
                 }
-                bool const has_relevant_receipts =
-                    wants_receipts && std::ranges::any_of(joined_rooms, [&](auto const& joined_room) {
-                        return std::ranges::any_of(
-                            database::receipts_in_room(rt.homeserver.database.persistent_store, joined_room),
-                            [&](database::PersistentReceipt const* r) {
-                                return r->stream_id > since_sync_stream_id &&
-                                       sync::receipt_visible_to(r->receipt_type, r->user_id, user);
-                            });
+                // Receipts, typing and sticky events wake the poll only in a joined room of their extension's scope
+                // (MSC4508, ADR-0859): the windows the previous response held (this request's, while their config is
+                // unchanged) and the subscribed rooms. A change outside it would answer the poll with nothing.
+                auto const subscriptions = subscription_room_ids(ssreq);
+                auto const joined_in_scope = [&](std::optional<std::vector<std::string>> const& lists,
+                                                 std::optional<std::vector<std::string>> const& rooms) {
+                    auto scope = sync::extension_scope_rooms(lists, rooms, expansion_windows, subscriptions);
+                    std::erase_if(scope, [&joined_rooms](std::string const& room_id) {
+                        return !joined_rooms.contains(room_id);
                     });
-                bool const has_relevant_typing =
-                    wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
-                        return kv.second > since_sync_stream_id && joined_rooms.contains(kv.first);
-                    });
-                // A sticky event this connection has not been sent answers the poll at once (ADR-0855). The rooms it
-                // covers are the extension's scope (MSC4508) over the windows the previous response held (this
-                // request's, while their config is unchanged) and the subscribed rooms.
+                    return scope;
+                };
+                auto has_relevant_receipts = false;
+                if (wants_receipts)
+                {
+                    auto const& receipts = *ssreq.extensions->receipts;
+                    has_relevant_receipts =
+                        std::ranges::any_of(joined_in_scope(receipts.lists, receipts.rooms), [&](auto const& room_id) {
+                            return std::ranges::any_of(
+                                database::receipts_in_room(rt.homeserver.database.persistent_store, room_id),
+                                [&](database::PersistentReceipt const* r) {
+                                    return r->stream_id > since_sync_stream_id &&
+                                           sync::receipt_visible_to(r->receipt_type, r->user_id, user);
+                                });
+                        });
+                }
+                auto has_relevant_typing = false;
+                if (wants_typing)
+                {
+                    auto const& typing = *ssreq.extensions->typing;
+                    has_relevant_typing =
+                        std::ranges::any_of(joined_in_scope(typing.lists, typing.rooms), [&](auto const& room_id) {
+                            return homeserver::room_typing_stream_id_for(rt.homeserver, room_id) > since_sync_stream_id;
+                        });
+                }
+                // A sticky event this connection has not been sent answers the poll at once (ADR-0855).
                 auto has_relevant_sticky = false;
                 if (sticky_request != nullptr && !sticky_answered_for_this_pos)
                 {
-                    auto const sticky_rooms = sync::extension_scope_rooms(
-                        sticky_request->lists, sticky_request->rooms, expansion_windows, subscription_room_ids(ssreq));
+                    auto const sticky_rooms = sync::extension_scope_rooms(sticky_request->lists, sticky_request->rooms,
+                                                                          expansion_windows, subscriptions);
                     has_relevant_sticky =
                         sticky_backlog_exists(store, sticky_rooms, joined_rooms, conn.sticky_delivered,
                                               sticky_now_ms(rt.homeserver), cur_event, ignored_senders);
@@ -8787,23 +8791,27 @@ namespace
 
         auto extension_responses = std::optional<sync::SlidingSyncExtensionResponses>{};
         auto ext_obj = canonicaljson::Object{};
+        // What the room-scoped extensions (receipts, typing, sticky_events) choose their MSC4508 scope from: this
+        // response's list windows and the request's room subscriptions (ADR-0858, ADR-0859).
+        auto extension_scope = sync::ExtensionScopeSource{};
         if (ssreq.extensions.has_value())
         {
+            for (auto const& [list_name, result] : list_results)
+            {
+                extension_scope.list_windows.emplace(list_name, result.windowed_room_ids);
+            }
+            extension_scope.subscriptions = subscription_room_ids(ssreq);
             extension_responses = sync::build_extensions(
                 rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id, store.next_sync_stream_id,
-                store, room_access, response_room_ids, ignored_senders, initial_room_ids);
+                store, room_access, response_room_ids, extension_scope, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
         auto sticky_outcome = SlidingStickyOutcome{};
         if (sticky_request != nullptr)
         {
-            auto response_windows = std::map<std::string, std::vector<std::string>>{};
-            for (auto const& [list_name, result] : list_results)
-            {
-                response_windows.emplace(list_name, result.windowed_room_ids);
-            }
-            auto const scope_rooms =
-                sticky_scope_rooms(*sticky_request, response_windows, subscription_room_ids(ssreq), room_access);
+            // MSC4480: an invited, left, kicked or banned room in scope is sent no sticky events.
+            auto const scope_rooms = sync::joined_extension_scope_rooms(sticky_request->lists, sticky_request->rooms,
+                                                                        extension_scope, room_access);
             auto sticky_viewer = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
             sticky_outcome =
                 build_sliding_sticky(store,

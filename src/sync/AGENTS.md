@@ -30,6 +30,8 @@ Spec authority:
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
 | `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). The caller keeps the joined ones |
 | `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it and not withheld redactions, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
+| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). `joined_extension_scope_rooms` keeps the joined ones, over an `ExtensionScopeSource` (the response's list windows and subscriptions); typing, receipts and sticky_events all serve through it (ADR-0859) |
+| `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
@@ -119,9 +121,9 @@ every list before that decision: ranking the room list walks the unread counts u
 
 ## Sliding sync room access
 
-A sliding sync request names rooms in `room_subscriptions` and in the `receipts`/`typing`
-`rooms` arrays. None of those names is proof of entitlement: a user needs to join a room to
-view events in it (C-S API, "Room history visibility"). Classify every client-named room before
+A sliding sync request names rooms in `room_subscriptions` and in the room-scoped extensions'
+(`receipts`, `typing`, `sticky_events`) MSC4508 `rooms` arrays. None of those names is proof of
+entitlement: a user needs to join a room to view events in it (C-S API, "Room history visibility"). Classify every client-named room before
 reading anything about it: `room_access_for()` for a single room, `room_access_index()` for a
 request that names many:
 
@@ -149,8 +151,10 @@ request, not `room_access_for()` per room: each `room_access_for()` call scans e
 row in the store, and this runs under the runtime lock. `build_extensions` builds one index for
 receipts and typing; the sliding-sync handler in `ClientServerRuntime.cpp` builds one for
 `room_subscriptions` and passes it to `build_extensions`, so a request scans the memberships once. The
-receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
-`room_subscriptions` (ADR-0174). A new client-named room list gets the same cap.
+room-scoped extensions' `rooms` arrays are de-duplicated by the parser and capped at
+`room_subscriptions` (ADR-0174), and their `lists` arrays at `lists` (ADR-0859). A new client-named room list gets the
+same cap. A new room-scoped extension takes MSC4508's `lists` and `rooms` and serves
+`joined_extension_scope_rooms` over the handler's `ExtensionScopeSource`; never read its rooms another way.
 
 ## Sliding sync account data
 
@@ -451,7 +455,7 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   at once, except for a request at the same `pos` as a response that already delivered sticky events
   (`sticky_answered`): a pos no stream advanced is not acknowledged by a repeat, and answering again would spin the
   client. Scope is MSC4508's, from `extension_scope_rooms` over the response's list windows and subscriptions, then
-  joined rooms only (ADR-0858). The typing and receipts extensions still read `rooms` alone.
+  joined rooms only (ADR-0858). The typing and receipts extensions use the same scope (ADR-0859).
 - **Lazy members (MSC4480):** in a room built with `$LAZY` members, the senders of the sticky events sent are timeline
   senders: `add_sticky_sender_members` adds their member events to `required_state` once per connection
   (`lazy_members_sent`), and a room whose only change is those events is still sent.
@@ -474,7 +478,7 @@ three transports run `long_poll_wait`: cursor, then the positions check, then th
 before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when
 its last waiter leaves: a publish between two slices must be seen. The audience reads the room's rows through
 `for_each_room_membership_row` (ADR-0437).
-- The sliding-sync relevance check (`has_relevant_event` and the receipt and typing predicates) tests rooms against one set of the caller's joined rooms built from `for_each_user_membership_row`, walks at most `sliding_sync_relevance_scan_rows` events, and treats reaching that cap as relevant (answer, never park, so no wake-up is lost and the next poll's walk is short). Never call a per-event `user_is_joined`-style scan of `memberships` there (ADR-0609).
+- The sliding-sync relevance check (`has_relevant_event` and the receipt and typing predicates) tests rooms against one set of the caller's joined rooms built from `for_each_user_membership_row`; the receipt, typing and sticky predicates look only at the joined rooms of their extension's MSC4508 scope, over the windows the previous response held and the subscriptions, so a change outside it never answers a poll with nothing (ADR-0859). It walks at most `sliding_sync_relevance_scan_rows` events, and treats reaching that cap as relevant (answer, never park, so no wake-up is lost and the next poll's walk is short). Never call a per-event `user_is_joined`-style scan of `memberships` there (ADR-0609).
 - A long-poll on the `sync_pool` path does not wait on a pool thread (ADR-0569): it parks in `ParkedPollRegistry`
   (owned by `SyncNotifier`) and is resumed on the pool by a publish for its user or by its deadline. Park with a cursor
   taken before the last rerun (`SyncNotifier::park` inserts, then compares the cursor), keep the registry mutex a leaf

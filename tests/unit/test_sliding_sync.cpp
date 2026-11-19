@@ -9,7 +9,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace
 {
@@ -208,11 +211,86 @@ SCENARIO("Sliding sync parser extracts extension requests", "[sync][sliding-sync
                 REQUIRE(ext->account_data->enabled);
                 REQUIRE(ext->receipts.has_value());
                 REQUIRE(ext->receipts->enabled);
-                REQUIRE(ext->receipts->rooms.size() == 1U);
-                REQUIRE(ext->receipts->rooms[0] == "!r1:example.com");
+                REQUIRE(ext->receipts->rooms == std::vector<std::string>{"!r1:example.com"});
+                REQUIRE_FALSE(ext->receipts->lists.has_value());
                 REQUIRE(ext->typing.has_value());
                 REQUIRE(ext->typing->enabled);
-                REQUIRE(ext->typing->rooms[0] == "!r2:example.com");
+                REQUIRE(ext->typing->rooms == std::vector<std::string>{"!r2:example.com"});
+                REQUIRE_FALSE(ext->typing->lists.has_value());
+            }
+        }
+    }
+}
+
+// MSC4508 "Common extension semantics" (ADR-0859): the typing and receipts extensions take `lists` and `rooms`. An
+// absent key stays absent (every list or subscription), a present one is kept, de-duplicated, and a present key that
+// is not an array of strings names nothing.
+SCENARIO("Sliding sync parser reads the typing and receipts extensions' scope keys",
+         "[sync][sliding-sync][extension-scope]")
+{
+    GIVEN("a body whose receipts name a list twice and no room, and whose typing lists key is not an array")
+    {
+        auto const body = R"({
+            "extensions": {
+                "receipts": {"enabled": true, "lists": ["all", "all"], "rooms": []},
+                "typing": {"enabled": true, "lists": "all"}
+            }
+        })";
+
+        WHEN("parsed")
+        {
+            auto const result = parse_sliding_sync_request(body);
+
+            THEN("each key is absent, empty or its names, as sent")
+            {
+                REQUIRE(result.has_value());
+                auto const& ext = result->extensions;
+                REQUIRE(ext.has_value());
+                REQUIRE(ext->receipts->lists == std::vector<std::string>{"all"});
+                REQUIRE(ext->receipts->rooms == std::vector<std::string>{});
+                REQUIRE(ext->typing->lists == std::vector<std::string>{});
+                REQUIRE_FALSE(ext->typing->rooms.has_value());
+            }
+        }
+    }
+}
+
+// Each list a scope names costs a lookup under the runtime lock, so the receipts and typing extensions' `lists` are
+// capped like the request's own lists (ADR-0859).
+SCENARIO("Sliding sync bounds the lists the typing and receipts extensions name",
+         "[sync][sliding-sync][extension-scope]")
+{
+    GIVEN("a policy allowing 2 lists")
+    {
+        auto limits = SlidingSyncLimits{};
+        limits.lists = 2U;
+        auto const naming = [](std::size_t receipts, std::size_t typing) {
+            auto const names = [](std::size_t count) {
+                auto out = std::vector<std::string>{};
+                for (auto i = std::size_t{0U}; i < count; ++i)
+                {
+                    out.push_back("list-" + std::to_string(i));
+                }
+                return out;
+            };
+            auto request = SlidingSyncRequest{};
+            request.extensions = SlidingSyncExtensionRequests{};
+            request.extensions->receipts = ExtReceiptsRequest{.enabled = true, .lists = names(receipts)};
+            request.extensions->typing = ExtTypingRequest{.enabled = true, .lists = names(typing)};
+            return request;
+        };
+
+        WHEN("each extension names 2 lists, then 3")
+        {
+            auto const admitted = sliding_sync_request_limit_violation(naming(2U, 2U), limits);
+            auto const receipts = sliding_sync_request_limit_violation(naming(3U, 0U), limits);
+            auto const typing = sliding_sync_request_limit_violation(naming(0U, 3U), limits);
+
+            THEN("2 are admitted and 3 are reported against the extension that names them")
+            {
+                REQUIRE_FALSE(admitted.has_value());
+                REQUIRE(receipts == std::optional<std::string_view>{"too many lists in the receipts extension"});
+                REQUIRE(typing == std::optional<std::string_view>{"too many lists in the typing extension"});
             }
         }
     }

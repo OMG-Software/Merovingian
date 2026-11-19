@@ -406,15 +406,17 @@ SCENARIO("sliding sync bounds and de-duplicates the receipts and typing extensio
         auto extensions = merovingian::sync::SlidingSyncExtensionRequests{};
         auto receipt_req = merovingian::sync::ExtReceiptsRequest{};
         receipt_req.enabled = true;
+        receipt_req.rooms.emplace();
         for (auto i = std::size_t{0U}; i < receipts; ++i)
         {
-            receipt_req.rooms.push_back("!r" + std::to_string(i) + ":example.org");
+            receipt_req.rooms->push_back("!r" + std::to_string(i) + ":example.org");
         }
         auto typing_req = merovingian::sync::ExtTypingRequest{};
         typing_req.enabled = true;
+        typing_req.rooms.emplace();
         for (auto i = std::size_t{0U}; i < typing; ++i)
         {
-            typing_req.rooms.push_back("!t" + std::to_string(i) + ":example.org");
+            typing_req.rooms->push_back("!t" + std::to_string(i) + ":example.org");
         }
         extensions.receipts = std::move(receipt_req);
         extensions.typing = std::move(typing_req);
