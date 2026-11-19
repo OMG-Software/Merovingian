@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/ExtensionScopeHistory.hpp"
 #include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
@@ -39,5 +41,18 @@ namespace merovingian::sync
                                                 ExtensionScopeSource const& source,
                                                 std::map<std::string, RoomAccess, std::less<>> const& room_access)
     -> std::vector<std::string>;
+
+// Whether `room_id`, in the typing extension's joined scope now, enters it: `history` (the connection's last
+// acknowledged response) did not hold it there. MSC4508: such a room is sent its current typing state, whatever its
+// typing position (ADR-0863).
+[[nodiscard]] auto enters_typing_scope(ExtensionScopeHistory const& history, std::string const& room_id) -> bool;
+
+// The sync stream position after which `room_id`, in the receipts extension's joined scope now, is sent its receipts:
+// the position it dropped out of scope at when it comes back (`history.receipt_floors`), else `since_sync_stream_id`.
+// MSC4508: a room that re-enters scope ends up with up-to-date state, so it is sent what changed while it was out
+// (ADR-0863). The handler's long-poll check and `build_extensions` both read it, so a poll is woken only for what the
+// response sends.
+[[nodiscard]] auto receipt_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
+                                     std::uint64_t since_sync_stream_id) -> std::uint64_t;
 
 } // namespace merovingian::sync

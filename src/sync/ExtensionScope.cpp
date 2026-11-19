@@ -4,6 +4,7 @@
 #include "merovingian/sync/ExtensionScope.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -90,6 +91,22 @@ auto joined_extension_scope_rooms(std::optional<std::vector<std::string>> const&
         return found == room_access.end() || found->second != RoomAccess::joined;
     });
     return scope;
+}
+
+auto enters_typing_scope(ExtensionScopeHistory const& history, std::string const& room_id) -> bool
+{
+    return !history.typing_rooms.contains(room_id);
+}
+
+auto receipt_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
+                       std::uint64_t since_sync_stream_id) -> std::uint64_t
+{
+    if (history.receipt_rooms.contains(room_id))
+    {
+        return since_sync_stream_id;
+    }
+    auto const floor = history.receipt_floors.find(room_id);
+    return floor != history.receipt_floors.end() ? std::min(floor->second, since_sync_stream_id) : since_sync_stream_id;
 }
 
 } // namespace merovingian::sync

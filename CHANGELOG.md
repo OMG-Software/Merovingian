@@ -106,6 +106,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   (ADR-0861).
 * A sliding sync long poll now wakes when the user's own tag or `m.direct` moves a room into a filtered list
   (ADR-0861).
+* A room entering the sliding sync typing scope now gets who is typing there, and a room back in the receipts scope
+  the receipts that changed while it was out (ADR-0863).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
   publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
 * Publishing `latest` moves its tag instead of deleting it, so a failed publish can no longer let an older queued build

@@ -3564,3 +3564,77 @@ SCENARIO("a sliding sync long-poll wakes when the user's own tag moves a room in
         }
     }
 }
+
+namespace
+{
+
+// A sliding sync request subscribed to both of `rooms`, with `extension` scoped to the subscriptions it names.
+[[nodiscard]] auto subscribed_scope_request(SharedRooms const& rooms, std::string_view extension, bool second_in_scope)
+    -> std::string
+{
+    auto const subscription = std::string{R"(":{"required_state":[],"timeline_limit":0})"};
+    return R"({"conn_id":"entry","room_subscriptions":{")" + rooms.first + subscription + R"(,")" + rooms.second +
+           subscription + R"(},"extensions":{")" + std::string{extension} + R"(":{"enabled":true,"rooms":[")" +
+           rooms.first + (second_in_scope ? R"(",")" + rooms.second : std::string{}) + R"("]}}})";
+}
+
+} // namespace
+
+// MSC4508 (ADR-0863): a room entering a typing or receipts scope is brought up to date, though what it lacks predates
+// the request's position: its current typing state, or the receipts that changed while it was out. That answers a
+// long poll at once, and the response's `pos` page lets the next request acknowledge it rather than spin.
+SCENARIO("a sliding sync room back in the typing or receipts scope is sent what changed while it was out",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice subscribed to two rooms, the second of which drops out of the extension's scope as bob acts in it")
+    {
+        auto const extension = std::string{GENERATE("typing", "receipts")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        auto const poll = [&](std::string const& pos, bool second_in_scope) {
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" + pos;
+            return merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", target, rooms.alice_token, subscribed_scope_request(rooms, extension, second_in_scope)},
+                /*can_wait=*/true);
+        };
+        auto const both = sliding_sync(rt, rooms.alice_token, subscribed_scope_request(rooms, extension, true));
+        REQUIRE(both.response.status == 200U);
+        bob_acts_in(rt, rooms, extension, rooms.second, rooms.second_message);
+        auto const first_only = sliding_sync(rt, rooms.alice_token, subscribed_scope_request(rooms, extension, false),
+                                             sliding_sync_pos(both.response.body));
+        REQUIRE(first_only.response.status == 200U);
+        REQUIRE(extension_room_ids(first_only.response.body, extension).empty());
+
+        WHEN("alice's next long poll puts the second room back in scope")
+        {
+            auto const back = poll(sliding_sync_pos(first_only.response.body), true);
+            THEN("it is answered at once with bob's typing or receipt there")
+            {
+                REQUIRE(back.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(back.response.status == 200U);
+                REQUIRE(extension_room_ids(back.response.body, extension) == std::vector<std::string>{rooms.second});
+            }
+
+            AND_WHEN("alice polls again from that response's pos")
+            {
+                auto const again = poll(sliding_sync_pos(back.response.body), true);
+                THEN("the poll keeps waiting: the room is no longer entering the scope")
+                {
+                    REQUIRE(again.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                }
+            }
+        }
+
+        WHEN("alice's next long poll keeps the second room out of scope")
+        {
+            auto const out = poll(sliding_sync_pos(first_only.response.body), false);
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(out.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}

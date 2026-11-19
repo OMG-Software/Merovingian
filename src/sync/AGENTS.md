@@ -28,7 +28,7 @@ Spec authority:
 | `ReceiptVisibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
-| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). `joined_extension_scope_rooms` keeps the joined ones, over an `ExtensionScopeSource` (the response's list windows and subscriptions); typing, receipts and sticky_events all serve through it (ADR-0861) |
+| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). `joined_extension_scope_rooms` keeps the joined ones, over an `ExtensionScopeSource` (the response's list windows and subscriptions); typing, receipts and sticky_events all serve through it (ADR-0861). `enters_typing_scope` and `receipt_floor_for` read the connection's `ExtensionScopeHistory` (ADR-0863) |
 | `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it and not withheld redactions, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
@@ -454,6 +454,13 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
   (`sticky_answered`): a pos no stream advanced is not acknowledged by a repeat, and answering again would spin the
   client. Scope is MSC4508's, from `extension_scope_rooms` over the response's list windows and subscriptions, then
   joined rooms only (ADR-0858). The typing and receipts extensions use the same scope (ADR-0861).
+- **Typing and receipts entering scope (ADR-0863):** the connection keeps what each response left in the typing and
+  receipts scope (`extension_scope_history`, committed like the rest of the pending response). A room entering the
+  typing scope is sent its current typing state, and a room back in the receipts scope the receipts after the position
+  it dropped out at (its floor). The long-poll check reads the same `enters_typing_scope` and `receipt_floor_for` and
+  skips ignored senders as the response does, and a response that sent such state takes a `pos` page like a sticky
+  delivery, so the next request acknowledges it. Never wake a poll for scope entry with a test the response does not
+  share: it would be answered with nothing, again.
 - **Lazy members (MSC4480):** in a room built with `$LAZY` members, the senders of the sticky events sent are timeline
   senders: `add_sticky_sender_members` adds their member events to `required_state` once per connection
   (`lazy_members_sent`), and a room whose only change is those events is still sent.

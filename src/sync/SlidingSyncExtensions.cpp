@@ -21,10 +21,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -239,8 +241,11 @@ namespace
 
     // ── receipts extension ────────────────────────────────────────────────────
 
+    // `floors` holds the rooms re-entering the receipts scope, each with the position it dropped out at: such a room
+    // is sent the receipts that changed after that position, the others those after `since_sync_stream_id`.
     [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                       std::uint64_t since_sync_stream_id, std::vector<std::string> const& joined_rooms,
+                                      std::unordered_map<std::string, std::uint64_t> const& floors,
                                       std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
     {
         auto resp = ExtReceiptsResponse{};
@@ -260,7 +265,8 @@ namespace
         for (auto const* receipt_row : rows)
         {
             auto const& receipt = *receipt_row;
-            if (receipt.stream_id <= since_sync_stream_id)
+            auto const floor = floors.find(receipt.room_id);
+            if (receipt.stream_id <= (floor != floors.end() ? floor->second : since_sync_stream_id))
             {
                 continue;
             }
@@ -305,17 +311,20 @@ namespace
 
     // ── typing extension ──────────────────────────────────────────────────────
 
+    // `entering` holds the rooms entering the typing scope (MSC4508): each is reported with its current typing list
+    // whatever its typing position, and left out when nobody is typing, as on an initial sync (ADR-0863).
     [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
                                     std::vector<std::string> const& joined_rooms,
+                                    std::unordered_set<std::string> const& entering,
                                     std::unordered_set<std::string> const& ignored_senders) -> ExtTypingResponse
     {
         auto resp = ExtTypingResponse{};
 
-        // Only rooms whose typing list changed since the caller's position are reported.
+        // Rooms whose typing list changed since the caller's position, and rooms entering the scope, are reported.
         auto user_ids_by_room = std::map<std::string_view, canonicaljson::Array, std::less<>>{};
         for (auto const& room_id : joined_rooms)
         {
-            if (homeserver::room_typing_stream_id_for(rt, room_id) > since_sync_stream_id)
+            if (entering.contains(room_id) || homeserver::room_typing_stream_id_for(rt, room_id) > since_sync_stream_id)
             {
                 user_ids_by_room.try_emplace(room_id);
             }
@@ -349,10 +358,11 @@ namespace
 
         for (auto& [room_id, user_ids] : user_ids_by_room)
         {
-            // Suppress empty typing lists on the first sync (since == 0); for
-            // every subsequent position emit the current list even when empty so
-            // clients can clear stale indicators.
-            if (user_ids.empty() && since_sync_stream_id == std::uint64_t{0U})
+            // Suppress empty typing lists on the first sync (since == 0) and for a room entering the scope, which the
+            // client holds no indicator for; for every other room emit the current list even when empty so clients
+            // can clear stale indicators.
+            if (user_ids.empty() &&
+                (since_sync_stream_id == std::uint64_t{0U} || entering.contains(std::string{room_id})))
             {
                 continue;
             }
@@ -370,6 +380,39 @@ namespace
             resp.rooms_json.emplace(std::string{room_id}, jserialize(jobj(std::move(event))));
         }
         return resp;
+    }
+
+    // The receipts half of the history a response leaves (ADR-0863): `rooms` are in scope now; a room that was in scope
+    // and is not now drops out at `since_sync_stream_id`, the position after which this response sends it nothing; a
+    // room that was already out keeps its floor; a room back in scope gives its floor up. Only rooms the user is still
+    // joined to keep one: a room rejoined later enters the scope afresh (MSC4551), and the map stays bounded by the
+    // user's rooms.
+    [[nodiscard]] auto receipts_scope_history(ExtensionScopeHistory const& previous,
+                                              std::vector<std::string> const& rooms, std::uint64_t since_sync_stream_id,
+                                              std::map<std::string, RoomAccess, std::less<>> const& room_access)
+        -> ExtensionScopeHistory
+    {
+        auto next = ExtensionScopeHistory{};
+        next.receipt_rooms.insert(rooms.begin(), rooms.end());
+        auto const still_joined = [&room_access](std::string const& room_id) {
+            auto const found = room_access.find(room_id);
+            return found != room_access.end() && found->second == RoomAccess::joined;
+        };
+        for (auto const& room_id : previous.receipt_rooms)
+        {
+            if (!next.receipt_rooms.contains(room_id) && still_joined(room_id))
+            {
+                next.receipt_floors.emplace(room_id, since_sync_stream_id);
+            }
+        }
+        for (auto const& [room_id, floor] : previous.receipt_floors)
+        {
+            if (!next.receipt_rooms.contains(room_id) && still_joined(room_id))
+            {
+                next.receipt_floors.emplace(room_id, floor);
+            }
+        }
+        return next;
     }
 
 } // namespace
@@ -421,17 +464,55 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const wants_typing = ext_req.typing.has_value() && ext_req.typing->enabled;
     // One room-access index per request, shared by both extensions (and, from the handler, by the
     // room_subscriptions classification). Each serves the joined rooms of its own MSC4508 scope (ADR-0861).
+    // With the connection's scope history, a room entering the typing scope and a room re-entering the receipts
+    // scope are sent what MSC4508 asks for, and the history this response leaves is returned (ADR-0863).
+    auto const* const history = extension_scope.history;
+    auto next_history = ExtensionScopeHistory{};
     if (wants_receipts)
     {
         auto const rooms = joined_extension_scope_rooms(ext_req.receipts->lists, ext_req.receipts->rooms,
                                                         extension_scope, room_access);
-        resp.receipts = build_receipts(rt, user, since_sync_stream_id, rooms, ignored_senders);
+        auto floors = std::unordered_map<std::string, std::uint64_t>{};
+        if (history != nullptr)
+        {
+            for (auto const& room_id : rooms)
+            {
+                if (auto const floor = receipt_floor_for(*history, room_id, since_sync_stream_id);
+                    floor < since_sync_stream_id)
+                {
+                    floors.emplace(room_id, floor);
+                }
+            }
+            next_history = receipts_scope_history(*history, rooms, since_sync_stream_id, room_access);
+        }
+        auto receipts = build_receipts(rt, user, since_sync_stream_id, rooms, floors, ignored_senders);
+        resp.sent_on_scope_entry = std::ranges::any_of(floors, [&receipts](auto const& entry) {
+            return receipts.rooms_json.contains(entry.first);
+        });
+        resp.receipts = std::move(receipts);
     }
     if (wants_typing)
     {
         auto const rooms =
             joined_extension_scope_rooms(ext_req.typing->lists, ext_req.typing->rooms, extension_scope, room_access);
-        resp.typing = build_typing(rt, since_sync_stream_id, rooms, ignored_senders);
+        auto entering = std::unordered_set<std::string>{};
+        if (history != nullptr)
+        {
+            std::ranges::copy_if(rooms, std::inserter(entering, entering.end()), [history](std::string const& room_id) {
+                return enters_typing_scope(*history, room_id);
+            });
+            next_history.typing_rooms.insert(rooms.begin(), rooms.end());
+        }
+        auto typing = build_typing(rt, since_sync_stream_id, rooms, entering, ignored_senders);
+        resp.sent_on_scope_entry =
+            resp.sent_on_scope_entry || std::ranges::any_of(entering, [&typing](std::string const& room_id) {
+                return typing.rooms_json.contains(room_id);
+            });
+        resp.typing = std::move(typing);
+    }
+    if (history != nullptr)
+    {
+        resp.scope_history = std::move(next_history);
     }
 
     return resp;
