@@ -44,6 +44,12 @@ constexpr auto caps = db::StickyEventCaps{60U, 1000U};
     return hs::record_sticky_event_of_pdu(store, pdu_json, event_id, received_ms, with, now_ms);
 }
 
+// A PDU of `fields` (members without braces) that asks to be sticky for five seconds.
+[[nodiscard]] auto sticky_pdu(std::string_view fields) -> std::string
+{
+    return "{" + std::string{fields} + R"(,"sticky":{"duration_ms":5000}})";
+}
+
 } // namespace
 
 SCENARIO("a sticky PDU is recorded with its room, sender and capped expiry", "[homeserver][sticky-events]")
@@ -96,16 +102,13 @@ SCENARIO("a PDU that is not sticky, or cannot be read, is skipped without a writ
             R"({"sticky":)",
             R"([1,2,3])",
             R"({"origin_server_ts":19000,"room_id":"!room:example.org","sender":"@alice:example.org"})",
-            R"({"origin_server_ts":19000,"sender":"@alice:example.org","sticky":{"duration_ms":5000}})",
-            R"({"origin_server_ts":19000,"room_id":"!room:example.org","sticky":{"duration_ms":5000}})",
-            R"({"room_id":"!room:example.org","sender":"@alice:example.org","sticky":{"duration_ms":5000}})",
-            R"({"origin_server_ts":19000,"room_id":7,"sender":"@alice:example.org","sticky":{"duration_ms":5000}})",
-            R"({"origin_server_ts":19000,"room_id":"!room:example.org","sender":["@alice:example.org"],)"
-            R"("sticky":{"duration_ms":5000}})",
-            R"({"origin_server_ts":"19000","room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("sticky":{"duration_ms":5000}})",
-            R"({"origin_server_ts":1.5,"room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("sticky":{"duration_ms":5000}})",
+            sticky_pdu(R"("origin_server_ts":19000,"sender":"@alice:example.org")"),
+            sticky_pdu(R"("origin_server_ts":19000,"room_id":"!room:example.org")"),
+            sticky_pdu(R"("room_id":"!room:example.org","sender":"@alice:example.org")"),
+            sticky_pdu(R"("origin_server_ts":19000,"room_id":7,"sender":"@alice:example.org")"),
+            sticky_pdu(R"("origin_server_ts":19000,"room_id":"!room:example.org","sender":["@alice:example.org"])"),
+            sticky_pdu(R"("origin_server_ts":"19000","room_id":"!room:example.org","sender":"@alice:example.org")"),
+            sticky_pdu(R"("origin_server_ts":1.5,"room_id":"!room:example.org","sender":"@alice:example.org")"),
         };
 
         WHEN("each is recorded into its own store")
