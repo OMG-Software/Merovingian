@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <iterator>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -158,19 +160,13 @@ auto SlidingSyncRequestLookups::load_memberships() -> void
         return;
     }
     m_memberships_loaded = true;
-    // The rooms the store holds a record for, once: a membership row of a room the store lacks is not a joined room.
-    auto known_rooms = std::unordered_set<std::string>{};
-    known_rooms.reserve(m_store->rooms.size());
-    for (auto const& room : m_store->rooms)
-    {
-        known_rooms.insert(room.room_id);
-    }
-    // The user's own rows through the per-user index (ADR-0609), never the table.
+    // The user's own rows through the per-user index (ADR-0609), never the table. Which joined rooms the store holds
+    // is settled by `joined_rooms` alone, so an invite lookup (the long-poll's wake check) never reads the room table.
     database::for_each_user_membership_row(*m_store, m_user, [&](database::PersistentMembership const& row) {
         ++m_membership_rows_visited;
-        if (row.membership == "join" && known_rooms.contains(row.room_id))
+        if (row.membership == "join")
         {
-            m_joined.push_back(row.room_id);
+            m_join_rows.push_back(row.room_id);
         }
         else if (row.membership == "invite")
         {
@@ -182,6 +178,31 @@ auto SlidingSyncRequestLookups::load_memberships() -> void
 auto SlidingSyncRequestLookups::joined_rooms() -> std::vector<std::string> const&
 {
     load_memberships();
+    if (m_joined_resolved)
+    {
+        return m_joined;
+    }
+    m_joined_resolved = true;
+    // A join row of a room the store lacks is not a joined room. One pass over the room table, matched against the
+    // user's own join rows: nothing is copied per room the user is not in.
+    auto const wanted = std::unordered_set<std::string_view>{m_join_rows.begin(), m_join_rows.end()};
+    auto held = std::unordered_set<std::string_view>{};
+    for (auto const& room : m_store->rooms)
+    {
+        ++m_room_rows_visited;
+        if (wanted.contains(room.room_id))
+        {
+            held.insert(room.room_id);
+        }
+    }
+    for (auto& room_id : m_join_rows)
+    {
+        if (held.contains(room_id))
+        {
+            m_joined.push_back(std::move(room_id));
+        }
+    }
+    m_join_rows.clear();
     return m_joined;
 }
 
@@ -405,6 +426,11 @@ auto SlidingSyncRequestLookups::recency_rows_visited() const noexcept -> std::ui
 auto SlidingSyncRequestLookups::membership_rows_visited() const noexcept -> std::uint64_t
 {
     return m_membership_rows_visited;
+}
+
+auto SlidingSyncRequestLookups::room_rows_visited() const noexcept -> std::uint64_t
+{
+    return m_room_rows_visited;
 }
 
 } // namespace merovingian::sync

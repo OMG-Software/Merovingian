@@ -78,6 +78,10 @@ public:
     // Rows of the user's memberships looked at: a test proves the pass happens once per request by count, not by time.
     [[nodiscard]] auto membership_rows_visited() const noexcept -> std::uint64_t;
 
+    // Rows of the store's room table looked at: only `joined_rooms` reads it, so an invite or filter lookup costs the
+    // user's own rows and never the server's rooms.
+    [[nodiscard]] auto room_rows_visited() const noexcept -> std::uint64_t;
+
 private:
     auto load_memberships() -> void;
     auto load_direct() -> void;
@@ -85,6 +89,9 @@ private:
     database::PersistentStore const* m_store;
     std::string m_user;
     bool m_memberships_loaded{false};
+    // The user's join rows, in row order, until `joined_rooms` keeps those whose room the store holds.
+    std::vector<std::string> m_join_rows{};
+    bool m_joined_resolved{false};
     std::vector<std::string> m_joined{};
     // Each invited room with its invite membership row's stream ordering.
     std::unordered_map<std::string, std::uint64_t> m_invited{};
@@ -94,6 +101,7 @@ private:
     std::unordered_map<std::string, std::string> m_room_types{};
     std::unordered_map<std::string, ReadMarkers> m_markers{};
     std::uint64_t m_membership_rows_visited{0U};
+    std::uint64_t m_room_rows_visited{0U};
     std::uint64_t m_recency_rows_visited{0U};
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> m_recency{};
     std::unordered_map<std::string, std::string> m_names{};

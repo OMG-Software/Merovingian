@@ -607,7 +607,7 @@ SCENARIO("A new invite no list's filters would hold leaves a sliding sync long-p
         WHEN("james invites him to an unencrypted room, and then to an encrypted one")
         {
             // A private_chat room is encrypted by default (rooms::EncryptionPolicy); a public_chat room is not.
-            static_cast<void>(make_room(rt, james, R"({"preset":"public_chat","invite":["@benandez:example.org"]})"));
+            std::ignore = make_room(rt, james, R"({"preset":"public_chat","invite":["@benandez:example.org"]})");
             auto const unencrypted_wait = poll(rt, benandez_token, encrypted_only, pos, 5000U);
             auto const encrypted_room =
                 make_room(rt, james, R"({"preset":"private_chat","invite":["@benandez:example.org"]})");

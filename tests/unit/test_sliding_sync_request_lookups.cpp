@@ -117,6 +117,24 @@ SCENARIO("A request's lookups answer the filters from the user's own rows", "[sy
                 REQUIRE_FALSE(lookups.is_invited(room_name(2U)));
                 REQUIRE_FALSE(lookups.is_invited(room_name(7U)));
                 REQUIRE(lookups.membership_rows_visited() == 36U);
+                REQUIRE(lookups.room_rows_visited() == 60U);
+            }
+        }
+        WHEN("only an invite and its filters are asked for, as a long-poll's wake check does")
+        {
+            auto const invited = lookups.is_invited(room_name(5U));
+            auto const encrypted = lookups.is_encrypted(room_name(5U));
+            auto const& type = lookups.room_type(room_name(5U));
+            auto const direct = lookups.is_dm(room_name(5U));
+
+            THEN("they are answered from alice's own rows, and the server's room table is never read")
+            {
+                REQUIRE(invited);
+                REQUIRE_FALSE(encrypted);
+                REQUIRE(type.empty());
+                REQUIRE_FALSE(direct);
+                REQUIRE(lookups.membership_rows_visited() == 36U);
+                REQUIRE(lookups.room_rows_visited() == 0U);
             }
         }
         WHEN("encryption and room type are asked for every room")
@@ -136,6 +154,30 @@ SCENARIO("A request's lookups answer the filters from the user's own rows", "[sy
                 // a space.
                 REQUIRE(encrypted == 18U);
                 REQUIRE(spaces == 15U);
+            }
+        }
+    }
+}
+
+SCENARIO("A request's lookups keep a join row only for a room the store holds", "[sync][sliding-sync][unit]")
+{
+    GIVEN("alice joined to four rooms the store holds and holding a join row for a room it does not")
+    {
+        auto store = build_store(8U, 0U);
+        store.memberships.push_back(db::PersistentMembership{"!gone:example.org", alice, "join", 99U});
+        db::rebuild_membership_index(store);
+        auto lookups = sync::SlidingSyncRequestLookups{store, alice};
+
+        WHEN("the joined rooms are asked for twice")
+        {
+            auto const first = lookups.joined_rooms();
+            auto const& second = lookups.joined_rooms();
+
+            THEN("the room the store lacks is left out, in row order, and the room table is read once")
+            {
+                REQUIRE(first == std::vector<std::string>{room_name(0U), room_name(2U), room_name(4U), room_name(6U)});
+                REQUIRE(second == first);
+                REQUIRE(lookups.room_rows_visited() == 8U);
             }
         }
     }

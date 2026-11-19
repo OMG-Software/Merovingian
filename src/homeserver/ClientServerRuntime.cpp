@@ -8974,7 +8974,10 @@ namespace
         {
             invited_room_ids.clear();
         }
-        auto invites_reported = std::vector<std::string>{};
+        // Each reported invite with the position its sighting is recorded at: the invite row's own stream ordering,
+        // the value the test above compares, never the visible position, which a commit still in flight can leave
+        // below an invite stored meanwhile (it would be sent again on every request until that commit ends).
+        auto invites_reported = std::vector<std::pair<std::string, std::uint64_t>>{};
         auto invite_rooms = canonicaljson::Object{};
         for (auto const& room_id : invited_room_ids)
         {
@@ -8994,7 +8997,8 @@ namespace
             invite_room.invite_state_json =
                 json_serialize(json_arr(build_invite_state_events_array(store, room_id, user)));
             invite_rooms.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
-            invites_reported.push_back(room_id);
+            invites_reported.emplace_back(room_id, invite_record != nullptr ? invite_record->stream_ordering
+                                                                            : visible_event_ordering);
         }
 
         // ── Extensions ──────────────────────────────────────────────────────
@@ -9276,12 +9280,12 @@ namespace
             }
             return !request_lookups->is_invited(std::string_view{key}.substr(sliding_invite_seen_prefix.size()));
         });
-        for (auto const& room_id : invites_reported)
+        for (auto const& [room_id, seen_at] : invites_reported)
         {
             next_state.rooms_seen.erase(room_id);
             next_state.lazy_members_sent.erase(room_id);
             next_state.room_timeline_limits.erase(room_id);
-            next_state.rooms_seen[sliding_invite_seen_key(room_id)] = cur_event;
+            next_state.rooms_seen[sliding_invite_seen_key(room_id)] = seen_at;
         }
         for (auto const& [room_id, included] : lazy_members_included_by_room)
         {
