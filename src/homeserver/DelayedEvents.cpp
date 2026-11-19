@@ -272,7 +272,17 @@ namespace
         {
             return refusal(400U, "M_BAD_JSON", "event content must be a JSON object");
         }
-        return send_event_as_resolved_user(runtime.homeserver, row.user_id, row.room_id, *body, row.via_appservice);
+        // A row scheduled with a sticky duration goes out through the same sticky path as an immediate send, so its
+        // lifetime starts now (ADR-0854). A state event is never sticky.
+        auto sticky = std::optional<StickySendOptions>{};
+        if (row.sticky_duration_ms.has_value() && !row.is_state)
+        {
+            sticky = StickySendOptions{*row.sticky_duration_ms,
+                                       database::StickyEventCaps{runtime.limits.max_sticky_events_per_sender,
+                                                                 runtime.limits.max_sticky_events_per_room}};
+        }
+        return send_event_as_resolved_user(runtime.homeserver, row.user_id, row.room_id, *body, row.via_appservice,
+                                           sticky);
     }
 
     // Records the outcome of the send `result` of `row` as sent or failed, at `now_ms`, and logs it. A commit failure
@@ -501,6 +511,11 @@ auto schedule_delayed_event(ClientServerRuntime& runtime, DelayedEventScheduleRe
     {
         return refusal(400U, "M_INVALID_PARAM", "delay_ms must be at least 1");
     }
+    // A sticky event is a message event (ADR-0853): the routes refuse the pair, and so does the service.
+    if (request.sticky_duration_ms.has_value() && (request.state_key.has_value() || *request.sticky_duration_ms < 1))
+    {
+        return refusal(400U, "M_INVALID_PARAM", "a sticky event must be a message event with a duration of at least 1");
+    }
     // 3. The longest delay.
     if (request.delay_ms > runtime.limits.max_delayed_event_delay_ms)
     {
@@ -556,6 +571,7 @@ auto schedule_delayed_event(ClientServerRuntime& runtime, DelayedEventScheduleRe
     row.txn_id = request.txn_id;
     row.via_appservice = request.via_appservice;
     row.delay_ms = request.delay_ms;
+    row.sticky_duration_ms = request.sticky_duration_ms;
     row.delayed_since_ms = now_ms;
     if (!database::store_delayed_event(store, row))
     {

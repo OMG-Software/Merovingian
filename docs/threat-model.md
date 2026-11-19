@@ -2440,6 +2440,32 @@ the verdict is made once, so a redaction that applied stays applied if the sende
 it: events are not un-redacted), and redacting a redaction event in room versions before 11 strips its `redacts`, so
 the target no longer shows `unsigned.redacted_because` after the next restart.
 
+### A remote server sending many sticky events (MSC4354, ADR-0854, ADR-0856)
+
+Threat: a remote server fills the `sticky_events` table, and the push to every server that joins, with sticky events, or
+sets a far-future `origin_server_ts` so its events stay sticky for longer than intended. Mitigation: sticky detection
+runs in the main process only, after an event is accepted and stored as a timeline event (a rejected, soft-failed,
+outlier or backfilled event, and any state event, gets no row), so the federation worker cannot make an event sticky.
+The expiry is `min(received, origin_server_ts) + min(duration, one hour)` and the received time is this server's clock
+at acceptance, so a timestamp in the future never extends a stay and nothing stays sticky for more than an hour. A
+sender holds at most `server.sticky_events.max_per_sender` unexpired rows, a remote sender included (its oldest
+expires), and a room at most `server.sticky_events.max_per_room`: one more expires the oldest row of the server holding
+the most in the room, so a server that registers many users to flood a room displaces only its own rows and every other
+server keeps a fair share (ADR-0857), which also bounds a classic `/sync` section (ADR-0858). The prune job deletes
+expired rows every minute. This server pushes only its own users' events to a joining server, never another server's, so
+a remote server cannot use it to amplify. Residual risk: a server that is not blocked can still fill a room up to the
+room cap while no other server holds rows there, for an hour; the outbound queue is in memory and bounded, so a sticky
+event it refuses is not sent again until that destination joins again (ADR-0856, known gaps).
+
+Threat: MSC4354 lifts history visibility from unexpired sticky events, so a user or server that joins can read sticky
+events sent before the join under `joined` or `invited` visibility. Mitigation: the exemption is in the two filters only
+(`HistoryVisibility`, `ServerEventFilter`), for an `accepted` event with an unexpired row of its own room and a user or
+origin joined to that room now; a user who left, a rejected or soft-failed event and an expired row are judged by the
+rules as before, and a withheld redaction stays withheld (ADR-0858), the `/sync` and sliding sync sticky sections
+included (ADR-0862). A row the sender cap expires in another room is a change to that room, so the worker's snapshot of
+it drops the row and the worker stops exempting the event (ADR-0862). Residual risk: content a sender marks sticky is
+readable by later joiners for up to an hour, as the proposal intends; a client should not mark private content sticky.
+
 ### Moderation through the state API, oversized local events, and ungated room administration (audit CSAZ-6, CSAZ-9, CSAZ-12)
 
 Threats: a ban or kick sent as `PUT /state/m.room.member` changed room state but not the membership projections, so

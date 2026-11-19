@@ -21,6 +21,18 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
   and a check that the shards together run every scenario once (ADR-0845).
 * CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
+* Sticky events (MSC4354): `PUT /send` and delayed events take `org.matrix.msc4354.sticky_duration_ms` (or
+  `sticky_duration_ms`), sticky for up to an hour; `/versions` lists `org.matrix.msc4354` (ADR-0853).
+* `/sync` serves every unexpired sticky event in `sticky` and `msc4354_sticky`, sliding sync in the `sticky_events`
+  extension (MSC4480), each once per connection (ADR-0855, ADR-0857, ADR-0858).
+* Every joined user and server may read an unexpired sticky event on any endpoint, whatever the room's history
+  visibility (MSC4354); the federation worker gets the sticky rows in its room snapshots (ADR-0858).
+* Sliding sync sends sticky senders' member events with lazy-loaded members, and the extension reads MSC4508's `lists`
+  and `rooms` scope; an event that expires mid-request is left out (ADR-0858).
+* A server that joins a room is sent this server's unexpired sticky events in it, and accepted sticky events from other
+  servers are served like local ones (ADR-0856).
+* `server.sticky_events.enabled` (on), `max_per_sender` (60) and `max_per_room` (1000) configure them; migration 005
+  adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854, ADR-0857).
 * The Linux packages set up a LiveKit SFU you install beside the server: a `merovingian-livekit` account and disabled
   service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0860).
 
@@ -35,6 +47,19 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   own; the setup helper never prints the secret, passes it in argv or replaces a file (ADR-0860).
 * A LiveKit call's host lookup counts against the call's deadline: the exchange gets only the time the lookup left,
   and none starts once the deadline has passed (ADR-0830).
+* A sticky event's hour starts when this server first saw it, or earlier if its timestamp says so: neither a remote
+  server nor an application service's `?ts=` can extend it (ADR-0854).
+* A sender, local or remote, keeps at most `max_per_sender` unexpired sticky events; one more expires their oldest, so
+  one user cannot grow the table or every room's sync without bound (ADR-0854).
+* A room keeps at most `max_per_room` unexpired sticky events; one more expires the oldest of the server holding the
+  most, so a server flooding a room displaces only its own, never another server's call memberships (ADR-0857).
+* A client's sticky duration above 2^53-1 is refused, so a composed event stays canonical JSON (ADR-0853).
+* A joining server that the federation policy or the room's ACL denies is sent no sticky events, and only events this
+  server sent and still holds in that room are ever pushed (ADR-0856).
+* A redaction whose target has not been received is never sent as a sticky event: the sticky exemption skips history
+  visibility only (ADR-0862).
+* A sticky event that expires a sender's row in another room refreshes the federation worker's snapshot of that room,
+  so the worker stops serving the removed event (ADR-0862).
 
 ## Bug fixes
 
@@ -83,15 +108,20 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   longer refuses every transaction's PDUs for a held lock (ADR-0848).
 * The directory, profile, device keys, user devices and one-time-key claim federation providers take `runtime.mutex`
   themselves, as the other store readers do, so main never reads its store unlocked through them (ADR-0711).
+* A sliding sync sticky backlog larger than `limit` is delivered over several responses when no stream advances: such
+  a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
+* A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
+  state has none, rather than at the oldest sticky event (ADR-0862).
 
 ## Release notes
 
 Version 1.1.3 is in progress: a LiveKit token service built into the server for MatrixRTC calls, with delegated leaves,
-and an exact `state_after` on `/sync`. It adds migration 004 (`livekit_delegations`). After a restart, the first
-`state_after` sync of each room with news carries its whole state once. A SQLite server no longer refuses writes under
-sustained write load, and `database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request
-and the full matrix in the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge
-after the core gate alone.
+an exact `state_after` on `/sync`, and sticky events (MSC4354) for Element Call. It adds migrations 004
+(`livekit_delegations`) and 005 (`sticky_events`). After a restart, the first `state_after` sync of each room with news
+carries its whole state once. A SQLite server no longer refuses writes under sustained write load, and
+`database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request and the full matrix in
+the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate
+alone.
 
 # Version 1.1.2
 

@@ -4,8 +4,10 @@
 #include "merovingian/sync/HistoryVisibility.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/database/PersistentStickyEvent.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/Limits.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibilityValue.hpp"
@@ -545,6 +547,25 @@ auto HistoryVisibility::may_descend_from_departure(database::PersistentEvent con
     return false;
 }
 
+auto HistoryVisibility::is_sticky_for_joined_user(database::PersistentEvent const& event) -> bool
+{
+    if (event.status != "accepted" || store_.sticky_events.size() == 0U)
+    {
+        return false;
+    }
+    if (!sticky_now_ms_.has_value())
+    {
+        sticky_now_ms_ = database::sticky_clock_now_ms(store_);
+    }
+    auto const* row = store_.sticky_events.find(event.event_id, *sticky_now_ms_);
+    if (row == nullptr || row->room_id != event.room_id)
+    {
+        return false;
+    }
+    auto const* membership = database::find_membership_row(store_, event.room_id, user_id_);
+    return membership != nullptr && membership->membership == "join";
+}
+
 auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
 {
     if (event_is_withheld(event))
@@ -557,6 +578,12 @@ auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
     if (database::redaction_is_withheld(store_, event.event_id))
     {
         return false;
+    }
+    // MSC4354: "History visibility checks MUST NOT be applied to unexpired sticky events ... Any joined user ... is
+    // authorised to see unexpired sticky events for the duration they remain sticky" (ADR-0858).
+    if (is_sticky_for_joined_user(event))
+    {
+        return true;
     }
     auto const group_id = state_group_of(event.event_id);
     if (!group_id.has_value())

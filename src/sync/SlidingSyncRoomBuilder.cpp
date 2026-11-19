@@ -10,6 +10,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/RedactionView.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
@@ -72,8 +73,9 @@ namespace
     //
     // `unsigned` is never taken from the stored copy: it is outside the event's signatures, so a remote
     // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the
-    // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), the same rule
-    // as client_event_with_id (ADR-0402). A stored row that cannot be read is withheld (empty string).
+    // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), and the sticky remaining
+    // time (attach_sticky_remaining), the same rule as client_event_with_id (ADR-0402). A stored row that cannot be
+    // read is withheld (empty string).
     [[nodiscard]] auto client_event_value(database::PersistentStore const& store,
                                           database::PersistentEvent const& event)
         -> std::optional<canonicaljson::Object>
@@ -100,6 +102,8 @@ namespace
         // carries `redacts` where older and newer clients look for it.
         database::add_redaction_compat(client_obj);
         database::attach_redacted_because(store, event.event_id, client_obj);
+        // MSC4354: an unexpired sticky event carries its remaining time, as client_event_with_id adds it (ADR-0853).
+        database::attach_sticky_remaining(store, event.event_id, client_obj);
         return client_obj;
     }
 
@@ -836,6 +840,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
         auto const lazy_load_room_members = std::ranges::any_of(sub.required_state, [](auto const& p) {
             return p.first == "m.room.member" && p.second == "$LAZY";
         });
+        resp.lazy_load_members = lazy_load_room_members;
 
         // Members relevant to this response's timeline, and — among those —
         // the ones this connection has never been sent before. A brand-new
@@ -891,6 +896,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
                 if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
                 {
                     resp.required_state_json.push_back(std::move(client_json));
+                    if (se.event_type == "m.room.member")
+                    {
+                        resp.required_state_members.insert(se.state_key);
+                    }
                 }
                 if (lazy_load_room_members && se.event_type == "m.room.member" &&
                     timeline_membership.contains(se.state_key))
@@ -908,6 +917,54 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
     }
 
     return resp;
+}
+
+auto add_sticky_sender_members(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                               std::unordered_set<std::string> const& senders,
+                               std::unordered_set<std::string> const& lazy_members_already_sent,
+                               std::unordered_set<std::string> const& ignored_senders, ViewerEventUnsigned& viewer,
+                               SlidingSyncRoomResponse& room) -> std::size_t
+{
+    if (!room.lazy_load_members)
+    {
+        return 0U;
+    }
+    auto ordered = std::vector<std::string>{senders.begin(), senders.end()};
+    std::ranges::sort(ordered);
+    auto added = std::size_t{0U};
+    for (auto const& sender : ordered)
+    {
+        if (lazy_members_already_sent.contains(sender) || room.required_state_members.contains(sender))
+        {
+            continue;
+        }
+        auto const member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", sender);
+        if (!member_event_id.has_value())
+        {
+            continue;
+        }
+        auto const found = store.events.find(*member_event_id);
+        if (found == store.events.end())
+        {
+            continue;
+        }
+        auto const& ev = *found;
+        if (ignored_senders.contains(ev.sender_user_id) &&
+            trust_safety::is_delivery_suppressed(
+                ignored_senders, ev.sender_user_id, /*is_state_event=*/true,
+                classify_event_for_ignore_filter(ev.json, user).is_new_room_invite_for_user))
+        {
+            continue;
+        }
+        if (auto client_json = client_event_json(store, ev, viewer); !client_json.empty())
+        {
+            room.required_state_json.push_back(std::move(client_json));
+            room.required_state_members.insert(sender);
+            room.lazy_members_included.insert(sender);
+            ++added;
+        }
+    }
+    return added;
 }
 
 auto read_receipt_markers(homeserver::HomeserverRuntime const& /*rt*/, database::PersistentStore const& store,

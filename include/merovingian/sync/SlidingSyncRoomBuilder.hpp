@@ -15,7 +15,9 @@
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
 #include "merovingian/sync/UnreadEventClassifier.hpp"
+#include "merovingian/sync/ViewerEventUnsigned.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -110,6 +112,19 @@ namespace merovingian::sync
     std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
     std::optional<std::uint64_t> timeline_upper_bound = std::nullopt, std::string_view device_id = {},
     SlidingSyncRequestLookups* lookups = nullptr) -> SlidingSyncRoomResponse;
+
+// MSC4480: "the senders of sticky events returned for that room in this extension count as senders of `timeline`
+// events for the purposes of the lazy-loaded memberships". For a room built with lazy-loaded members
+// (`room.lazy_load_members`), adds to `room.required_state_json` the current m.room.member event of each of `senders`
+// that the connection has not been sent (`lazy_members_already_sent`) and `room` does not already carry, and records
+// it in `room.lazy_members_included`, so the connection does not send it again. Senders are taken in sorted order. A
+// member event whose sender `ignored_senders` holds is withheld only where build_room_response withholds it (an
+// invite of the user). Returns how many it added: a caller sends a room with any, even one with no other update.
+[[nodiscard]] auto add_sticky_sender_members(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view user, std::unordered_set<std::string> const& senders,
+                                             std::unordered_set<std::string> const& lazy_members_already_sent,
+                                             std::unordered_set<std::string> const& ignored_senders,
+                                             ViewerEventUnsigned& viewer, SlidingSyncRoomResponse& room) -> std::size_t;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a

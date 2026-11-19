@@ -38,6 +38,10 @@ struct SlidingSyncConnectionState final
     // connection (see build_room_response's lazy_members_already_sent
     // parameter), then fall back to normal floor-gated delta behaviour.
     std::unordered_map<std::string, std::unordered_set<std::string>> lazy_members_sent{};
+    // The sticky event IDs (MSC4354) sent to this connection, per room: in the sticky_events extension or in a timeline
+    // (ADR-0855). Only unexpired IDs are kept. Committed with the rest of the response's state, so a repeated pos is
+    // answered from the set the first request saw.
+    std::unordered_map<std::string, std::unordered_set<std::string>> sticky_delivered{};
     // The effective timeline_limit each room was last built with on this connection. MSC4186
     // "Changes to `timeline_limit`": when a request asks for more than this, the room's latest
     // events are resent (expanded_timeline) rather than only those after its delta floor.

@@ -46,6 +46,7 @@ auto RoomSnapshotAssembler::add_page(RoomSnapshotPage page) -> bool
     std::ranges::move(rows.state_group_state, std::back_inserter(snapshot_.state_group_state));
     std::ranges::move(rows.event_state_groups, std::back_inserter(snapshot_.event_state_groups));
     std::ranges::move(rows.forward_extremities, std::back_inserter(snapshot_.forward_extremities));
+    std::ranges::move(rows.sticky_events, std::back_inserter(snapshot_.sticky_events));
     return true;
 }
 
@@ -105,7 +106,8 @@ auto RoomSnapshotAssembler::rows_belong_to_room(database::RoomReloadSnapshot con
     };
     return std::ranges::all_of(rows.memberships, of_room) && std::ranges::all_of(rows.invites, of_room) &&
            std::ranges::all_of(rows.events, of_room) && std::ranges::all_of(rows.state, of_room) &&
-           std::ranges::all_of(rows.state_groups, of_room) && std::ranges::all_of(rows.forward_extremities, of_room);
+           std::ranges::all_of(rows.state_groups, of_room) && std::ranges::all_of(rows.forward_extremities, of_room) &&
+           std::ranges::all_of(rows.sticky_events, of_room);
 }
 
 } // namespace merovingian::ipc

@@ -39,6 +39,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/RedactionView.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
 #include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/Event.hpp"
@@ -50,6 +51,7 @@
 #include "merovingian/events/Redaction.hpp"
 #include "merovingian/events/SignedEventResult.hpp"
 #include "merovingian/events/SigningKeyId.hpp"
+#include "merovingian/events/StickyEvent.hpp"
 #include "merovingian/events/UnsignedData.hpp"
 #include "merovingian/federation/CachedServerDiscovery.hpp"
 #include "merovingian/federation/DiscoveryCachePolicy.hpp"
@@ -113,6 +115,7 @@
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StateContentCheck.hpp"
 #include "merovingian/homeserver/StateContentRefusal.hpp"
+#include "merovingian/homeserver/StickyEventRecording.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
@@ -341,7 +344,8 @@ namespace
     // event clock's reading (create_room uses it to keep v12 room IDs unique).
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json,
-                                            std::optional<std::int64_t> origin_server_ts = std::nullopt)
+                                            std::optional<std::int64_t> origin_server_ts = std::nullopt,
+                                            std::optional<std::int64_t> sticky_duration_ms = std::nullopt)
         -> ComposeResult;
 
     // The origin_server_ts this server stamps on an event it composes: the
@@ -1908,7 +1912,8 @@ namespace
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json,
-                                            std::optional<std::int64_t> origin_server_ts) -> ComposeResult
+                                            std::optional<std::int64_t> origin_server_ts,
+                                            std::optional<std::int64_t> sticky_duration_ms) -> ComposeResult
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -2111,6 +2116,16 @@ namespace
         {
             state_key = event_state_key;
             event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*event_state_key}));
+        }
+        // MSC4354 (ADR-0853): a sticky event carries both top-level fields with the client's duration as given, added
+        // before the content hash and the signature so both cover them. Only this typed parameter adds them: a
+        // client's own top-level keys are never copied from the request. A state event is never sticky.
+        if (sticky_duration_ms.has_value() && !state_key.has_value())
+        {
+            event.push_back(canonicaljson::make_member(std::string{events::sticky_field},
+                                                       events::sticky_object(*sticky_duration_ms)));
+            event.push_back(canonicaljson::make_member(std::string{events::unstable_sticky_field},
+                                                       events::sticky_object(*sticky_duration_ms)));
         }
 
         auto unsigned_event = canonicaljson::Value{event};
@@ -9665,8 +9680,8 @@ namespace
     // a redaction is then not applied (ADR-0628).
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
-                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false)
-        -> OperationResult
+                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false,
+                                          std::optional<StickySendOptions> sticky = std::nullopt) -> OperationResult
     {
         if (auto refusal = unsendable_room_refusal(runtime, user_id, room_id); refusal.has_value())
         {
@@ -9704,7 +9719,9 @@ namespace
             return std::move(*refusal);
         }
 
-        auto const composition = compose_signed_event(runtime, room_id, user_id, event_json, origin_server_ts);
+        auto const composition = compose_signed_event(runtime, room_id, user_id, event_json, origin_server_ts,
+                                                  sticky.has_value() ? std::optional<std::int64_t>{sticky->duration_ms}
+                                                                     : std::nullopt);
         if (composition.failure == ComposeFailure::invalid_state_key)
         {
             return invalid_state_key_result();
@@ -9779,6 +9796,28 @@ namespace
         }
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", user_id, room_id,
                            "stored");
+        // MSC4354 (ADR-0854): a sticky event's row is written in this same hold, once the event is stored. Its
+        // received time is the clock reading this server composed it at. A refusal is logged without any event
+        // content and does not fail the send: the event is stored and goes out, it just is not tracked as sticky.
+        if (sticky.has_value() && !composed->state_key.has_value())
+        {
+            auto const received_ms = event_clock_now_ms(runtime);
+            auto const outcome = record_sticky_event_of_pdu(runtime.database.persistent_store, composed->json,
+                                                            composed->event_id, received_ms, sticky->caps, received_ms);
+            if (!outcome.recorded)
+            {
+                log_diagnostic("sticky_event.record_failed", {
+                                                                 {"room_id",  std::string{room_id}, false},
+                                                                 {"event_id", composed->event_id,   false}
+                });
+            }
+            // The sender cap can expire the sender's row in another room: that room's worker snapshot changed
+            // (ADR-0862).
+            for (auto const& other_room : outcome.other_rooms)
+            {
+                notify_room_changed(runtime, other_room);
+            }
+        }
         // Presence, "Last active ago": sending a message is a pro-active event. A state event (the profile change
         // that send_event_as_user also carries) is not the user's doing, so it does not count (ADR-0492).
         if (!composed->state_key.has_value())
@@ -9836,8 +9875,8 @@ namespace
 } // namespace
 
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts)
-    -> OperationResult
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts,
+                              std::optional<StickySendOptions> sticky) -> OperationResult
 {
     log_diagnostic("room.event.started", {
                                              {"room_id",          std::string{room_id},                    false},
@@ -9856,14 +9895,15 @@ namespace
     }
 
     return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts,
-                              appservice::decode_masquerade_token(access_token).has_value());
+                              appservice::decode_masquerade_token(access_token).has_value(), sticky);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
 auto send_event_as_resolved_user(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id,
-                                 std::string_view event_json, bool via_appservice) -> OperationResult
+                                 std::string_view event_json, bool via_appservice,
+                                 std::optional<StickySendOptions> sticky) -> OperationResult
 {
-    return send_event_as_user(runtime, user_id, room_id, event_json, std::nullopt, via_appservice);
+    return send_event_as_user(runtime, user_id, room_id, event_json, std::nullopt, via_appservice, sticky);
 }
 
 auto room_send_refusal(HomeserverRuntime& runtime, std::string const& user_id, std::string_view room_id)
@@ -10310,6 +10350,8 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     // redacted form); a redaction event carries `redacts` where older and newer clients look for it.
     database::add_redaction_compat(client_obj);
     database::attach_redacted_because(store, event.event_id, client_obj);
+    // MSC4354 (ADR-0853): an unexpired sticky event carries how long it has left, under both names.
+    database::attach_sticky_remaining(store, event.event_id, client_obj);
     return canonicaljson::Value{std::move(client_obj)};
 }
 

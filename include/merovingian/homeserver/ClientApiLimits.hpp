@@ -92,6 +92,11 @@ struct ClientApiLimits final
     std::uint32_t max_scheduled_delayed_events_per_user{100U};
     // The finalised delayed events kept per user.
     std::uint32_t max_finalised_delayed_events_per_user{100U};
+    // ADR-0854 (copied from server.sticky_events.*): whether a sticky send is accepted and sticky events are served.
+    bool sticky_events_enabled{true};
+    // The unexpired sticky events one sender may hold; recording one more expires the sender's oldest.
+    std::uint32_t max_sticky_events_per_sender{60U};
+    std::uint32_t max_sticky_events_per_room{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

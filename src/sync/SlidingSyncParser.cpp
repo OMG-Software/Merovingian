@@ -4,8 +4,8 @@
 #include "merovingian/sync/SlidingSyncParser.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
 
 #include <algorithm>
@@ -347,6 +347,55 @@ namespace
         return sub;
     }
 
+    // MSC4480's extension is sent under `sticky_events` or `org.matrix.msc4354.sticky_events`. A request that sends
+    // both is one request, read from the stable name's object (ADR-0855), and is answered under both names.
+    [[nodiscard]] auto parse_sticky_events_request(canonicaljson::Object const& extensions)
+        -> std::optional<ExtStickyEventsRequest>
+    {
+        auto const* const stable = find_member(extensions, "sticky_events");
+        auto const* const unstable = find_member(extensions, "org.matrix.msc4354.sticky_events");
+        auto const* const stable_object = stable != nullptr ? as_object(*stable) : nullptr;
+        auto const* const unstable_object = unstable != nullptr ? as_object(*unstable) : nullptr;
+        if (stable_object == nullptr && unstable_object == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const& source = stable_object != nullptr ? *stable_object : *unstable_object;
+        auto req = ExtStickyEventsRequest{};
+        req.used_stable_name = stable_object != nullptr;
+        req.used_unstable_name = unstable_object != nullptr;
+        if (auto const* v = find_member(source, "enabled"); v != nullptr)
+        {
+            auto const* b = as_bool(*v);
+            req.enabled = b != nullptr && *b;
+        }
+        if (auto const* v = find_member(source, "limit"); v != nullptr)
+        {
+            if (auto const* n = as_int(*v); n != nullptr)
+            {
+                if (*n < 1)
+                {
+                    req.limit_refused = true;
+                }
+                else
+                {
+                    req.limit = static_cast<std::uint32_t>(
+                        std::min<std::int64_t>(*n, static_cast<std::int64_t>(max_sticky_events_per_room_response)));
+                }
+            }
+        }
+        // MSC4508: a key that is present but not an array of strings names nothing, as an empty array does.
+        if (auto const* v = find_member(source, "lists"); v != nullptr)
+        {
+            req.lists = extract_unique_strings(*v);
+        }
+        if (auto const* v = find_member(source, "rooms"); v != nullptr)
+        {
+            req.rooms = extract_unique_strings(*v);
+        }
+        return req;
+    }
+
     [[nodiscard]] auto parse_extension_requests(canonicaljson::Object const& obj) -> SlidingSyncExtensionRequests
     {
         auto ext = SlidingSyncExtensionRequests{};
@@ -428,6 +477,8 @@ namespace
                 ext.typing = req;
             }
         }
+
+        ext.sticky_events = parse_sticky_events_request(obj);
 
         return ext;
     }
@@ -675,6 +726,22 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
         {
             return "too many rooms in the typing extension";
         }
+        if (extensions.sticky_events.has_value())
+        {
+            if (extensions.sticky_events->limit_refused)
+            {
+                return "the sticky_events limit must be at least 1";
+            }
+            auto const& sticky = *extensions.sticky_events;
+            if (sticky.rooms.has_value() && sticky.rooms->size() > limits.room_subscriptions)
+            {
+                return "too many rooms in the sticky_events extension";
+            }
+            if (sticky.lists.has_value() && sticky.lists->size() > limits.lists)
+            {
+                return "too many lists in the sticky_events extension";
+            }
+        }
     }
     // The count caps bound the entries; this bounds what they weigh, since a string may be as long as the body.
     if (sliding_sync_retained_bytes(request) > limits.retained_bytes_per_connection)
@@ -684,14 +751,14 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     return std::nullopt;
 }
 
-auto parse_sliding_sync_pos(std::string_view target) -> std::optional<StreamToken>
+auto parse_sliding_sync_pos(std::string_view target) -> std::optional<SlidingSyncPos>
 {
     auto const raw = qparam(target, "pos");
     if (raw.empty())
     {
         return std::nullopt;
     }
-    return decode_stream_token(raw);
+    return decode_sliding_sync_pos(raw);
 }
 
 auto parse_sliding_sync_timeout(std::string_view target) -> std::optional<std::uint64_t>

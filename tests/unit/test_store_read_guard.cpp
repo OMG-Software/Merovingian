@@ -18,6 +18,8 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/StickyEventCaps.hpp"
+#include "merovingian/database/StickyEventStore.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
@@ -113,6 +115,17 @@ struct MainAndWorker final
     {
         return worker_open.store;
     }
+
+    // The worker reloads the room: its snapshot is read from the database, then applied to the worker's store.
+    auto reload_room_on_worker() -> void
+    {
+        auto snapshot = db::load_room_snapshot(worker(), room_id);
+        REQUIRE(snapshot.has_value());
+        if (snapshot.has_value())
+        {
+            db::apply_room_snapshot(worker(), std::move(*snapshot));
+        }
+    }
 };
 
 } // namespace
@@ -150,6 +163,49 @@ SCENARIO("a room reload reads the database without touching the store and swaps 
             THEN("the worker store now enforces the ACL")
             {
                 REQUIRE_FALSE(fed::room_server_acl_allows(fixture.worker(), room_id, denied_server));
+            }
+        }
+    }
+}
+
+// ADR-0858: the worker's store holds no sticky table of its own (its load profile skips it), so a room's snapshot
+// carries the room's sticky rows, and a reload replaces them.
+SCENARIO("a room reload gives the worker the room's sticky rows and takes away a deleted one",
+         "[database][sqlite][reload][sticky-events]")
+{
+    GIVEN("main recorded a sticky row for an event of the room after the worker opened")
+    {
+        constexpr auto now_ms = std::int64_t{1'700'000'000'000};
+        auto fixture = MainAndWorker{};
+        fixture.open_worker();
+        store_state_event(fixture.main_open.store, "$call", "m.room.message", "call", R"({"body":"x"})", 2U);
+        REQUIRE(db::record_sticky_event(fixture.main_open.store,
+                                        {"$call", std::string{room_id}, std::string{alice}, now_ms, now_ms + 60'000},
+                                        db::StickyEventCaps{}, now_ms).recorded);
+        REQUIRE(fixture.worker().sticky_events.size() == 0U);
+
+        WHEN("the worker reloads the room")
+        {
+            fixture.reload_room_on_worker();
+
+            THEN("the worker holds the row as main stored it")
+            {
+                auto const* row = fixture.worker().sticky_events.find("$call", now_ms);
+                REQUIRE(row != nullptr);
+                REQUIRE(row->room_id == room_id);
+                REQUIRE(row->sender == alice);
+                REQUIRE(row->expires_at_ms == now_ms + 60'000);
+            }
+
+            AND_WHEN("main deletes the row and the worker reloads the room again")
+            {
+                REQUIRE(db::delete_sticky_event(fixture.main_open.store, "$call"));
+                fixture.reload_room_on_worker();
+
+                THEN("the worker holds no row")
+                {
+                    REQUIRE(fixture.worker().sticky_events.size() == 0U);
+                }
             }
         }
     }

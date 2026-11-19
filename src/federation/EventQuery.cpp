@@ -5,13 +5,15 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/database/PersistentStickyEvent.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/Limits.hpp"
 #include "merovingian/events/Redaction.hpp"
-#include "merovingian/federation/StateAtEvent.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/StateAtEvent.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -492,6 +494,10 @@ namespace
     //   joined          visible when a user of `origin` is joined in that state.
     // It fails closed: an event with no state group, a broken group chain, or a group naming an
     // event the store lacks is not visible.
+    //
+    // One exception comes first (MSC4354, ADR-0858): an accepted event with an unexpired sticky row of its own room is
+    // visible to an origin with a user joined to that room now, whatever the visibility. A federation worker holds the
+    // rows its room snapshots carry.
     class ServerEventFilter final
     {
     public:
@@ -506,6 +512,12 @@ namespace
             if (origin_.empty())
             {
                 return false;
+            }
+            // MSC4354: "Any joined user or server is authorised to see unexpired sticky events for the duration they
+            // remain sticky."
+            if (is_sticky_for_joined_origin(event))
+            {
+                return true;
             }
             auto const group_id = group_of(event.event_id);
             if (!group_id.has_value())
@@ -602,6 +614,22 @@ namespace
         [[nodiscard]] auto group_of(std::string_view event_id) const -> std::optional<std::string_view>
         {
             return store_.event_state_groups.state_group_of(event_id);
+        }
+
+        // Whether `event` is accepted, has an unexpired sticky row of its own room, and `origin` has a joined user in
+        // that room now. The clock is read once per filter, so a page of events is judged at one instant.
+        [[nodiscard]] auto is_sticky_for_joined_origin(database::PersistentEvent const& event) -> bool
+        {
+            if (event.status != "accepted" || store_.sticky_events.size() == 0U)
+            {
+                return false;
+            }
+            if (!sticky_now_ms_.has_value())
+            {
+                sticky_now_ms_ = database::sticky_clock_now_ms(store_);
+            }
+            auto const* row = store_.sticky_events.find(event.event_id, *sticky_now_ms_);
+            return row != nullptr && row->room_id == event.room_id && origin_joined_now(event.room_id);
         }
 
         // Whether `origin` has a joined user in the room now. A filter serves one request, so this reads the
@@ -721,6 +749,7 @@ namespace
         std::unordered_map<std::string, GroupView> group_views_{};
         std::unordered_map<std::string, rooms::RoomVersionPolicy const*> policies_{};
         std::unordered_map<std::string, bool> origin_joined_rooms_{};
+        std::optional<std::int64_t> sticky_now_ms_{};
     };
 
 } // namespace

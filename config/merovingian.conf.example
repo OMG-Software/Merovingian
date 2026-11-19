@@ -153,6 +153,16 @@ server.http.ipv6_client_prefix_length=64
 # Finalised (sent, cancelled or failed) events kept per user: 1..1000.
 # server.delayed_events.max_finalised_per_user=100
 
+# Sticky events (MSC4354, optional; restart required)
+# On by default: Element Call's matrix_2_0 mode sends its call membership as a sticky event that every server keeps
+# delivering for up to an hour. false refuses a sticky send (403) and stops serving sticky events as sticky.
+# server.sticky_events.enabled=true
+# Unexpired sticky events one sender may hold across all rooms: 1..1000. The oldest expires first.
+# server.sticky_events.max_per_sender=60
+# Unexpired sticky events one room may hold, all senders together: 1..10000. One more expires the oldest of the
+# server holding the most in the room, so one server cannot push the others out.
+# server.sticky_events.max_per_room=1000
+
 # Listener exposure
 # Keep TLS disabled only on loopback binds behind a declared reverse proxy.
 # If binding to a public interface, set tls=true, reverse_proxy=false, and

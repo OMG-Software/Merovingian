@@ -64,8 +64,10 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/EventId.hpp"
 #include "merovingian/events/EventSigner.hpp"
+#include "merovingian/events/StickyEvent.hpp"
 #include "merovingian/federation/DeviceDisplayNames.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/EventQuery.hpp"
@@ -175,6 +177,8 @@
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"
 #include "merovingian/sync/EventTypeFilter.hpp"
+#include "merovingian/sync/ExtStickyEventsRequest.hpp"
+#include "merovingian/sync/ExtensionScope.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/LazyMemberTracker.hpp"
@@ -194,6 +198,7 @@
 #include "merovingian/sync/SlidingSyncExtensions.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
 #include "merovingian/sync/SlidingSyncRequestLookups.hpp"
@@ -202,6 +207,7 @@
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/StateGroupLookup.hpp"
+#include "merovingian/sync/StickySelection.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/SyncFilter.hpp"
 #include "merovingian/sync/SyncNotifier.hpp"
@@ -6150,6 +6156,40 @@ namespace
         return members;
     }
 
+    // The member events of the senders of MSC4354 sticky events who sent nothing in the timeline (`senders`), for a
+    // lazy classic `/sync` that is not `state_after`: a sticky event may lie outside the timeline, or inside its range
+    // but hidden by the timeline filter, and its sender may have joined after the timeline's start (or, with no
+    // timeline, after an older sticky event), so no one event's state stands for them (ADR-0862). A sender whose member
+    // the state at `first_event` (the timeline's first event, when there is a timeline) holds already has it in
+    // `state`; any other gets theirs as of `position`, as the state path does with no timeline. The room is joined (the
+    // sticky section is joined rooms only), so that member is the resolved one at the position. Returns the members
+    // to append to the room's `state`.
+    [[nodiscard]] auto sticky_sender_members_at_position(database::PersistentStore const& store,
+                                                         sync::EventTypeFilter const& filter, std::string_view room_id,
+                                                         std::uint64_t position,
+                                                         database::PersistentEvent const* first_event,
+                                                         std::vector<std::string> const& senders,
+                                                         LazyRoomSelector& selector) -> canonicaljson::Array
+    {
+        auto members = canonicaljson::Array{};
+        auto const access = sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U};
+        for (auto const& sender : senders)
+        {
+            if (first_event != nullptr &&
+                member_event_at_timeline_start(store, room_id, *first_event, sender).has_value())
+            {
+                continue;
+            }
+            auto const event_id =
+                member_event_at_position(store, room_id, access, position, sender, UnreadableMember::current_stands_in);
+            if (event_id.has_value())
+            {
+                add_lazy_sender_member(store, filter, *event_id, sender, selector, members);
+            }
+        }
+        return members;
+    }
+
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
@@ -6982,6 +7022,56 @@ namespace
         }));
     }
 
+    // The sticky events' clock: the one the send path records with and the store's readers judge against, so a row
+    // and its delivery agree on "now" (ADR-0854). Tests move it through `PersistentStore::test_sticky_clock_ms`.
+    [[nodiscard]] auto sticky_now_ms(HomeserverRuntime const& runtime) -> std::int64_t
+    {
+        return database::sticky_clock_now_ms(runtime.database.persistent_store);
+    }
+
+    // The sticky events of a joined room that `rooms.join.{roomId}.sticky` carries (ADR-0855), oldest first: the room's
+    // unexpired ones up to `upper_bound` from a sender the user does not ignore, those after `after` unless the room is
+    // sent in full (`after` empty), and none that this response's timeline carries. All of them: classic /sync has no
+    // cursor, so one left out would never be sent, and MSC4354 requires every unexpired sticky event to be delivered.
+    // The room cap bounds the section (`server.sticky_events.max_per_room`, ADR-0857).
+    [[nodiscard]] auto classic_sticky_events(database::PersistentStore const& store, std::string_view room_id,
+                                             std::int64_t now_ms, std::uint64_t upper_bound,
+                                             std::optional<std::uint64_t> after,
+                                             std::unordered_set<std::string> const& ignored_senders,
+                                             std::unordered_set<std::string> const& timeline_ids)
+        -> std::vector<database::PersistentEvent const*>
+    {
+        auto events = std::vector<database::PersistentEvent const*>{};
+        auto const candidates = sync::sticky_candidates_of_room(store, room_id, now_ms);
+        if (candidates.empty())
+        {
+            return events;
+        }
+        auto const choice = sync::select_sticky_for_sync(candidates, upper_bound, after, ignored_senders, timeline_ids,
+                                                         std::numeric_limits<std::size_t>::max());
+        for (auto const& event_id : choice.event_ids)
+        {
+            auto const found = store.events.find_in_room(room_id, event_id);
+            if (found != store.events.end())
+            {
+                events.push_back(&*found);
+            }
+        }
+        return events;
+    }
+
+    // `sticky` and `msc4354_sticky` of a joined room: the same `{"events": [...]}` under both names (ADR-0853).
+    auto append_sticky_section(canonicaljson::Object& joined_room, canonicaljson::Array events) -> void
+    {
+        if (events.empty())
+        {
+            return;
+        }
+        auto const section = json_obj({json_member("events", json_arr(std::move(events)))});
+        joined_room.push_back(json_member(std::string{events::sticky_field}, section));
+        joined_room.push_back(json_member(std::string{events::unstable_sticky_field}, section));
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -7160,6 +7250,25 @@ namespace
             // ADR-0616: a walk that ran out of budget did not read the whole window, so older events may be left out.
             auto const limited = cut_by_cap || hole != matched.end() || window.budget_ran_out;
 
+            auto const newly_joined =
+                since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
+            // ADR-0855: the section's events are the room's sticky events the timeline does not carry. The timeline
+            // filter is applied before, so an event it removed is in the section.
+            auto sticky_events = std::vector<database::PersistentEvent const*>{};
+            if (rt.limits.sticky_events_enabled)
+            {
+                auto timeline_ids = std::unordered_set<std::string>{};
+                for (auto it = window_begin; it != matched.end(); ++it)
+                {
+                    timeline_ids.insert((*it)->event_id);
+                }
+                auto const sticky_in_full = !since_token.has_value() || full_state || newly_joined;
+                sticky_events =
+                    classic_sticky_events(store, room.room_id, sticky_now_ms(rt.homeserver), sync_position,
+                                          sticky_in_full ? std::nullopt : std::optional<std::uint64_t>{since_ordering},
+                                          ignored_senders, timeline_ids);
+            }
+
             auto timeline_events = canonicaljson::Array{};
             // Bundled aggregations ride a section only when it is `limited` (client-server-api.md,
             // "Aggregations of child events"); otherwise the client has the children in the timeline.
@@ -7190,8 +7299,6 @@ namespace
             // that snapshot when the room first becomes joined for this user:
             // without m.room.encryption / power_levels / create state, real
             // clients cannot configure crypto after accepting an invite.
-            auto const newly_joined =
-                since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
             // Spec (GET /sync, `full_state`): "all state events will be returned, even if since is non-empty".
             // ADR-0818: `state_after` is the changes since `since`, on a limited sync too: they hold everything the gap
@@ -7202,13 +7309,24 @@ namespace
                                            ? joined_state_changes(store, room.room_id, since_ordering, sync_position)
                                            : std::vector<std::string>{};
             auto lazy_senders = std::vector<std::string>{};
+            auto sticky_only_senders = std::vector<std::string>{};
             auto selector = std::optional<LazyRoomSelector>{};
-            if (lazy.enabled() && (state_path || window_begin != matched.end() || !state_changes.empty()))
+            if (lazy.enabled() &&
+                (state_path || window_begin != matched.end() || !state_changes.empty() || !sticky_events.empty()))
             {
                 auto plan = LazyRoomSelector::Plan{};
                 for (auto it = window_begin; it != matched.end(); ++it)
                 {
                     plan.senders.insert((*it)->sender_user_id);
+                }
+                // A sticky event's sender is a sender of a delivered event as a timeline sender is (ADR-0855). One who
+                // sent nothing in the timeline is resolved apart (ADR-0862).
+                for (auto const* const sticky : sticky_events)
+                {
+                    if (plan.senders.insert(sticky->sender_user_id).second)
+                    {
+                        sticky_only_senders.push_back(sticky->sender_user_id);
+                    }
                 }
                 lazy_senders.assign(plan.senders.begin(), plan.senders.end());
                 plan.own_user_id = std::string{user};
@@ -7253,16 +7371,34 @@ namespace
                                     ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id,
                                                                            **window_begin, lazy_ref)
                                     : std::nullopt;
-                state_events = at_start.has_value()
-                                   ? std::move(*at_start)
-                                   : build_state_events_at_position(store, filter.room.state, room.room_id,
-                                                                    sync_position, lazy_ref);
+                auto const has_timeline = at_start.has_value();
+                state_events = has_timeline ? std::move(*at_start)
+                                            : build_state_events_at_position(store, filter.room.state, room.room_id,
+                                                                             sync_position, lazy_ref);
+                // With no timeline the state is as of the position and holds every sender's member already.
+                if (selector.has_value() && has_timeline)
+                {
+                    std::ranges::move(sticky_sender_members_at_position(store, filter.room.state, room.room_id,
+                                                                        sync_position, *window_begin,
+                                                                        sticky_only_senders, *selector),
+                                      std::back_inserter(state_events));
+                }
             }
             else if (selector.has_value())
             {
                 // Nothing else is sent, so the lazy members are the whole of `state`: no state is built or scanned.
-                state_events =
-                    build_lazy_sender_members(store, filter.room.state, **window_begin, lazy_senders, *selector);
+                // The members as of the timeline's start, and a sticky-only sender's as of the response's position
+                // when that state lacks it; with no timeline, every sender is sticky-only (ADR-0862).
+                auto const* const first_event = window_begin != matched.end() ? *window_begin : nullptr;
+                if (first_event != nullptr)
+                {
+                    state_events =
+                        build_lazy_sender_members(store, filter.room.state, *first_event, lazy_senders, *selector);
+                }
+                std::ranges::move(sticky_sender_members_at_position(store, filter.room.state, room.room_id,
+                                                                    sync_position, first_event, sticky_only_senders,
+                                                                    *selector),
+                                  std::back_inserter(state_events));
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
@@ -7274,7 +7410,7 @@ namespace
             // cycle, causing clients to receive the same stale payload repeatedly
             // and making it appear as if the room is stuck.
             if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() &&
-                state_events.empty() && ephemeral_events.empty())
+                state_events.empty() && ephemeral_events.empty() && sticky_events.empty())
             {
                 continue;
             }
@@ -7335,6 +7471,18 @@ namespace
             {
                 joined_room.push_back(json_member("unread_thread_notifications", json_obj(std::move(thread_counts))));
             }
+            auto sticky_section = canonicaljson::Array{};
+            for (auto const* const sticky : sticky_events)
+            {
+                auto served = viewer_unsigned.apply(*sticky, client_event_with_id(store, *sticky));
+                // MSC4354: every event in the section is sticky. The clock is read again when an event is serialized,
+                // so one that expired after it was chosen comes back without its remaining time and is left out.
+                if (database::carries_sticky_remaining(served))
+                {
+                    sticky_section.push_back(std::move(served));
+                }
+            }
+            append_sticky_section(joined_room, std::move(sticky_section));
             join_members.push_back(json_member(room.room_id, json_obj(std::move(joined_room))));
         }
 
@@ -7893,12 +8041,205 @@ namespace
         return expansions;
     }
 
+    // The event IDs a sliding sync room's pre-serialised timeline holds.
+    [[nodiscard]] auto sliding_timeline_event_ids(std::vector<std::string> const& timeline_json)
+        -> std::unordered_set<std::string>
+    {
+        auto ids = std::unordered_set<std::string>{};
+        for (auto const& json : timeline_json)
+        {
+            auto const parsed = canonicaljson::parse_json(json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                continue;
+            }
+            auto const* const object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* const id = object != nullptr ? object_member(*object, "event_id") : nullptr;
+            auto const* const text = id != nullptr ? std::get_if<std::string>(&id->storage()) : nullptr;
+            if (text != nullptr)
+            {
+                ids.insert(*text);
+            }
+        }
+        return ids;
+    }
+
+    // The room IDs of a sliding-sync request's `room_subscriptions`.
+    [[nodiscard]] auto subscription_room_ids(sync::SlidingSyncRequest const& request) -> std::vector<std::string>
+    {
+        auto ids = std::vector<std::string>{};
+        ids.reserve(request.room_subscriptions.size());
+        for (auto const& [room_id, subscription] : request.room_subscriptions)
+        {
+            ids.push_back(room_id);
+        }
+        return ids;
+    }
+
+    // The rooms the sticky_events extension serves in one response: its scope (MSC4508, `sync::extension_scope_rooms`)
+    // over this response's list windows and room subscriptions, less every room the user has not joined (MSC4480: an
+    // invited, left, kicked or banned room in scope is sent no sticky events).
+    [[nodiscard]] auto sticky_scope_rooms(sync::ExtStickyEventsRequest const& request,
+                                          std::map<std::string, std::vector<std::string>> const& list_windows,
+                                          std::vector<std::string> const& subscriptions,
+                                          std::map<std::string, sync::RoomAccess, std::less<>> const& room_access)
+        -> std::vector<std::string>
+    {
+        auto scope = sync::extension_scope_rooms(request.lists, request.rooms, list_windows, subscriptions);
+        std::erase_if(scope, [&](std::string const& room_id) {
+            auto const found = room_access.find(room_id);
+            return found == room_access.end() || found->second != sync::RoomAccess::joined;
+        });
+        return scope;
+    }
+
+    using StickyIdsByRoom = std::unordered_map<std::string, std::unordered_set<std::string>>;
+
+    // What the sticky_events extension adds to one sliding sync response (ADR-0855).
+    struct SlidingStickyOutcome final
+    {
+        // `{"rooms": {...}}`, empty when nothing is delivered.
+        canonicaljson::Object extension{};
+        // The connection's delivered sets after this response.
+        StickyIdsByRoom delivered{};
+        // The senders of the events sent in each room: for lazy-loaded members they count as timeline senders.
+        StickyIdsByRoom senders{};
+        bool delivered_any{false};
+    };
+
+    struct SlidingStickyInputs final
+    {
+        sync::ExtStickyEventsRequest const& request;
+        std::int64_t now_ms;
+        std::uint64_t upper_bound;
+        std::vector<std::string> const& scope_rooms;
+        StickyIdsByRoom const& delivered_before;
+        StickyIdsByRoom const& timeline_ids;
+        std::unordered_set<std::string> const& ignored_senders;
+    };
+
+    // The events each in-scope room is sent, and the delivered sets that follow. A room outside the scope keeps its
+    // set, less the IDs that have expired, so a room re-entering scope is sent only what it has not had.
+    [[nodiscard]] auto build_sliding_sticky(database::PersistentStore const& store, SlidingStickyInputs const& in,
+                                            sync::ViewerEventUnsigned& viewer) -> SlidingStickyOutcome
+    {
+        auto outcome = SlidingStickyOutcome{};
+        auto const empty_ids = std::unordered_set<std::string>{};
+        auto rooms_obj = canonicaljson::Object{};
+        auto handled = std::unordered_set<std::string>{};
+        for (auto const& room_id : in.scope_rooms)
+        {
+            handled.insert(room_id);
+            auto const before_it = in.delivered_before.find(room_id);
+            auto const& before = before_it != in.delivered_before.end() ? before_it->second : empty_ids;
+            auto const timeline_it = in.timeline_ids.find(room_id);
+            auto const& timeline = timeline_it != in.timeline_ids.end() ? timeline_it->second : empty_ids;
+            auto excluded = before;
+            excluded.insert(timeline.begin(), timeline.end());
+            auto const candidates = sync::sticky_candidates_of_room(store, room_id, in.now_ms);
+            auto const choice = sync::select_sticky_for_sync(candidates, in.upper_bound, std::nullopt,
+                                                             in.ignored_senders, excluded, in.request.limit);
+            auto const sent = std::unordered_set<std::string>{choice.event_ids.begin(), choice.event_ids.end()};
+            auto kept = std::unordered_set<std::string>{};
+            for (auto const& candidate : candidates)
+            {
+                if (before.contains(candidate.event_id) || timeline.contains(candidate.event_id) ||
+                    sent.contains(candidate.event_id))
+                {
+                    kept.insert(candidate.event_id);
+                }
+            }
+            if (!kept.empty())
+            {
+                outcome.delivered.emplace(room_id, std::move(kept));
+            }
+            auto events = canonicaljson::Array{};
+            for (auto const& event_id : choice.event_ids)
+            {
+                auto const found = store.events.find_in_room(room_id, event_id);
+                if (found == store.events.end())
+                {
+                    continue;
+                }
+                auto served = viewer.apply(*found, client_event_with_id(store, *found));
+                // As in classic /sync: an event that expired after it was chosen is no longer sticky (MSC4480).
+                if (database::carries_sticky_remaining(served))
+                {
+                    events.push_back(std::move(served));
+                    outcome.senders[room_id].insert(found->sender_user_id);
+                }
+            }
+            if (!events.empty())
+            {
+                rooms_obj.push_back(
+                    json_member(room_id, json_obj({json_member("events", json_arr(std::move(events)))})));
+            }
+        }
+        for (auto const& [room_id, ids] : in.delivered_before)
+        {
+            if (handled.contains(room_id))
+            {
+                continue;
+            }
+            auto live = std::unordered_set<std::string>{};
+            for (auto const& event_id : ids)
+            {
+                if (store.sticky_events.find(event_id, in.now_ms) != nullptr)
+                {
+                    live.insert(event_id);
+                }
+            }
+            if (!live.empty())
+            {
+                outcome.delivered.emplace(room_id, std::move(live));
+            }
+        }
+        if (!rooms_obj.empty())
+        {
+            outcome.delivered_any = true;
+            outcome.extension.push_back(json_member("rooms", json_obj(std::move(rooms_obj))));
+        }
+        return outcome;
+    }
+
+    // Whether any of `rooms` the user has joined holds a sticky event the connection has not been sent: a backlog,
+    // which answers a long-poll at once (ADR-0855).
+    [[nodiscard]] auto sticky_backlog_exists(database::PersistentStore const& store,
+                                             std::vector<std::string> const& rooms,
+                                             std::unordered_set<std::string_view> const& joined_rooms,
+                                             StickyIdsByRoom const& delivered, std::int64_t now_ms,
+                                             std::uint64_t upper_bound,
+                                             std::unordered_set<std::string> const& ignored_senders) -> bool
+    {
+        auto const empty_ids = std::unordered_set<std::string>{};
+        return std::ranges::any_of(rooms, [&](std::string const& room_id) {
+            if (!joined_rooms.contains(room_id))
+            {
+                return false;
+            }
+            auto const it = delivered.find(room_id);
+            auto const choice = sync::select_sticky_for_sync(sync::sticky_candidates_of_room(store, room_id, now_ms),
+                                                             upper_bound, std::nullopt, ignored_senders,
+                                                             it != delivered.end() ? it->second : empty_ids, 1U);
+            return !choice.event_ids.empty();
+        });
+    }
+
+    // The last page a sliding sync `pos` can carry (ADR-0862); a response past it goes back to page 0.
+    constexpr auto max_sliding_sync_pos_page = std::numeric_limits<std::uint64_t>::max();
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
-                                         std::optional<sync::StreamToken> const& pos, std::uint64_t timeout_ms,
-                                         bool can_wait) -> DispatchResult
+                                         std::optional<sync::SlidingSyncPos> const& request_pos,
+                                         std::uint64_t timeout_ms, bool can_wait) -> DispatchResult
     {
         auto& store = rt.homeserver.database.persistent_store;
+        // Every stream comparison reads the token; the page only names a response (ADR-0862).
+        auto const pos =
+            request_pos.has_value() ? std::optional<sync::StreamToken>{request_pos->token} : std::nullopt;
+        // The request's pos as this server writes it, the key a pending response is matched on.
+        auto const requested_pos =
+            request_pos.has_value() ? sync::encode_sliding_sync_pos(*request_pos) : std::string{};
 
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users, Server behaviour). Resolved once per request and
@@ -7984,7 +8325,6 @@ namespace
         // cancelled initial response cannot turn into an empty room window.
         if (conn.pending_response.has_value())
         {
-            auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
             // A response may have the same pos as the request that produced it
             // when no stream advanced. In that case the next request is
             // indistinguishable from a transport retry, so keep replaying the
@@ -7997,6 +8337,7 @@ namespace
                 conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
                 conn.lazy_members_sent = std::move(conn.pending_response->lazy_members_sent);
                 conn.room_timeline_limits = std::move(conn.pending_response->room_timeline_limits);
+                conn.sticky_delivered = std::move(conn.pending_response->sticky_delivered);
                 conn.list_configs = std::move(conn.pending_response->list_configs);
                 conn.last_event_ordering = conn.pending_response->last_event_ordering;
                 conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
@@ -8025,11 +8366,21 @@ namespace
         // pos is left out: with no stream advanced, the response carried the same pos,
         // the repeat cannot acknowledge it, and answering at once again would spin the
         // client. The committed state still resends the expansion when the room is built.
-        auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
         auto const answered_for_this_pos =
             conn.pending_response.has_value() && conn.pending_response->request_pos == requested_pos
                 ? conn.pending_response->expansions_answered
                 : std::unordered_map<std::string, std::uint64_t>{};
+
+        // ADR-0855: the sticky_events extension, when the request enables it and the feature is on. A response that
+        // delivered sticky events at this request's pos may be retried, so it does not answer a backlog at once again.
+        auto const* const sticky_request =
+            ssreq.extensions.has_value() && ssreq.extensions->sticky_events.has_value() &&
+                    ssreq.extensions->sticky_events->enabled && rt.limits.sticky_events_enabled
+                ? &*ssreq.extensions->sticky_events
+                : nullptr;
+        auto const sticky_answered_for_this_pos = conn.pending_response.has_value() &&
+                                                  conn.pending_response->request_pos == requested_pos &&
+                                                  conn.pending_response->sticky_answered;
 
         // R15 (ADR-0205): one push-rule classifier for every count and the notification sort. It and
         // the list windows are built after the M_UNKNOWN_POS return, and after the long-poll decision
@@ -8109,7 +8460,7 @@ namespace
             // membership rows, so the checks below test membership in O(1) and an account with no
             // room scans nothing (ADR-0609).
             auto joined_rooms = std::unordered_set<std::string_view>{};
-            if (wants_rooms || wants_receipts || wants_typing)
+            if (wants_rooms || wants_receipts || wants_typing || sticky_request != nullptr)
             {
                 database::for_each_user_membership_row(store, user,
                                                        [&joined_rooms](database::PersistentMembership const& row) {
@@ -8185,8 +8536,20 @@ namespace
                     wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
                         return kv.second > since_sync_stream_id && joined_rooms.contains(kv.first);
                     });
+                // A sticky event this connection has not been sent answers the poll at once (ADR-0855). The rooms it
+                // covers are the extension's scope (MSC4508) over the windows the previous response held (this
+                // request's, while their config is unchanged) and the subscribed rooms.
+                auto has_relevant_sticky = false;
+                if (sticky_request != nullptr && !sticky_answered_for_this_pos)
+                {
+                    auto const sticky_rooms = sync::extension_scope_rooms(
+                        sticky_request->lists, sticky_request->rooms, expansion_windows, subscription_room_ids(ssreq));
+                    has_relevant_sticky =
+                        sticky_backlog_exists(store, sticky_rooms, joined_rooms, conn.sticky_delivered,
+                                              sticky_now_ms(rt.homeserver), cur_event, ignored_senders);
+                }
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
-                    !has_relevant_typing)
+                    !has_relevant_typing && !has_relevant_sticky)
                 {
                     // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.
@@ -8234,7 +8597,7 @@ namespace
         auto const extensions_need_room_access =
             ssreq.extensions.has_value() &&
             ((ssreq.extensions->receipts.has_value() && ssreq.extensions->receipts->enabled) ||
-             (ssreq.extensions->typing.has_value() && ssreq.extensions->typing->enabled));
+             (ssreq.extensions->typing.has_value() && ssreq.extensions->typing->enabled) || sticky_request != nullptr);
         auto const room_access = ssreq.room_subscriptions.empty() && !extensions_need_room_access
                                      ? std::map<std::string, sync::RoomAccess, std::less<>>{}
                                      : sync::room_access_index(store, user);
@@ -8262,9 +8625,20 @@ namespace
 
         auto rooms_obj = canonicaljson::Object{};
         auto rooms_skipped = std::size_t{0U};
+        // The joined rooms built, in response order, serialised only once the sticky_events extension has added its
+        // senders' member events (MSC4480): a room with none of its own updates is sent when it gains one.
+        struct BuiltSlidingRoom final
+        {
+            std::string room_id{};
+            sync::SlidingSyncRoomResponse room{};
+            bool has_updates{false};
+        };
+        auto built_rooms = std::vector<BuiltSlidingRoom>{};
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
+        // The event IDs of each room's timeline in this response, for the sticky_events extension.
+        auto sticky_timeline_ids = StickyIdsByRoom{};
         // The rooms this connection is sent for the first time: their account data goes down in full (ADR-0493).
         auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
@@ -8348,10 +8722,6 @@ namespace
                                                   lazy_already_sent, ignored_senders, history_visibility,
                                                   *unread_classifier, expansion, room_last_ordering,
                                                   visible_event_ordering, device_id, &request_lookups.value());
-            if (!room.lazy_members_included.empty())
-            {
-                lazy_members_included_by_room[room_id] = room.lazy_members_included;
-            }
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, or changed
             // required_state.  Unread counts are sent when the room is included for
@@ -8360,14 +8730,11 @@ namespace
             // pos and may loop.
             auto const has_room_updates =
                 is_initial || !room.timeline_json.empty() || !room.required_state_json.empty();
-            if (has_room_updates)
+            if (sticky_request != nullptr && !room.timeline_json.empty())
             {
-                rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
+                sticky_timeline_ids[room_id] = sliding_timeline_event_ids(room.timeline_json);
             }
-            else
-            {
-                ++rooms_skipped;
-            }
+            built_rooms.push_back({room_id, std::move(room), has_room_updates});
         }
 
         // Invited rooms named by a subscription: stripped invite state only (the same
@@ -8384,6 +8751,7 @@ namespace
             invited_subscription_ids.clear();
         }
         auto invites_reported = std::vector<std::string>{};
+        auto invite_rooms = canonicaljson::Object{};
         auto const invite_room_state = invited_subscription_ids.empty()
                                            ? std::optional<InviteRoomStateIndex>{}
                                            : std::optional<InviteRoomStateIndex>{std::in_place, store, user};
@@ -8411,7 +8779,7 @@ namespace
             invite_room.initial = true;
             invite_room.invite_state_json =
                 json_serialize(json_arr(build_invite_state_events_array(store, room_id, user)));
-            rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
+            invite_rooms.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
             invites_reported.push_back(seen_key);
         }
 
@@ -8426,6 +8794,70 @@ namespace
                 store, room_access, response_room_ids, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
+        auto sticky_outcome = SlidingStickyOutcome{};
+        if (sticky_request != nullptr)
+        {
+            auto response_windows = std::map<std::string, std::vector<std::string>>{};
+            for (auto const& [list_name, result] : list_results)
+            {
+                response_windows.emplace(list_name, result.windowed_room_ids);
+            }
+            auto const scope_rooms =
+                sticky_scope_rooms(*sticky_request, response_windows, subscription_room_ids(ssreq), room_access);
+            auto sticky_viewer = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
+            sticky_outcome =
+                build_sliding_sticky(store,
+                                     {*sticky_request, sticky_now_ms(rt.homeserver), visible_event_ordering,
+                                      scope_rooms, conn.sticky_delivered, sticky_timeline_ids, ignored_senders},
+                                     sticky_viewer);
+            // MSC4480: the senders of the sticky events sent count as timeline senders for lazy-loaded members.
+            for (auto& built : built_rooms)
+            {
+                auto const senders = sticky_outcome.senders.find(built.room_id);
+                if (senders == sticky_outcome.senders.end())
+                {
+                    continue;
+                }
+                auto const lazy_sent_it = conn.lazy_members_sent.find(built.room_id);
+                auto const& lazy_already_sent =
+                    lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
+                if (sync::add_sticky_sender_members(store, built.room_id, user, senders->second, lazy_already_sent,
+                                                    ignored_senders, sticky_viewer, built.room) > 0U)
+                {
+                    built.has_updates = true;
+                }
+            }
+            if (!sticky_outcome.extension.empty())
+            {
+                // ADR-0853: answered under the name or names the request used.
+                auto const sticky_body = json_obj(sticky_outcome.extension);
+                if (sticky_request->used_stable_name)
+                {
+                    ext_obj.push_back(json_member("sticky_events", sticky_body));
+                }
+                if (sticky_request->used_unstable_name)
+                {
+                    ext_obj.push_back(json_member("org.matrix.msc4354.sticky_events", sticky_body));
+                }
+            }
+        }
+
+        for (auto& built : built_rooms)
+        {
+            if (!built.room.lazy_members_included.empty())
+            {
+                lazy_members_included_by_room[built.room_id] = built.room.lazy_members_included;
+            }
+            if (built.has_updates)
+            {
+                rooms_obj.push_back(json_member(built.room_id, sliding_sync_room_to_value(std::move(built.room))));
+            }
+            else
+            {
+                ++rooms_skipped;
+            }
+        }
+        std::ranges::move(invite_rooms, std::back_inserter(rooms_obj));
 
         auto const to_device_count = extension_responses && extension_responses->to_device.has_value()
                                          ? extension_responses->to_device->events_json.size()
@@ -8439,8 +8871,22 @@ namespace
         // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS
         // at the top of this function, so the token can only move forward
         // between responses on the same server lifetime.
-        auto const new_pos =
-            sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch});
+        // ADR-0862: a response that delivers sticky events changes the connection's state. When no stream advanced,
+        // its token is the request's, and the next request at it would read as a retry of this one and never
+        // acknowledge it, so a backlog wider than the limit would stall. Such a response carries the request's page
+        // plus one; a retry of the request carries the old page and is answered from the committed state as before.
+        auto const response_token = sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch};
+        auto response_page = std::uint64_t{0U};
+        if (request_pos.has_value() && sticky_outcome.delivered_any)
+        {
+            auto const same_stream_position =
+                sync::encode_stream_token(request_pos->token) == sync::encode_stream_token(response_token);
+            if (same_stream_position && request_pos->page < max_sliding_sync_pos_page)
+            {
+                response_page = request_pos->page + 1U;
+            }
+        }
+        auto const new_pos = sync::encode_sliding_sync_pos(sync::SlidingSyncPos{response_token, response_page});
 
         auto lists_obj = canonicaljson::Object{};
         for (auto& [lname, result] : list_results)
@@ -8495,6 +8941,10 @@ namespace
                 {
                     extension_names.emplace_back("typing");
                 }
+                if (sticky_request != nullptr)
+                {
+                    extension_names.emplace_back("sticky_events");
+                }
             }
 
             auto requested_extensions = std::string{};
@@ -8519,7 +8969,7 @@ namespace
                                {"device_id",             std::string{device_id},                                 false},
                                {"connection_scope",      ssreq.conn_id.has_value() ? "client" : "default",       false},
                                {"conn_id_bytes",         std::to_string(ssreq.conn_id.value_or("").size()),      false},
-                               {"requested_pos",         pos.has_value() ? sync::encode_stream_token(*pos) : "", false},
+                               {"requested_pos",         requested_pos,                                          false},
                                {"returned_pos",          new_pos,                                                false},
                                {"connection_event_pos",  std::to_string(conn.last_event_ordering),               false},
                                {"connection_sync_pos",   std::to_string(conn.last_sync_stream_id),               false},
@@ -8563,6 +9013,9 @@ namespace
         next_state.rooms_seen = conn.rooms_seen;
         next_state.lazy_members_sent = conn.lazy_members_sent;
         next_state.room_timeline_limits = conn.room_timeline_limits;
+        // A request that does not ask for sticky events forgets what was sent: asking again starts afresh (ADR-0855).
+        next_state.sticky_delivered = std::move(sticky_outcome.delivered);
+        next_state.sticky_answered = sticky_outcome.delivered_any;
         for (auto const& [room_id, limit] : room_timeline_limits_built)
         {
             next_state.room_timeline_limits[room_id] = limit;
@@ -12570,6 +13023,108 @@ namespace
         return delayed_event_answer(req, rt, result, DelayedEventSuccess::delay_id);
     }
 
+    // ---- Sticky events (MSC4354, ADR-0853, ADR-0854): the routes only read the parameter and hand the duration on.
+
+    inline constexpr auto sticky_query_parameter = std::string_view{"sticky_duration_ms"};
+    inline constexpr auto unstable_sticky_query_parameter = std::string_view{"org.matrix.msc4354.sticky_duration_ms"};
+
+    // What a request's sticky duration parameter says, under either name. `present` is true when either name appears at
+    // all, with any value: such a request never falls through to an ordinary send. `duration_ms` is empty when the
+    // parameter is repeated, given under both names, or its value is not a whole decimal number in
+    // `events::parse_sticky_duration_text`'s range.
+    struct StickyQuery final
+    {
+        bool present{false};
+        std::optional<std::int64_t> duration_ms{};
+    };
+
+    // Reads the parameter, with the name percent-decoded as well as the value so an encoded spelling cannot slip past.
+    // Looks at the first two occurrences of either name only.
+    [[nodiscard]] auto sticky_query_of(std::string_view target) -> StickyQuery
+    {
+        auto values = std::vector<std::string>{};
+        auto const query_pos = target.find('?');
+        if (query_pos != std::string_view::npos)
+        {
+            auto query = target.substr(query_pos + 1U);
+            while (!query.empty() && values.size() < 2U)
+            {
+                auto const amp = query.find('&');
+                auto const pair = query.substr(0U, amp);
+                auto const equals = pair.find('=');
+                auto const name = core::percent_decode(pair.substr(0U, equals));
+                if (name == sticky_query_parameter || name == unstable_sticky_query_parameter)
+                {
+                    values.push_back(core::percent_decode(equals == std::string_view::npos ? std::string_view{}
+                                                                                           : pair.substr(equals + 1U)));
+                }
+                if (amp == std::string_view::npos)
+                {
+                    break;
+                }
+                query.remove_prefix(amp + 1U);
+            }
+        }
+        if (values.empty())
+        {
+            return {};
+        }
+        auto result = StickyQuery{.present = true, .duration_ms = std::nullopt};
+        if (values.size() == 1U)
+        {
+            result.duration_ms = events::parse_sticky_duration_text(values.front());
+        }
+        return result;
+    }
+
+    inline constexpr auto sticky_invalid_reason =
+        std::string_view{"sticky_duration_ms must be given once, as a whole number of milliseconds of at least 1"};
+
+    // The 403 a server with sticky events turned off answers, and nothing otherwise. Never an ordinary send.
+    [[nodiscard]] auto sticky_disabled_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (rt.limits.sticky_events_enabled)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Sticky events are not enabled on this homeserver.");
+    }
+
+    // The refusal of a request that carries the sticky parameter and cannot be sent sticky: disabled is 403, a bad
+    // value 400. Nothing when the parameter is absent. A request that passes carries `sticky.duration_ms`.
+    [[nodiscard]] auto sticky_query_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                            StickyQuery const& sticky) -> std::optional<DispatchResult>
+    {
+        if (!sticky.present)
+        {
+            return std::nullopt;
+        }
+        if (auto disabled = sticky_disabled_refusal(req, rt); disabled.has_value())
+        {
+            return disabled;
+        }
+        if (!sticky.duration_ms.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{sticky_invalid_reason});
+        }
+        return std::nullopt;
+    }
+
+    // A route that sends something other than a message event from PUT /send (PUT .../state/..., POST .../send, PUT
+    // .../redact/...) refuses the sticky parameter, whether or not the feature is on: ignoring it would let a client
+    // believe it sent a sticky event (ADR-0853).
+    [[nodiscard]] auto sticky_parameter_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt)
+        -> std::optional<DispatchResult>
+    {
+        if (!sticky_query_of(req.target).present)
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                            "only a message event sent with PUT /send or the delayed_event endpoint can be sticky");
+    }
+
     // L1 and L2: a `/send` or `/state` request that carries `org.matrix.msc4140.delay` (ADR-0823). Answers nothing for
     // a request without the parameter. With it, the request is always a delayed one: whatever is wrong with it, it is
     // never sent now.
@@ -12587,6 +13142,11 @@ namespace
         {
             return delayed_event_answer(req, rt, *refusal, DelayedEventSuccess::delay_id);
         }
+        auto const sticky = sticky_query_of(req.target);
+        if (auto refusal = sticky_query_refusal(req, rt, sticky); refusal.has_value())
+        {
+            return refusal;
+        }
         if (!delay.delay_ms.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
@@ -12594,6 +13154,7 @@ namespace
                                 "least 1");
         }
         auto request = DelayedEventScheduleRequest{};
+        request.sticky_duration_ms = sticky.duration_ms;
         request.room_id = std::string{room_id};
         request.event_type = std::string{event_type};
         request.txn_id = std::string{txn_id};
@@ -12625,6 +13186,10 @@ namespace
         std::uint64_t delay_ms{0U};
         std::string content_json{};
         std::optional<std::string> state_key{};
+        // MSC4354 (ADR-0853): either name given at all, and its value when valid (a JSON integer of 1 to 2^53-1,
+        // under one name only).
+        bool sticky_present{false};
+        std::optional<std::int64_t> sticky_duration_ms{};
     };
 
     // `delay_ms` (a JSON integer of at least 1) and `content` (a JSON object) are required; `state_key`, when present,
@@ -12654,6 +13219,17 @@ namespace
                 return std::nullopt;
             }
             parsed.state_key = *text;
+        }
+        auto const* stable_sticky = object_member(*object, sticky_query_parameter);
+        auto const* unstable_sticky = object_member(*object, unstable_sticky_query_parameter);
+        parsed.sticky_present = stable_sticky != nullptr || unstable_sticky != nullptr;
+        if ((stable_sticky != nullptr) != (unstable_sticky != nullptr))
+        {
+            auto const* given = stable_sticky != nullptr ? stable_sticky : unstable_sticky;
+            if (auto const* number = std::get_if<std::int64_t>(&given->storage()); number != nullptr)
+            {
+                parsed.sticky_duration_ms = events::parse_sticky_duration_text(std::to_string(*number));
+            }
         }
         return parsed;
     }
@@ -12718,7 +13294,21 @@ namespace
                                 "the body must be an object with an integer delay_ms of at least 1, an object content "
                                 "and, optionally, a string state_key");
         }
+        if (body->sticky_present)
+        {
+            if (auto disabled = sticky_disabled_refusal(req, rt); disabled.has_value())
+            {
+                return std::move(*disabled);
+            }
+            if (!body->sticky_duration_ms.has_value() || body->state_key.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "sticky_duration_ms must be given once, as an integer of at least 1, and only for "
+                                    "a message event");
+            }
+        }
         auto request = DelayedEventScheduleRequest{};
+        request.sticky_duration_ms = body->sticky_duration_ms;
         request.room_id = path.room_id;
         request.event_type = path.event_type;
         request.txn_id = path.txn_id;
@@ -15512,6 +16102,9 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_delayed_event_delay_ms = config.server().delayed_events.max_delay_ms;
     rt.limits.max_scheduled_delayed_events_per_user = config.server().delayed_events.max_scheduled_per_user;
     rt.limits.max_finalised_delayed_events_per_user = config.server().delayed_events.max_finalised_per_user;
+    rt.limits.sticky_events_enabled = config.server().sticky_events.enabled;
+    rt.limits.max_sticky_events_per_sender = config.server().sticky_events.max_per_sender;
+    rt.limits.max_sticky_events_per_room = config.server().sticky_events.max_per_room;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
@@ -15887,6 +16480,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 // MSC4140 (ADR-0823): both flags say whether scheduling is on.
                                 json_member("org.matrix.msc4140", json_bool(rt.limits.delayed_events_enabled)),
                                 json_member("org.matrix.msc4140.stable", json_bool(rt.limits.delayed_events_enabled)),
+                                // MSC4354 (ADR-0853): sticky events, on the unstable name Element Call reads.
+                                json_member("org.matrix.msc4354", json_bool(rt.limits.sticky_events_enabled)),
                                 json_member("org.matrix.simplified_msc3575", json_bool(true)),
                             })),
             })));
@@ -21056,7 +21651,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto pos = sync::parse_sliding_sync_pos(req.target);
         if (!pos.has_value() && sliding_req->pos.has_value())
         {
-            pos = sync::decode_stream_token(*sliding_req->pos);
+            pos = sync::decode_sliding_sync_pos(*sliding_req->pos);
         }
         auto const timeout =
             std::min(sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U)),
@@ -21150,6 +21745,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return std::move(*refused);
                 }
+                if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
@@ -21234,6 +21833,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return std::move(*delayed);
                 }
+                // MSC4354 (ADR-0853): validated before the transaction lookup and never sent as an ordinary event.
+                auto const sticky = sticky_query_of(req.target);
+                if (auto refused = sticky_query_refusal(req, rt, sticky); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 auto const massaged = massaged_timestamp(req);
                 if (!massaged.valid)
                 {
@@ -21281,6 +21886,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
                 rewritten.origin_server_ts = massaged.value;
+                if (sticky.duration_ms.has_value())
+                {
+                    rewritten.sticky = StickySendOptions{
+                        *sticky.duration_ms, database::StickyEventCaps{rt.limits.max_sticky_events_per_sender,
+                                                                       rt.limits.max_sticky_events_per_room}
+                    };
+                }
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                                {
@@ -21316,6 +21928,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
+                // MSC4354 (ADR-0853): a state event is never sticky, delayed or not; refuse before anything else.
+                if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
+                {
+                    return std::move(*refused);
+                }
                 // L2 (MSC4140, ADR-0823): as L1, for every form of the state path (a state key, an empty one, none).
                 if (auto delayed =
                         delayed_query_form(rt, req, *user, path->room_id, path->event_type, {}, path->state_key);
@@ -21396,6 +22013,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             suffix.substr(suffix.size() - send_s.size()) == send_s)
         {
             if (auto refused = delay_parameter_refusal(req, rt); refused.has_value())
+            {
+                return std::move(*refused);
+            }
+            if (auto refused = sticky_parameter_refusal(req, rt); refused.has_value())
             {
                 return std::move(*refused);
             }

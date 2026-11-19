@@ -25,6 +25,9 @@ struct DelayedEventScheduleRequest final
     std::string content_json{};
     std::string txn_id{};
     std::uint64_t delay_ms{0U};
+    // MSC4354 (ADR-0853, ADR-0854): the sticky duration the event is sent with, already parsed (1 to 2^53-1). Never set
+    // together with `state_key`.
+    std::optional<std::int64_t> sticky_duration_ms{};
     bool via_appservice{false};
     bool stable_errcode{false};
 };

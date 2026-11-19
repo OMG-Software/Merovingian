@@ -2,6 +2,7 @@
 
 #include "merovingian/sync/SlidingSync.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -310,8 +311,9 @@ SCENARIO("parse_sliding_sync_pos extracts and decodes the pos query parameter", 
             THEN("the token is decoded correctly")
             {
                 REQUIRE(result.has_value());
-                REQUIRE(result->event_ordering == 42U);
-                REQUIRE(result->sync_stream_id == 3U);
+                auto const decoded = result.value_or(SlidingSyncPos{}).token;
+                REQUIRE(decoded.event_ordering == 42U);
+                REQUIRE(decoded.sync_stream_id == 3U);
             }
         }
     }

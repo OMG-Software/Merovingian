@@ -7,6 +7,10 @@ database_sources = files(
   'LiveKitDelegationRowText.cpp',
   'LiveKitDelegationStore.cpp',
   'LiveKitDelegationTable.cpp',
+  'StickyEventRowText.cpp',
+  'StickyEventStore.cpp',
+  'StickyEventView.cpp',
+  'StickyEventTable.cpp',
   'EventTable.cpp',
   'EventStateGroupTable.cpp',
   'ForwardExtremityTable.cpp',
@@ -42,6 +46,6 @@ database_lib = static_library(
   database_sources,
   include_directories: inc,
   dependencies: [libpq_dep, sqlite_dep],
-  link_with: [canonicaljson_lib],
+  link_with: [auth_lib, canonicaljson_lib],
   cpp_args: ['-DMEROVINGIAN_LIBPQ_BUILD_VERSION="' + libpq_build_version + '"'],
 )

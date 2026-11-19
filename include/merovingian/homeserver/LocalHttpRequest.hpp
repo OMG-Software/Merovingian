@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/homeserver/StickySendOptions.hpp"
 #include "merovingian/http/Header.hpp"
 
 #include <cstdint>
@@ -42,6 +43,9 @@ struct LocalHttpRequest final
     // event's origin_server_ts. Set only by the client-server dispatcher after it has matched an
     // as_token; it is never read from the wire, so no other caller can set it.
     std::optional<std::int64_t> origin_server_ts{};
+    // MSC4354 (ADR-0853): the validated sticky duration of a `PUT .../send/...` the dispatcher rewrote to the internal
+    // `POST .../send`, to be composed into the event. Never read from the wire.
+    std::optional<StickySendOptions> sticky{};
 };
 
 } // namespace merovingian::homeserver

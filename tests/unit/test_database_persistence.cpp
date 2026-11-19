@@ -1332,7 +1332,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies the v1 to v4 schema steps and their explicit downgrades",
+SCENARIO("Database migration runner applies the v1 to v5 schema steps and their explicit downgrades",
          "[database][migration]")
 {
     GIVEN("an empty schema state")
@@ -1348,13 +1348,13 @@ SCENARIO("Database migration runner applies the v1 to v4 schema steps and their 
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("v1 to v4 build the whole current schema, and four steps take it away newest first")
+            THEN("v1 to v5 build the whole current schema, and five steps take it away newest first")
             {
-                REQUIRE(merovingian::database::current_schema_version() == 4U);
+                REQUIRE(merovingian::database::current_schema_version() == 5U);
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
-                REQUIRE(upgrade_plan.target_version == 4U);
-                REQUIRE(upgrade_plan.steps.size() == 4U);
+                REQUIRE(upgrade_plan.target_version == 5U);
+                REQUIRE(upgrade_plan.steps.size() == 5U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1363,23 +1363,27 @@ SCENARIO("Database migration runner applies the v1 to v4 schema steps and their 
                 REQUIRE(upgrade_plan.steps[2].name == "delayed_events");
                 REQUIRE(upgrade_plan.steps[3].version == 4U);
                 REQUIRE(upgrade_plan.steps[3].name == "livekit_delegations");
+                REQUIRE(upgrade_plan.steps[4].version == 5U);
+                REQUIRE(upgrade_plan.steps[4].name == "sticky_events");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 4U);
-                REQUIRE(upgraded.state.applied_migrations.size() == 4U);
+                REQUIRE(upgraded.state.version == 5U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 5U);
                 REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "livekit_delegations");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "sticky_events");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 4U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_livekit_delegations");
-                REQUIRE(downgrade_plan.steps[0].version == 3U);
-                REQUIRE(downgrade_plan.steps[1].name == "drop_delayed_events");
-                REQUIRE(downgrade_plan.steps[1].version == 2U);
-                REQUIRE(downgrade_plan.steps[2].name == "drop_oauth_tables");
-                REQUIRE(downgrade_plan.steps[2].version == 1U);
-                REQUIRE(downgrade_plan.steps[3].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 5U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_sticky_events");
+                REQUIRE(downgrade_plan.steps[0].version == 4U);
+                REQUIRE(downgrade_plan.steps[1].name == "drop_livekit_delegations");
+                REQUIRE(downgrade_plan.steps[1].version == 3U);
+                REQUIRE(downgrade_plan.steps[2].name == "drop_delayed_events");
+                REQUIRE(downgrade_plan.steps[2].version == 2U);
+                REQUIRE(downgrade_plan.steps[3].name == "drop_oauth_tables");
+                REQUIRE(downgrade_plan.steps[3].version == 1U);
+                REQUIRE(downgrade_plan.steps[4].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1406,8 +1410,8 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
 
             THEN("each v1 table is created whole, by exactly the DDL the registry describes")
             {
-                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 4U);
-                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 4U);
+                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 5U);
+                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 5U);
                 for (auto const& table : tables)
                 {
                     INFO("table " << table.name);
@@ -1422,6 +1426,8 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                 REQUIRE(statement_sql("create_idx_delayed_events_user_id").empty());
                 REQUIRE(statement_sql("create_livekit_delegations").empty());
                 REQUIRE(statement_sql("create_idx_livekit_delegations_user_id").empty());
+                REQUIRE(statement_sql("create_sticky_events").empty());
+                REQUIRE(statement_sql("create_delayed_event_sticky_durations").empty());
             }
 
             AND_THEN("every column the pre-1.0 chain ALTERed on is part of its table's CREATE")
@@ -1520,8 +1526,8 @@ SCENARIO("The v2 schema step adds only the OAuth 2.0 tables and their index", "[
                         "device_id))");
                 REQUIRE(step.statements[2].sql ==
                         "CREATE INDEX idx_oauth_sessions_client_id ON oauth_sessions (client_id)");
-                // Version 2 adds two tables; versions 3 and 4 add one each.
-                REQUIRE(current.size() == initial.size() + 4U);
+                // Version 2 adds two tables; versions 3 and 4 add one each; version 5 adds two.
+                REQUIRE(current.size() == initial.size() + 6U);
                 REQUIRE(std::ranges::find(initial, std::string_view{"oauth_clients"}) == initial.end());
                 REQUIRE(std::ranges::find(current, std::string_view{"oauth_clients"}) != current.end());
                 REQUIRE(std::ranges::find(current, std::string_view{"oauth_sessions"}) != current.end());
@@ -1576,7 +1582,7 @@ SCENARIO("The v3 schema step adds only the delayed-events table and its user ind
                         "TEXT NOT NULL)");
                 REQUIRE(step.statements[1].sql ==
                         "CREATE INDEX idx_delayed_events_user_id ON delayed_events (user_id)");
-                REQUIRE(current.size() == initial.size() + 4U);
+                REQUIRE(current.size() == initial.size() + 6U);
                 REQUIRE(std::ranges::find(initial, std::string_view{"delayed_events"}) == initial.end());
                 REQUIRE(std::ranges::find(current, std::string_view{"delayed_events"}) != current.end());
                 REQUIRE(merovingian::database::schema_definitions_added_by(2U).size() == 2U);
@@ -1642,6 +1648,65 @@ SCENARIO("The v4 schema step adds only the LiveKit delegations table and its use
                 REQUIRE(downgrade.name == "drop_livekit_delegations");
                 REQUIRE(downgrade.statements.size() == 1U);
                 REQUIRE(downgrade.statements[0].sql.find("livekit_delegations") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("The v5 schema step adds only the sticky-events tables and their two indexes",
+         "[database][migration][sticky-events]")
+{
+    GIVEN("the v5 schema step, its downgrade and the current table inventory")
+    {
+        auto const step = merovingian::database::sticky_events_migration();
+        auto const downgrade = merovingian::database::downgrade_sticky_events_migration();
+        auto const initial = merovingian::database::initial_schema_tables();
+        auto const current = merovingian::database::current_schema_tables();
+
+        WHEN("its statements are inspected")
+        {
+            auto const names = [&step]() {
+                auto collected = std::vector<std::string>{};
+                for (auto const& statement : step.statements)
+                {
+                    collected.push_back(statement.name);
+                }
+                return collected;
+            }();
+
+            THEN("it creates sticky_events and delayed_event_sticky_durations with TEXT columns and two indexes")
+            {
+                REQUIRE(step.version == 5U);
+                REQUIRE(step.name == "sticky_events");
+                REQUIRE(step.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(names == std::vector<std::string>{"create_sticky_events",
+                                                          "create_delayed_event_sticky_durations",
+                                                          "create_idx_sticky_events_room_id",
+                                                          "create_idx_sticky_events_sender"});
+                REQUIRE(step.statements[0].sql ==
+                        "CREATE TABLE \"sticky_events\" (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender "
+                        "TEXT NOT NULL, received_at_ms TEXT NOT NULL, expires_at_ms TEXT NOT NULL)");
+                REQUIRE(step.statements[1].sql ==
+                        "CREATE TABLE \"delayed_event_sticky_durations\" (delay_id TEXT PRIMARY KEY, "
+                        "sticky_duration_ms TEXT NOT NULL)");
+                REQUIRE(step.statements[2].sql == "CREATE INDEX idx_sticky_events_room_id ON sticky_events (room_id)");
+                REQUIRE(step.statements[3].sql == "CREATE INDEX idx_sticky_events_sender ON sticky_events (sender)");
+                REQUIRE(std::ranges::find(initial, std::string_view{"sticky_events"}) == initial.end());
+                REQUIRE(std::ranges::find(current, std::string_view{"sticky_events"}) != current.end());
+                REQUIRE(std::ranges::find(current, std::string_view{"delayed_event_sticky_durations"}) !=
+                        current.end());
+                REQUIRE(merovingian::database::schema_definitions_added_by(5U).size() == 2U);
+                REQUIRE(merovingian::database::schema_indexes_added_by(5U).size() == 2U);
+                REQUIRE(merovingian::database::schema_definitions_added_by(4U).size() == 1U);
+                REQUIRE(merovingian::database::schema_table_definition("sticky_events").has_value());
+                REQUIRE(merovingian::database::schema_table_definition("delayed_event_sticky_durations").has_value());
+            }
+
+            AND_THEN("its downgrade drops both tables, back to version 4")
+            {
+                REQUIRE(downgrade.version == 4U);
+                REQUIRE(downgrade.name == "drop_sticky_events");
+                REQUIRE(downgrade.statements.size() == 2U);
             }
         }
     }
@@ -2541,7 +2606,7 @@ SCENARIO("Checked-in migrations hold exactly the steps this build runs", "[datab
 }
 
 SCENARIO("An offline plan takes only the migration files between its two versions",
-         "[database][migration][files][oauth][delayed-events][livekit-delegations]")
+         "[database][migration][files][oauth][delayed-events][livekit-delegations][sticky-events]")
 {
     GIVEN("the repository migration directory and the migration role")
     {
@@ -2552,34 +2617,39 @@ SCENARIO("An offline plan takes only the migration files between its two version
         auto migration_config = merovingian::config::DatabaseConfig{};
         migration_config.role = merovingian::config::DatabaseRole::migration;
 
-        WHEN("plans from v1, from v2, from v3 and from nothing to v4 are built from the files")
+        WHEN("plans from v1, from v2, from v3, from v4 and from nothing to v5 are built from the files")
         {
             auto const from_v1 =
-                merovingian::database::build_offline_migration_plan(migration_config, 1U, 4U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 1U, 5U, loaded.steps);
             auto const from_v2 =
-                merovingian::database::build_offline_migration_plan(migration_config, 2U, 4U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 2U, 5U, loaded.steps);
             auto const from_v3 =
-                merovingian::database::build_offline_migration_plan(migration_config, 3U, 4U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 3U, 5U, loaded.steps);
+            auto const from_v4 =
+                merovingian::database::build_offline_migration_plan(migration_config, 4U, 5U, loaded.steps);
             auto const from_empty =
-                merovingian::database::build_offline_migration_plan(migration_config, 0U, 4U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 0U, 5U, loaded.steps);
             auto const no_op =
-                merovingian::database::build_offline_migration_plan(migration_config, 4U, 4U, loaded.steps);
+                merovingian::database::build_offline_migration_plan(migration_config, 5U, 5U, loaded.steps);
 
-            THEN("a v1 database gets 002 to 004, a v2 one 003 and 004, a v3 one 004 alone, an empty one all four, a v4 "
-                 "one nothing")
+            THEN("a v1 database gets 002 to 005, a v2 one 003 to 005, a v3 one 004 and 005, a v4 one 005 alone, an "
+                 "empty one all five, a v5 one nothing")
             {
                 REQUIRE(from_v1.ok);
-                REQUIRE(from_v1.plan.steps.size() == 3U);
+                REQUIRE(from_v1.plan.steps.size() == 4U);
                 REQUIRE(from_v1.plan.steps.front().name == "oauth_tables");
-                REQUIRE(from_v1.plan.steps.back().name == "livekit_delegations");
+                REQUIRE(from_v1.plan.steps.back().name == "sticky_events");
                 REQUIRE(from_v2.ok);
-                REQUIRE(from_v2.plan.steps.size() == 2U);
+                REQUIRE(from_v2.plan.steps.size() == 3U);
                 REQUIRE(from_v2.plan.steps.front().name == "delayed_events");
                 REQUIRE(from_v3.ok);
-                REQUIRE(from_v3.plan.steps.size() == 1U);
+                REQUIRE(from_v3.plan.steps.size() == 2U);
                 REQUIRE(from_v3.plan.steps.front().name == "livekit_delegations");
+                REQUIRE(from_v4.ok);
+                REQUIRE(from_v4.plan.steps.size() == 1U);
+                REQUIRE(from_v4.plan.steps.front().name == "sticky_events");
                 REQUIRE(from_empty.ok);
-                REQUIRE(from_empty.plan.steps.size() == 4U);
+                REQUIRE(from_empty.plan.steps.size() == 5U);
                 REQUIRE(from_empty.plan.steps.front().name == "initial_schema");
                 REQUIRE(no_op.ok);
                 REQUIRE(no_op.plan.steps.empty());
@@ -2636,10 +2706,10 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             {
                 // The pre-1.0 migration chain collapsed into v1's 64 tables; migration 002 (1.1.0) adds the two
                 // OAuth 2.0 tables, migration 003 (1.1.2) the delayed-events table and migration 004 the LiveKit
-                // delegations table.
+                // delegations table and migration 005 the two sticky-events tables.
                 REQUIRE(tables.size() == 64U);
-                REQUIRE(merovingian::database::current_schema_version() == 4U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 68U);
+                REQUIRE(merovingian::database::current_schema_version() == 5U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 70U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

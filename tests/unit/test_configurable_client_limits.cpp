@@ -11,6 +11,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -199,7 +200,7 @@ SCENARIO("sliding sync position parsing remains independent of resource policy",
                 REQUIRE(parsed.has_value());
                 REQUIRE_FALSE(merovingian::sync::sliding_sync_request_limit_violation(*parsed, limits).has_value());
                 REQUIRE(pos.has_value());
-                REQUIRE(pos->event_ordering == 1U);
+                REQUIRE(pos.value_or(merovingian::sync::SlidingSyncPos{}).token.event_ordering == 1U);
             }
         }
     }

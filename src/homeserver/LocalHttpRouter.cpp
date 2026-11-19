@@ -25,6 +25,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
 #include "merovingian/events/AuthEventSlots.hpp"
 #include "merovingian/events/Authorization.hpp"
@@ -99,6 +100,8 @@
 #include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/homeserver/StickyEventPush.hpp"
+#include "merovingian/homeserver/StickyEventRecording.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/http/ClientAddress.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
@@ -724,6 +727,9 @@ namespace
         {
             dispatch_device_list_update(runtime, destination, local_member, stream_id);
         }
+        // MSC4354 (ADR-0856): the joiner's server also learns of this server's own unexpired sticky events, at once
+        // rather than after a sender's next refresh. Same guard, same lock as the device lists above; only enqueues.
+        std::ignore = push_local_sticky_events_to_server(runtime, room_id, destination);
     }
 
     // The roster follows the membership rows a recomputation corrected (ADR-0615), after the event's own membership,
@@ -5501,6 +5507,45 @@ namespace
         return federation::PduIngestionResult{federation::PduIngestionStatus::accepted, {}};
     }
 
+    // MSC4354 (ADR-0854, ADR-0856): records a federated PDU as a sticky event once it is accepted and stored as a
+    // timeline event. The caller has judged the PDU `accepted` (never rejected, soft-failed or an outlier) and holds
+    // the room stripe and `runtime.mutex`. A state event is never sticky. The received time is this process's clock
+    // now, never a time the sender supplied; the stored copy is read back, so an event a redaction already reached (it
+    // arrived after its redaction) is judged in its redacted form and gets no row. The worker decides nothing here.
+    auto record_sticky_event_of_accepted_pdu(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+        -> void
+    {
+        if (!runtime.config.server().sticky_events.enabled || envelope.state_key.has_value())
+        {
+            return;
+        }
+        auto& store = runtime.database.persistent_store;
+        auto const stored = store.events.find(envelope.event_id);
+        if (stored == store.events.end() || stored->room_id != envelope.room_id || stored->status != "accepted")
+        {
+            return;
+        }
+        auto const now_ms = database::sticky_clock_now_ms(store);
+        auto const outcome =
+            record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
+                                       database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
+                                                                 runtime.config.server().sticky_events.max_per_room},
+                                       now_ms);
+        if (!outcome.recorded)
+        {
+            log_diagnostic("sticky_event.record_failed",
+                           {
+                               {"room_id",  envelope.room_id,  false},
+                               {"event_id", envelope.event_id, false}
+            });
+        }
+        // The sender cap can expire the sender's row in another room: that room's worker snapshot changed (ADR-0862).
+        for (auto const& other_room : outcome.other_rooms)
+        {
+            notify_room_changed(runtime, other_room);
+        }
+    }
+
 } // namespace
 
 // The body of ingest_pdu_event; the public function below adds what must happen
@@ -6038,6 +6083,11 @@ namespace
     result.reason = outcome_reason;
     result.accepted_stream_ordering = stream_ordering;
     result.accepted_sync_stream_id = sync_stream_id;
+
+    if (outcome == ReceiptOutcome::accepted)
+    {
+        record_sticky_event_of_accepted_pdu(runtime, envelope);
+    }
 
     // The live roster follows the membership committed with the event above.
     if (!membership.empty())
@@ -6700,7 +6750,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"room_id",    room_id,                             false},
                            {"body_bytes", std::to_string(request.body.size()), false}
         });
-        auto result = send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts);
+        auto result =
+            send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts, request.sticky);
         log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
                        {
                            {"room_id", room_id,                                                    false},

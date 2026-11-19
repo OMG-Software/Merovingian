@@ -100,6 +100,8 @@ security.password_hashing.max_concurrent=32
 # shipped caps of four per user and two per device answered some of them 429
 # "too many concurrent sync waits" (TestFederationRoomsInvite, Complement run
 # 10). These are the largest values the server accepts.
+# Sticky events (MSC4354, ADR-0854) are on by default; stated so the image's behaviour does not depend on the default.
+server.sticky_events.enabled=true
 server.http.sync_max_per_user=64
 server.http.sync_max_per_device=16
 # appservice.registration_files is not set here: Complement copies a test's

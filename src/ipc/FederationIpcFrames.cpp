@@ -1114,6 +1114,38 @@ namespace
         return out;
     }
 
+    // A sticky row (ADR-0858). Its times are never negative: `parse_sticky_event_row` reads them as digits only.
+    [[nodiscard]] auto sticky_row(database::PersistentStickyEvent const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"y")"};
+        add_str(out, "e", row.event_id);
+        add_str(out, "r", row.room_id);
+        add_str(out, "u", row.sender);
+        add_u64(out, "ra", static_cast<std::uint64_t>(std::max<std::int64_t>(row.received_at_ms, 0)));
+        add_u64(out, "ex", static_cast<std::uint64_t>(std::max<std::int64_t>(row.expires_at_ms, 0)));
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto parse_sticky_row(canonicaljson::Object const& obj)
+        -> std::optional<database::PersistentStickyEvent>
+    {
+        auto event_id = get_required_str(obj, "e");
+        auto room = get_required_str(obj, "r");
+        auto sender = get_required_str(obj, "u");
+        auto const received = get_u64_text(obj, "ra");
+        auto const expires = get_u64_text(obj, "ex");
+        constexpr auto widest = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        if (!event_id || !room || !sender || !received || !expires || *received > widest || *expires > widest)
+        {
+            return std::nullopt;
+        }
+        // The fields' size and content are judged where the row is applied (`StickyEventTable::insert`).
+        return database::PersistentStickyEvent{std::move(*event_id), std::move(*room), std::move(*sender),
+                                               static_cast<std::int64_t>(*received),
+                                               static_cast<std::int64_t>(*expires)};
+    }
+
     [[nodiscard]] auto parse_event_row(canonicaljson::Object const& obj) -> std::optional<database::PersistentEvent>
     {
         auto event_id = get_required_str(obj, "i");
@@ -1289,6 +1321,15 @@ namespace
             }
             rows.forward_extremities.push_back({std::move(*room), std::move(*event_id)});
             return true;
+        }
+        if (kind == "y")
+        {
+            auto sticky = parse_sticky_row(obj);
+            if (sticky.has_value())
+            {
+                rows.sticky_events.push_back(std::move(*sticky));
+            }
+            return sticky.has_value();
         }
         return false;
     }
@@ -1474,7 +1515,8 @@ auto paginate_room_snapshot(database::RoomReloadSnapshot const& snapshot, std::u
     auto rows = std::vector<std::string>{};
     rows.reserve(snapshot.memberships.size() + snapshot.invites.size() + snapshot.events.size() +
                  snapshot.state.size() + snapshot.state_groups.size() + snapshot.state_group_state.size() +
-                 snapshot.event_state_groups.size() + snapshot.forward_extremities.size());
+                 snapshot.event_state_groups.size() + snapshot.forward_extremities.size() +
+                 snapshot.sticky_events.size());
     std::ranges::transform(snapshot.memberships, std::back_inserter(rows), membership_row);
     std::ranges::transform(snapshot.invites, std::back_inserter(rows), invite_row);
     std::ranges::transform(snapshot.events, std::back_inserter(rows), event_row);
@@ -1483,6 +1525,7 @@ auto paginate_room_snapshot(database::RoomReloadSnapshot const& snapshot, std::u
     std::ranges::transform(snapshot.state_group_state, std::back_inserter(rows), group_entry_row);
     std::ranges::transform(snapshot.event_state_groups, std::back_inserter(rows), mapping_row);
     std::ranges::transform(snapshot.forward_extremities, std::back_inserter(rows), tip_row);
+    std::ranges::transform(snapshot.sticky_events, std::back_inserter(rows), sticky_row);
 
     auto room = std::string{};
     if (snapshot.room.has_value())

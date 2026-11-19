@@ -1051,6 +1051,28 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
             }
         }
+        // Sticky events (ADR-0854). validate() judges the range.
+        else if (key == "server.sticky_events.enabled")
+        {
+            if (!parse_bool_value(value, server.sticky_events.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.sticky_events.max_per_sender")
+        {
+            if (!parse_u32_value(value, server.sticky_events.max_per_sender))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
+            }
+        }
+        else if (key == "server.sticky_events.max_per_room")
+        {
+            if (!parse_u32_value(value, server.sticky_events.max_per_room))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer count");
+            }
+        }
         else if (key == "server.turn.username")
         {
             server.turn.username = std::string{value};
