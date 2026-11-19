@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/PersistentStickyEvent.hpp"
+#include "merovingian/database/StickyEventRecordOutcome.hpp"
 #include "merovingian/database/StickyEventStore.hpp"
 #include "merovingian/events/StickyEvent.hpp"
 
@@ -36,36 +37,36 @@ namespace
 
 auto record_sticky_event_of_pdu(database::PersistentStore& store, std::string_view pdu_json, std::string_view event_id,
                                 std::int64_t received_at_ms, database::StickyEventCaps caps, std::int64_t now_ms)
-    -> bool
+    -> database::StickyEventRecordOutcome
 {
     auto const parsed = canonicaljson::parse_lossless(pdu_json);
     if (parsed.error != canonicaljson::ParseError::none)
     {
-        return true;
+        return database::StickyEventRecordOutcome{true, {}};
     }
     auto const duration = events::sticky_duration_of(parsed.value);
     if (!duration.has_value())
     {
-        return true;
+        return database::StickyEventRecordOutcome{true, {}};
     }
     auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
     if (object == nullptr)
     {
-        return true;
+        return database::StickyEventRecordOutcome{true, {}};
     }
     auto const* room_id = member_of(*object, "room_id");
     auto const* sender = member_of(*object, "sender");
     auto const* ts = member_of(*object, "origin_server_ts");
     if (room_id == nullptr || sender == nullptr || ts == nullptr)
     {
-        return true;
+        return database::StickyEventRecordOutcome{true, {}};
     }
     auto const* room_text = std::get_if<std::string>(&room_id->storage());
     auto const* sender_text = std::get_if<std::string>(&sender->storage());
     auto const* origin_ts = std::get_if<std::int64_t>(&ts->storage());
     if (room_text == nullptr || sender_text == nullptr || origin_ts == nullptr)
     {
-        return true;
+        return database::StickyEventRecordOutcome{true, {}};
     }
     auto row = database::PersistentStickyEvent{};
     row.event_id = std::string{event_id};

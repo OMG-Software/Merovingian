@@ -739,7 +739,7 @@ SCENARIO("The push to a joining server sends nothing to a server the operator or
             REQUIRE(db::record_sticky_event(
                 fixture.store(),
                 {"$missing:example.org", fixture.room_id(), "@alice:example.org", t0, t0 + one_hour - 1}, {60U, 1000U},
-                t0));
+                t0).recorded);
             auto const pushed = fixture.push_to(server_d);
 
             THEN("only the event it holds is sent")

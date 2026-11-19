@@ -82,7 +82,7 @@ auto record_all(db::PersistentStore& store, std::vector<PersistentStickyEvent> r
     for (auto& row : rows)
     {
         // Moved outside REQUIRE, whose expansion repeats its expression.
-        auto const recorded = db::record_sticky_event(store, std::move(row), caps, now_ms);
+        auto const recorded = db::record_sticky_event(store, std::move(row), caps, now_ms).recorded;
         REQUIRE(recorded);
     }
 }
@@ -200,14 +200,15 @@ SCENARIO("A sticky event is recorded once, and an expired one is not recorded",
         WHEN("a row is recorded, recorded again with different columns, and an expired row is recorded")
         {
             auto const before = db::committed_transaction_count(store);
-            auto const first = db::record_sticky_event(store, sticky("$one", 5000), {10U}, now_ms);
+            auto const first = db::record_sticky_event(store, sticky("$one", 5000), {10U}, now_ms).recorded;
             auto const after_first = db::committed_transaction_count(store);
-            auto const duplicate = db::record_sticky_event(store, sticky("$one", 9000, bob), {10U}, now_ms);
-            auto const expired = db::record_sticky_event(store, sticky("$stale", 1000), {10U}, now_ms);
-            auto const long_gone = db::record_sticky_event(store, sticky("$older", 5), {10U}, now_ms);
+            auto const duplicate = db::record_sticky_event(store, sticky("$one", 9000, bob), {10U}, now_ms).recorded;
+            auto const expired = db::record_sticky_event(store, sticky("$stale", 1000), {10U}, now_ms).recorded;
+            auto const long_gone = db::record_sticky_event(store, sticky("$older", 5), {10U}, now_ms).recorded;
             // A negative `origin_server_ts` gives a negative expiry; it is expired before any other check, even with
             // caps that would refuse a storable row.
-            auto const negative = db::record_sticky_event(store, sticky("$negative", -3'600'000), {0U, 0U}, now_ms);
+            auto const negative =
+                db::record_sticky_event(store, sticky("$negative", -3'600'000), {0U, 0U}, now_ms).recorded;
             auto const after_all = db::committed_transaction_count(store);
 
             THEN("the first is stored in one transaction, and the other four succeed without writing anything")
@@ -227,10 +228,11 @@ SCENARIO("A sticky event is recorded once, and an expired one is not recorded",
 
         WHEN("a row that is not storable is recorded, and a cap of 0 is given")
         {
-            auto const empty_sender = db::record_sticky_event(store, sticky("$a", 5000, ""), {10U}, now_ms);
-            auto const over_long = db::record_sticky_event(store, sticky(std::string(256U, 'x'), 5000), {10U}, now_ms);
-            auto const no_cap = db::record_sticky_event(store, sticky("$b", 5000), {0U}, now_ms);
-            auto const no_room_cap = db::record_sticky_event(store, sticky("$c", 5000), {10U, 0U}, now_ms);
+            auto const empty_sender = db::record_sticky_event(store, sticky("$a", 5000, ""), {10U}, now_ms).recorded;
+            auto const over_long =
+                db::record_sticky_event(store, sticky(std::string(256U, 'x'), 5000), {10U}, now_ms).recorded;
+            auto const no_cap = db::record_sticky_event(store, sticky("$b", 5000), {0U}, now_ms).recorded;
+            auto const no_room_cap = db::record_sticky_event(store, sticky("$c", 5000), {10U, 0U}, now_ms).recorded;
 
             THEN("each is refused and nothing is written")
             {
@@ -251,15 +253,15 @@ SCENARIO("Recording a sticky event expires the sender's oldest rows past the cap
     {
         auto opened = opened_store();
         auto& store = opened.store;
-        REQUIRE(db::record_sticky_event(store, sticky("$b-2000", 2000), {3U}, now_ms));
-        REQUIRE(db::record_sticky_event(store, sticky("$a-2000", 2000), {3U}, now_ms));
-        REQUIRE(db::record_sticky_event(store, sticky("$c-3000", 3000), {3U}, now_ms));
-        REQUIRE(db::record_sticky_event(store, sticky("$bob", 1500, bob), {3U}, now_ms));
+        REQUIRE(db::record_sticky_event(store, sticky("$b-2000", 2000), {3U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(store, sticky("$a-2000", 2000), {3U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(store, sticky("$c-3000", 3000), {3U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(store, sticky("$bob", 1500, bob), {3U}, now_ms).recorded);
 
         WHEN("a fourth row is recorded that expires last")
         {
             auto const before = db::committed_transaction_count(store);
-            auto const recorded = db::record_sticky_event(store, sticky("$d-4000", 4000), {3U}, now_ms);
+            auto const recorded = db::record_sticky_event(store, sticky("$d-4000", 4000), {3U}, now_ms).recorded;
             auto const transactions = db::committed_transaction_count(store) - before;
 
             THEN("the oldest by expiry, ties by event ID, goes in the same transaction and the other sender is kept")
@@ -277,7 +279,7 @@ SCENARIO("Recording a sticky event expires the sender's oldest rows past the cap
 
         WHEN("a fourth row is recorded that expires before every other row")
         {
-            auto const recorded = db::record_sticky_event(store, sticky("$e-1100", 1100), {3U}, now_ms);
+            auto const recorded = db::record_sticky_event(store, sticky("$e-1100", 1100), {3U}, now_ms).recorded;
 
             THEN("the new row is the oldest, so it is not stored and the other rows stay")
             {
@@ -290,7 +292,7 @@ SCENARIO("Recording a sticky event expires the sender's oldest rows past the cap
 
         WHEN("a row is recorded with a cap of one")
         {
-            auto const recorded = db::record_sticky_event(store, sticky("$f-9000", 9000), {1U}, now_ms);
+            auto const recorded = db::record_sticky_event(store, sticky("$f-9000", 9000), {1U}, now_ms).recorded;
 
             THEN("every earlier row of the sender goes and only the new one stays")
             {
@@ -302,9 +304,9 @@ SCENARIO("Recording a sticky event expires the sender's oldest rows past the cap
 
         WHEN("the sender holds expired rows too and one more row is recorded under a cap of three")
         {
-            REQUIRE(db::record_sticky_event(store, sticky("$g-9000", 9000), {3U}, now_ms));
+            REQUIRE(db::record_sticky_event(store, sticky("$g-9000", 9000), {3U}, now_ms).recorded);
             auto const later = std::int64_t{2500};
-            REQUIRE(db::record_sticky_event(store, sticky("$h-9500", 9500), {3U}, later));
+            REQUIRE(db::record_sticky_event(store, sticky("$h-9500", 9500), {3U}, later).recorded);
 
             THEN("an expired row is neither counted nor evicted for the cap")
             {
@@ -320,7 +322,7 @@ SCENARIO("Recording a sticky event expires the sender's oldest rows past the cap
             for (auto index = 0; index < 20; ++index)
             {
                 REQUIRE(db::record_sticky_event(store, sticky("$n-" + std::to_string(10 + index), 10'000 + index), {3U},
-                                                now_ms));
+                                                now_ms).recorded);
             }
 
             THEN("the sender still holds three, the newest three")
@@ -351,7 +353,7 @@ SCENARIO("Past the room cap, the server holding the most rows in the room loses 
         WHEN("another flood.example user records a row")
         {
             auto const recorded =
-                db::record_sticky_event(store, sticky_in(room, "$f4", 6000, flood_b), room_caps(4U), now_ms);
+                db::record_sticky_event(store, sticky_in(room, "$f4", 6000, flood_b), room_caps(4U), now_ms).recorded;
 
             THEN("flood.example's oldest row goes in the same transaction, and calm.example's older row stays")
             {
@@ -367,7 +369,8 @@ SCENARIO("Past the room cap, the server holding the most rows in the room loses 
         WHEN("calm.example records a second row")
         {
             auto const recorded =
-                db::record_sticky_event(store, sticky_in(room, "$calm-new", 9000, calm), room_caps(4U), now_ms);
+                db::record_sticky_event(store, sticky_in(room, "$calm-new", 9000, calm), room_caps(4U), now_ms)
+                    .recorded;
 
             THEN("flood.example, still holding the most, gives up its oldest row")
             {
@@ -382,7 +385,7 @@ SCENARIO("Past the room cap, the server holding the most rows in the room loses 
         WHEN("flood.example records a row older than every row it holds")
         {
             auto const recorded =
-                db::record_sticky_event(store, sticky_in(room, "$f0", 2500, flood_a), room_caps(4U), now_ms);
+                db::record_sticky_event(store, sticky_in(room, "$f0", 2500, flood_a), room_caps(4U), now_ms).recorded;
 
             THEN("the new row is the one that goes: it is not stored, nothing is written, and the call succeeds")
             {
@@ -397,7 +400,8 @@ SCENARIO("Past the room cap, the server holding the most rows in the room loses 
         WHEN("flood.example records a row in another room")
         {
             auto const recorded =
-                db::record_sticky_event(store, sticky_in(other_room, "$o1", 6000, flood_a), room_caps(4U), now_ms);
+                db::record_sticky_event(store, sticky_in(other_room, "$o1", 6000, flood_a), room_caps(4U), now_ms)
+                    .recorded;
 
             THEN("the full room is untouched: its cap counts its own rows only")
             {
@@ -405,6 +409,65 @@ SCENARIO("Past the room cap, the server holding the most rows in the room loses 
                 REQUIRE(store.sticky_events.contains("$o1"));
                 REQUIRE(store.sticky_events.contains("$f1"));
                 REQUIRE(store.sticky_events.unexpired_of_room(room, now_ms).size() == 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("A row the sender cap expires in another room is reported, so that room's snapshot can be refreshed",
+         "[database][sticky-events][sticky-event-store][cap][worker]")
+{
+    // ADR-0862: the caller tells the federation worker each room that lost a row; the new row's own room it tells
+    // already. The room cap only ever takes rows of the new row's room.
+    GIVEN("alice at a sender cap of 2, her oldest row in the room and the newer in another room")
+    {
+        auto opened = opened_store();
+        auto& store = opened.store;
+        auto const caps = db::StickyEventCaps{2U};
+        record_all(store, {sticky_in(room, "$r1", 2000, alice), sticky_in(other_room, "$o1", 3000, alice)}, caps);
+
+        WHEN("she records a row in the other room")
+        {
+            auto const outcome =
+                db::record_sticky_event(store, sticky_in(other_room, "$o2", 4000, alice), caps, now_ms);
+
+            THEN("her row in the room goes, and the room is reported")
+            {
+                REQUIRE(outcome.recorded);
+                REQUIRE_FALSE(store.sticky_events.contains("$r1"));
+                REQUIRE(outcome.other_rooms == std::vector<std::string>{room});
+            }
+        }
+
+        WHEN("she records a row in the room itself")
+        {
+            auto const outcome = db::record_sticky_event(store, sticky_in(room, "$r2", 4000, alice), caps, now_ms);
+
+            THEN("her oldest row goes from the row's own room, and no other room is reported")
+            {
+                REQUIRE(outcome.recorded);
+                REQUIRE_FALSE(store.sticky_events.contains("$r1"));
+                REQUIRE(outcome.other_rooms.empty());
+            }
+        }
+    }
+
+    GIVEN("a room at its room cap of 1")
+    {
+        auto opened = opened_store();
+        auto& store = opened.store;
+        record_all(store, {sticky_in(room, "$f1", 3000, flood_a)}, room_caps(1U));
+
+        WHEN("the same server's newer row takes its place")
+        {
+            auto const outcome =
+                db::record_sticky_event(store, sticky_in(room, "$f2", 4000, flood_b), room_caps(1U), now_ms);
+
+            THEN("the room cap's victim is in the row's own room, so no other room is reported")
+            {
+                REQUIRE(outcome.recorded);
+                REQUIRE_FALSE(store.sticky_events.contains("$f1"));
+                REQUIRE(outcome.other_rooms.empty());
             }
         }
     }
@@ -425,7 +488,8 @@ SCENARIO("A room-cap tie goes against the new row's server, else the smallest se
 
         WHEN("flood.example records a second row, tying with calm.example")
         {
-            REQUIRE(db::record_sticky_event(store, sticky_in(room, "$f2", 6000, flood_b), room_caps(4U), now_ms));
+            REQUIRE(
+                db::record_sticky_event(store, sticky_in(room, "$f2", 6000, flood_b), room_caps(4U), now_ms).recorded);
 
             THEN("the tie goes against flood.example, the new row's server, though calm.example's rows are older")
             {
@@ -446,7 +510,8 @@ SCENARIO("A room-cap tie goes against the new row's server, else the smallest se
 
         WHEN("example.org, holding none, records a row")
         {
-            REQUIRE(db::record_sticky_event(store, sticky_in(room, "$x1", 7000, alice), room_caps(4U), now_ms));
+            REQUIRE(
+                db::record_sticky_event(store, sticky_in(room, "$x1", 7000, alice), room_caps(4U), now_ms).recorded);
 
             THEN("the tie between the other two goes against the smaller name, calm.example, whose oldest row goes")
             {
@@ -465,7 +530,7 @@ SCENARIO("A room-cap tie goes against the new row's server, else the smallest se
         WHEN("the flood.example sender records a second row")
         {
             REQUIRE(db::record_sticky_event(store, sticky_in(room, "$f2", 6000, flood_a), db::StickyEventCaps{1U, 2U},
-                                            now_ms));
+                                            now_ms).recorded);
 
             THEN("the sender's own cap expires its first row, which then leaves the room within its cap")
             {
@@ -487,8 +552,8 @@ SCENARIO("A sticky event is written with bound parameters only", "[database][sti
 
         WHEN("a row is recorded over the cap, then deleted, its sender's rows deleted and the store pruned")
         {
-            REQUIRE(db::record_sticky_event(store, sticky("$old-event", 2000), {1U}, now_ms));
-            REQUIRE(db::record_sticky_event(store, sticky("$new-event", 3000), {1U}, now_ms));
+            REQUIRE(db::record_sticky_event(store, sticky("$old-event", 2000), {1U}, now_ms).recorded);
+            REQUIRE(db::record_sticky_event(store, sticky("$new-event", 3000), {1U}, now_ms).recorded);
             REQUIRE(db::delete_sticky_event(store, "$new-event"));
             REQUIRE(db::delete_sticky_events_of_user(store, alice));
             REQUIRE(db::prune_expired_sticky_events(store, 5000));
@@ -522,14 +587,14 @@ SCENARIO("A failed commit leaves the sticky events mirror unchanged", "[database
     {
         auto opened = opened_store();
         auto& store = opened.store;
-        REQUIRE(db::record_sticky_event(store, sticky("$one", 2000), {2U}, now_ms));
-        REQUIRE(db::record_sticky_event(store, sticky("$two", 3000), {2U}, now_ms));
+        REQUIRE(db::record_sticky_event(store, sticky("$one", 2000), {2U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(store, sticky("$two", 3000), {2U}, now_ms).recorded);
         REQUIRE(db::store_delayed_event(store, delayed("d-live", 60'000)));
 
         WHEN("the commit fails for a record that would evict, a delete, a user delete and a prune")
         {
             db::force_next_persist_failures(store, 1U);
-            auto const recorded = db::record_sticky_event(store, sticky("$three", 4000), {2U}, now_ms);
+            auto const recorded = db::record_sticky_event(store, sticky("$three", 4000), {2U}, now_ms).recorded;
             db::force_next_persist_failures(store, 1U);
             auto const deleted = db::delete_sticky_event(store, "$one");
             db::force_next_persist_failures(store, 1U);
@@ -590,9 +655,9 @@ SCENARIO("Redaction and deactivation delete sticky events, also those only the d
         auto const path = temporary_database("merovingian-sticky-delete-");
         auto opened = db::open_sqlite_persistent_store(path.string());
         REQUIRE(opened.ok);
-        REQUIRE(db::record_sticky_event(opened.store, sticky("$a1", 5000), {10U}, now_ms));
-        REQUIRE(db::record_sticky_event(opened.store, sticky("$a2", 6000), {10U}, now_ms));
-        REQUIRE(db::record_sticky_event(opened.store, sticky("$b1", 7000, bob), {10U}, now_ms));
+        REQUIRE(db::record_sticky_event(opened.store, sticky("$a1", 5000), {10U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, sticky("$a2", 6000), {10U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, sticky("$b1", 7000, bob), {10U}, now_ms).recorded);
         REQUIRE(insert_raw_sticky(opened.store, {"$only-in-file", room, alice, "1", "99999"}));
 
         WHEN("one event is deleted, as a redaction does")
@@ -637,8 +702,8 @@ SCENARIO("Pruning deletes every expired sticky event and the orphaned sticky dur
         auto opened = db::open_sqlite_persistent_store(path.string());
         REQUIRE(opened.ok);
         auto& store = opened.store;
-        REQUIRE(db::record_sticky_event(store, sticky("$live", 9000), {10U}, now_ms));
-        REQUIRE(db::record_sticky_event(store, sticky("$soon", 3000), {10U}, now_ms));
+        REQUIRE(db::record_sticky_event(store, sticky("$live", 9000), {10U}, now_ms).recorded);
+        REQUIRE(db::record_sticky_event(store, sticky("$soon", 3000), {10U}, now_ms).recorded);
         // Written to the file but not to memory, with a shorter and a longer number than the cutoff has digits.
         REQUIRE(insert_raw_sticky(store, {"$file-short", room, alice, "1", "900"}));
         REQUIRE(insert_raw_sticky(store, {"$file-long", room, alice, "1", "12345678"}));
@@ -769,9 +834,9 @@ SCENARIO("Sticky events and sticky durations survive a reopen of a SQLite store"
             REQUIRE(opened.ok);
             auto& store = opened.store;
             // The store is told a clock in the past, so the stored expiries are in the real clock's future.
-            REQUIRE(db::record_sticky_event(store, sticky("$live-1", far_future_ms), {10U}, now_ms));
-            REQUIRE(db::record_sticky_event(store, sticky("$live-2", far_future_ms + 1, bob), {10U}, now_ms));
-            REQUIRE(db::record_sticky_event(store, sticky("$expired", 5000), {10U}, 10));
+            REQUIRE(db::record_sticky_event(store, sticky("$live-1", far_future_ms), {10U}, now_ms).recorded);
+            REQUIRE(db::record_sticky_event(store, sticky("$live-2", far_future_ms + 1, bob), {10U}, now_ms).recorded);
+            REQUIRE(db::record_sticky_event(store, sticky("$expired", 5000), {10U}, 10).recorded);
             REQUIRE(db::store_delayed_event(store, delayed("d-sticky", 60'000)));
             REQUIRE(db::store_delayed_event(store, delayed("d-plain")));
             REQUIRE(db::store_delayed_event(store, delayed("d-done", 7000)));
@@ -825,7 +890,7 @@ SCENARIO("Hydration reads a sticky event row strictly and counts the rows it ski
             auto opened = db::open_sqlite_persistent_store(path.string());
             REQUIRE(opened.ok);
             auto& store = opened.store;
-            REQUIRE(db::record_sticky_event(store, sticky("$good", far_future_ms), {10U}, now_ms));
+            REQUIRE(db::record_sticky_event(store, sticky("$good", far_future_ms), {10U}, now_ms).recorded);
             REQUIRE(insert_raw_sticky(store, {"$bad-expiry-text", room, alice, "1", "abc"}));
             REQUIRE(insert_raw_sticky(store, {"$bad-expiry-empty", room, alice, "1", ""}));
             REQUIRE(insert_raw_sticky(store, {"$bad-expiry-negative", room, alice, "1", "-5"}));
@@ -902,7 +967,7 @@ SCENARIO("A store opened with the federation worker profile does not load sticky
         {
             auto opened = db::open_sqlite_persistent_store(path.string());
             REQUIRE(opened.ok);
-            REQUIRE(db::record_sticky_event(opened.store, sticky("$live", far_future_ms), {10U}, now_ms));
+            REQUIRE(db::record_sticky_event(opened.store, sticky("$live", far_future_ms), {10U}, now_ms).recorded);
             REQUIRE(insert_raw_sticky(opened.store, {"$bad", room, alice, "x", "y"}));
             REQUIRE(db::store_delayed_event(opened.store, delayed("d-one", 60'000)));
         }

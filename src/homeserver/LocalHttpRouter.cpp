@@ -5526,16 +5526,23 @@ namespace
             return;
         }
         auto const now_ms = database::sticky_clock_now_ms(store);
-        if (!record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
-                                        database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
-                                                                  runtime.config.server().sticky_events.max_per_room},
-                                        now_ms))
+        auto const outcome =
+            record_sticky_event_of_pdu(store, stored->json, envelope.event_id, now_ms,
+                                       database::StickyEventCaps{runtime.config.server().sticky_events.max_per_sender,
+                                                                 runtime.config.server().sticky_events.max_per_room},
+                                       now_ms);
+        if (!outcome.recorded)
         {
             log_diagnostic("sticky_event.record_failed",
                            {
                                {"room_id",  envelope.room_id,  false},
                                {"event_id", envelope.event_id, false}
             });
+        }
+        // The sender cap can expire the sender's row in another room: that room's worker snapshot changed (ADR-0862).
+        for (auto const& other_room : outcome.other_rooms)
+        {
+            notify_room_changed(runtime, other_room);
         }
     }
 

@@ -164,21 +164,21 @@ namespace
 } // namespace
 
 auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, StickyEventCaps caps, std::int64_t now_ms)
-    -> bool
+    -> StickyEventRecordOutcome
 {
     // An event already expired when it arrives (a negative or past `origin_server_ts` included) is not sticky: nothing
     // to write, and not a failure (ADR-0854).
     if (row.expires_at_ms <= now_ms)
     {
-        return true;
+        return StickyEventRecordOutcome{true, {}};
     }
     if (!sticky_event_is_storable(row) || caps.max_per_sender == 0U || caps.max_per_room == 0U)
     {
-        return false;
+        return StickyEventRecordOutcome{};
     }
     if (store.sticky_events.contains(row.event_id))
     {
-        return true;
+        return StickyEventRecordOutcome{true, {}};
     }
     auto doomed = victims_for(store.sticky_events, row, caps.max_per_sender, now_ms);
     for (auto& event_id : room_victims_for(store.sticky_events, row, doomed, caps.max_per_room, now_ms))
@@ -212,21 +212,30 @@ auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, Stic
     }
     if (statements.empty())
     {
-        return true;
+        return StickyEventRecordOutcome{true, {}};
     }
     if (!commit_persistent_transaction(store, statements))
     {
-        return false;
+        return StickyEventRecordOutcome{};
     }
+    // A sender's oldest row can be in any room: name each other room that lost one, so the caller reports it to the
+    // federation worker as changed (ADR-0862). The room cap's victims are all in the row's own room.
+    auto outcome = StickyEventRecordOutcome{true, {}};
     for (auto const& event_id : existing_victims)
     {
+        if (auto const* const victim = store.sticky_events.find(event_id, now_ms);
+            victim != nullptr && victim->room_id != row.room_id &&
+            std::ranges::find(outcome.other_rooms, victim->room_id) == outcome.other_rooms.end())
+        {
+            outcome.other_rooms.push_back(victim->room_id);
+        }
         std::ignore = store.sticky_events.erase(event_id);
     }
     if (keeps_row)
     {
         std::ignore = store.sticky_events.insert(std::move(row));
     }
-    return true;
+    return outcome;
 }
 
 auto delete_sticky_event(PersistentStore& store, std::string_view event_id) -> bool

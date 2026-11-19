@@ -149,8 +149,8 @@ public:
     {
         auto const event_id = plain_message(text);
         auto& store = runtime().homeserver.database.persistent_store;
-        REQUIRE(
-            db::record_sticky_event(store, {event_id, m_room_id, std::string{alice}, t0, expires_at_ms}, {200U}, t0));
+        REQUIRE(db::record_sticky_event(store, {event_id, m_room_id, std::string{alice}, t0, expires_at_ms}, {200U}, t0)
+                    .recorded);
         return event_id;
     }
 

@@ -4,6 +4,7 @@
 
 #include "merovingian/database/PersistentStickyEvent.hpp"
 #include "merovingian/database/StickyEventCaps.hpp"
+#include "merovingian/database/StickyEventRecordOutcome.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,9 +28,11 @@ struct PersistentStore;
 // not stored and the other rows are kept. True when the row is recorded, and also when nothing is to be written:
 // `row.expires_at_ms <= now_ms` (an expired event is not sticky, ADR-0854; judged first) or a row with the same event
 // ID is already held (a no-op). False, writing nothing, when the row is not storable (`sticky_event_is_storable`), a
-// cap is 0, or the commit fails, with memory unchanged.
+// cap is 0, or the commit fails, with memory unchanged. That answer is the outcome's `recorded`; its `other_rooms`
+// names the rooms other than `row.room_id` that lost a row to the sender cap, which the caller must report to the
+// federation worker as changed (ADR-0862).
 [[nodiscard]] auto record_sticky_event(PersistentStore& store, PersistentStickyEvent row, StickyEventCaps caps,
-                                       std::int64_t now_ms) -> bool;
+                                       std::int64_t now_ms) -> StickyEventRecordOutcome;
 
 // Deletes the row of `event_id` (the event was redacted). True when the row is gone, also when there was none; false
 // only when the commit fails, with memory unchanged.

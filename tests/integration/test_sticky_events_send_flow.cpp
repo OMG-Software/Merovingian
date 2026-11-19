@@ -30,6 +30,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/DelayedEvents.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/StickyEventPrune.hpp"
 #include "merovingian/homeserver/StopFlag.hpp"
@@ -38,6 +39,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -46,6 +48,7 @@
 #include <tuple>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -594,6 +597,55 @@ SCENARIO("A sender holds at most the configured number of unexpired sticky event
                 REQUIRE(fixture.store().sticky_events.find(third, now) != nullptr);
                 REQUIRE_FALSE(remaining_of(fixture.served(first)).stable.has_value());
                 REQUIRE(remaining_of(fixture.served(third)).stable.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A sticky event that expires a sender's row in another room reports that room as changed",
+         "[sticky-events][integration][cap][worker]")
+{
+    // The federation worker serves an unexpired sticky event past history visibility from its room snapshot
+    // (ADR-0858), so a row the sender cap deletes must reach every room it was in, not only the room sent to
+    // (ADR-0862).
+    GIVEN("a server that allows one sticky event per sender, and alice's sticky event in the first room")
+    {
+        auto fixture = Fixture{};
+        fixture.runtime().limits.max_sticky_events_per_sender = 1U;
+        auto const first = event_id_of(fixture.put_send("t1", "sticky_duration_ms=1800000"));
+        auto const created = request(fixture.runtime(), "POST", "/_matrix/client/v3/createRoom", fixture.alice_token(),
+                                     R"({"preset":"public_chat"})");
+        REQUIRE(created.status == 200U);
+        auto const other_room = *string_member(parse_object(created.body), "room_id");
+        auto changed_rooms = std::vector<std::string>{};
+        fixture.runtime().homeserver.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice sends a sticky event in a second room")
+        {
+            fixture.set_time(t0 + 1'000);
+            auto const second = event_id_of(request(fixture.runtime(), "PUT",
+                                                    "/_matrix/client/v3/rooms/" + other_room +
+                                                        "/send/m.test.sticky/t2" + "?sticky_duration_ms=1800000",
+                                                    fixture.alice_token(), R"({"body":"hello"})"));
+            fixture.runtime().homeserver.test_room_changed_log = nullptr;
+            THEN("the first room's row is gone and the first room is reported changed")
+            {
+                auto const now = t0 + 1'000;
+                REQUIRE(fixture.store().sticky_events.find(first, now) == nullptr);
+                REQUIRE(fixture.store().sticky_events.find(second, now) != nullptr);
+                REQUIRE(std::ranges::find(changed_rooms, fixture.room_id()) != changed_rooms.end());
+            }
+        }
+
+        WHEN("alice sends a second sticky event in the same room")
+        {
+            fixture.set_time(t0 + 1'000);
+            auto const second = event_id_of(fixture.put_send("t2", "sticky_duration_ms=1800000"));
+            fixture.runtime().homeserver.test_room_changed_log = nullptr;
+            THEN("the second room, which lost nothing, is not reported changed")
+            {
+                REQUIRE(fixture.store().sticky_events.find(second, t0 + 1'000) != nullptr);
+                REQUIRE(std::ranges::find(changed_rooms, other_room) == changed_rooms.end());
             }
         }
     }

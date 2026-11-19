@@ -57,8 +57,10 @@ constexpr auto expires_ms = std::int64_t{12'500};
 {
     auto opened = db::open_persistent_store();
     REQUIRE(opened.ok);
-    auto const recorded = db::record_sticky_event(
-        opened.store, {event_id, "!room:example.org", "@alice:example.org", clock_ms, expiry}, {60U, 1000U}, clock_ms);
+    auto const recorded =
+        db::record_sticky_event(opened.store, {event_id, "!room:example.org", "@alice:example.org", clock_ms, expiry},
+                                {60U, 1000U}, clock_ms)
+            .recorded;
     REQUIRE(recorded);
     opened.store.test_sticky_clock_ms = clock_ms;
     return opened;

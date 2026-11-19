@@ -4,6 +4,7 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/StickyEventCaps.hpp"
+#include "merovingian/database/StickyEventRecordOutcome.hpp"
 
 #include <cstdint>
 #include <string_view>
@@ -20,11 +21,14 @@ namespace merovingian::homeserver
 // the clock reading the expiry is judged against. Independent of any client request. The caller holds
 // `runtime.mutex`.
 //
-// True when the event is recorded and also when there is nothing to record (the PDU is not sticky, is unparseable, or
-// has already expired). False only when the store refused the row. Nothing is logged here; the caller logs a false
-// result without event content.
+// `recorded` is true when the event is recorded and also when there is nothing to record (the PDU is not sticky, is
+// unparseable, or has already expired); false only when the store refused the row. Nothing is logged here; the caller
+// logs a refusal without event content. `other_rooms` are the rooms other than the event's that lost a row to the
+// sender cap: the caller calls `notify_room_changed` for each, or a federation worker keeps serving the evicted row's
+// event under the sticky visibility exemption (ADR-0862).
 [[nodiscard]] auto record_sticky_event_of_pdu(database::PersistentStore& store, std::string_view pdu_json,
                                               std::string_view event_id, std::int64_t received_at_ms,
-                                              database::StickyEventCaps caps, std::int64_t now_ms) -> bool;
+                                              database::StickyEventCaps caps, std::int64_t now_ms)
+    -> database::StickyEventRecordOutcome;
 
 } // namespace merovingian::homeserver

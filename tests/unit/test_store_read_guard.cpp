@@ -181,7 +181,7 @@ SCENARIO("a room reload gives the worker the room's sticky rows and takes away a
         store_state_event(fixture.main_open.store, "$call", "m.room.message", "call", R"({"body":"x"})", 2U);
         REQUIRE(db::record_sticky_event(fixture.main_open.store,
                                         {"$call", std::string{room_id}, std::string{alice}, now_ms, now_ms + 60'000},
-                                        db::StickyEventCaps{}, now_ms));
+                                        db::StickyEventCaps{}, now_ms).recorded);
         REQUIRE(fixture.worker().sticky_events.size() == 0U);
 
         WHEN("the worker reloads the room")

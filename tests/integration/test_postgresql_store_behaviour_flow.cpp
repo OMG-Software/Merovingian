@@ -2028,11 +2028,11 @@ SCENARIO("PostgreSQL sticky events survive a reopen, keep the per-sender cap, an
         };
         // The expiries are far in the real clock's future, and the clock the store functions are given is in 1970.
         constexpr auto far_future_ms = std::int64_t{9'000'000'000'000};
-        REQUIRE(db::record_sticky_event(opened.store, make("one", alice, far_future_ms + 1), {2U}, 1'000));
-        REQUIRE(db::record_sticky_event(opened.store, make("two", alice, far_future_ms + 2), {2U}, 1'000));
-        REQUIRE(db::record_sticky_event(opened.store, make("bob", bob, far_future_ms + 3), {2U}, 1'000));
-        REQUIRE(db::record_sticky_event(opened.store, make("three", alice, far_future_ms + 4), {2U}, 1'000));
-        REQUIRE(db::record_sticky_event(opened.store, make("stale", alice, 3'000), {2U}, 1'000));
+        REQUIRE(db::record_sticky_event(opened.store, make("one", alice, far_future_ms + 1), {2U}, 1'000).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, make("two", alice, far_future_ms + 2), {2U}, 1'000).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, make("bob", bob, far_future_ms + 3), {2U}, 1'000).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, make("three", alice, far_future_ms + 4), {2U}, 1'000).recorded);
+        REQUIRE(db::record_sticky_event(opened.store, make("stale", alice, 3'000), {2U}, 1'000).recorded);
         auto delayed = delayed_event_row(suffix, room_id, "sticky", alice);
         delayed.sticky_duration_ms = 3'600'000;
         REQUIRE(db::store_delayed_event(opened.store, delayed));

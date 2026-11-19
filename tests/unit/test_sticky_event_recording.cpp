@@ -41,7 +41,7 @@ constexpr auto caps = db::StickyEventCaps{60U, 1000U};
 [[nodiscard]] auto record(db::PersistentStore& store, std::string_view pdu_json, db::StickyEventCaps with = caps)
     -> bool
 {
-    return hs::record_sticky_event_of_pdu(store, pdu_json, event_id, received_ms, with, now_ms);
+    return hs::record_sticky_event_of_pdu(store, pdu_json, event_id, received_ms, with, now_ms).recorded;
 }
 
 // A PDU of `fields` (members without braces) that asks to be sticky for five seconds.

@@ -9802,13 +9802,20 @@ namespace
         if (sticky.has_value() && !composed->state_key.has_value())
         {
             auto const received_ms = event_clock_now_ms(runtime);
-            if (!record_sticky_event_of_pdu(runtime.database.persistent_store, composed->json, composed->event_id,
-                                            received_ms, sticky->caps, received_ms))
+            auto const outcome = record_sticky_event_of_pdu(runtime.database.persistent_store, composed->json,
+                                                            composed->event_id, received_ms, sticky->caps, received_ms);
+            if (!outcome.recorded)
             {
                 log_diagnostic("sticky_event.record_failed", {
                                                                  {"room_id",  std::string{room_id}, false},
                                                                  {"event_id", composed->event_id,   false}
                 });
+            }
+            // The sender cap can expire the sender's row in another room: that room's worker snapshot changed
+            // (ADR-0862).
+            for (auto const& other_room : outcome.other_rooms)
+            {
+                notify_room_changed(runtime, other_room);
             }
         }
         // Presence, "Last active ago": sending a message is a pro-active event. A state event (the profile change
