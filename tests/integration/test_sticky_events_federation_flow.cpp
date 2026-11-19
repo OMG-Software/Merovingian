@@ -427,6 +427,16 @@ SCENARIO("A sticky PDU a remote server sent and this server accepted is recorded
                 REQUIRE(fixture.row("$unstable:c.example.org") != nullptr);
             }
         }
+    }
+}
+
+SCENARIO("An accepted remote PDU that is not sticky, or arrives expired, twice or while disabled, gets no new row",
+         "[sticky-events][federation][integration][inbound]")
+{
+    GIVEN("a room with a remote user from server C joined to it")
+    {
+        auto fixture = Fixture{};
+        fixture.join(carol, "$carol_join:c.example.org");
 
         WHEN("carol sends a PDU whose two sticky fields disagree")
         {
