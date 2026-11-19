@@ -57,15 +57,18 @@ mkdir -p "${package_root}/bin" \
     "${package_root}/packaging/netbsd" \
     "${package_root}/packaging/systemd" \
     "${package_root}/packaging/openrc" \
-    "${package_root}/packaging/rc.d"
+    "${package_root}/packaging/rc.d" \
+    "${package_root}/packaging/livekit"
 cp -p "${installed_prefix}/bin/"* "${package_root}/bin/"
 cp -p "${installed_prefix}/libexec/merovingian/"* "${package_root}/libexec/merovingian/"
 printf '%s\n' "$prefix" > "${package_root}/INSTALL-PREFIX"
-cp config/merovingian.conf.example "${package_root}/config/"
+cp config/merovingian.conf.example config/livekit.yaml.example "${package_root}/config/"
 cp LICENSE README.md "${package_root}/"
 cp docs/user-manual.md docs/release-process.md docs/security-review-checklist.md "${package_root}/docs/"
-cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
-cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
+cp packaging/systemd/merovingian.service packaging/systemd/merovingian-livekit.service \
+    "${package_root}/packaging/systemd/"
+cp packaging/openrc/merovingian packaging/openrc/merovingian-livekit "${package_root}/packaging/openrc/"
+cp -p packaging/livekit/merovingian-livekit-setup "${package_root}/packaging/livekit/"
 cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
 cp packaging/deb/control "${package_root}/packaging/deb/"
 cp packaging/rpm/merovingian.spec "${package_root}/packaging/rpm/"

@@ -1,0 +1,169 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# merovingian-livekit-setup: create the API key and secret that Merovingian's
+# built-in LiveKit token service and a LiveKit SFU on the same host share
+# (ADR-0860). It writes two files holding the same secret, each readable only
+# by the account that uses it:
+#
+#   <config dir>/livekit-secret     the secret alone, for merovingian
+#                                   (server.rtc.livekit.api_secret_file)
+#   <config dir>/livekit-keys.yaml  "<key>: <secret>", for LiveKit (key_file)
+#
+# It never overwrites either file, never puts the secret on a command line and
+# never prints it. Run again, it checks that the two files agree and prints the
+# settings once more.
+set -eu
+
+config_dir=/etc/merovingian
+merovingian_user=merovingian
+livekit_user=merovingian-livekit
+
+usage() {
+    cat <<'EOF'
+usage: merovingian-livekit-setup [--config-dir DIR] [--merovingian-user USER]
+                                 [--livekit-user USER]
+
+Creates DIR/livekit-secret (owner USER of merovingian, mode 0400) and
+DIR/livekit-keys.yaml (owner the LiveKit user, mode 0400) holding one new
+API key and secret, then prints the merovingian.conf and livekit.yaml settings
+that use them. Defaults: /etc/merovingian, merovingian, merovingian-livekit.
+EOF
+}
+
+die() {
+    printf 'merovingian-livekit-setup: %s\n' "$1" >&2
+    exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config-dir|--merovingian-user|--livekit-user)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; exit 2; }
+            case "$1" in
+                --config-dir) config_dir=$2 ;;
+                --merovingian-user) merovingian_user=$2 ;;
+                --livekit-user) livekit_user=$2 ;;
+            esac
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+secret_file=$config_dir/livekit-secret
+keys_file=$config_dir/livekit-keys.yaml
+
+[ -d "$config_dir" ] || die "no such directory: $config_dir"
+for user in "$merovingian_user" "$livekit_user"; do
+    id "$user" >/dev/null 2>&1 || die "no such user: $user"
+done
+[ -r /dev/urandom ] || die "cannot read /dev/urandom"
+
+print_settings() {
+    cat <<EOF
+Add to $config_dir/merovingian.conf, with your SFU's public address as url:
+
+    server.rtc.livekit.url=wss://livekit.example.org
+    server.rtc.livekit.api_url=http://127.0.0.1:7880
+    server.rtc.livekit.api_key=$1
+    server.rtc.livekit.api_secret_file=$secret_file
+
+and in $config_dir/livekit.yaml, under webhook:
+
+    api_key: $1
+
+Then restart merovingian and start merovingian-livekit.
+EOF
+}
+
+# The API key: the text before the first ":" of the keys file's first line.
+key_of_keys_file() {
+    sed -n '1s/^\([A-Za-z0-9_.-]*\): .*$/\1/p' "$keys_file"
+}
+
+# Whether $1 is a regular file (not a link) owned by user $2 with mode 0400
+# exactly, as each side's reader requires. `-perm 0400` without a sign matches
+# that mode and no other.
+owner_only() {
+    [ -n "$(find "$1" -prune -type f -user "$2" -perm 0400 2>/dev/null)" ]
+}
+
+# $1 random bytes from the kernel, as lower-case hex on one line.
+random_hex() {
+    od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'
+}
+
+# Whether the two files hold the same secret. Both values stay in this shell's
+# memory: `read` is a builtin, so no process is given them as arguments.
+secrets_agree() {
+    head -n 1 "$secret_file" | {
+        IFS= read -r from_secret_file || return 1
+        sed -n '1s/^[A-Za-z0-9_.-]*: "\(.*\)"$/\1/p' "$keys_file" | {
+            IFS= read -r from_keys_file || return 1
+            [ -n "$from_secret_file" ] && [ "$from_secret_file" = "$from_keys_file" ]
+        }
+    }
+}
+
+if [ -e "$secret_file" ] || [ -e "$keys_file" ]; then
+    if [ -e "$secret_file" ] && [ -e "$keys_file" ]; then
+        owner_only "$secret_file" "$merovingian_user" ||
+            die "$secret_file must be a regular file owned by $merovingian_user with mode 0400; fix it, or remove both files and run again"
+        owner_only "$keys_file" "$livekit_user" ||
+            die "$keys_file must be a regular file owned by $livekit_user with mode 0400; fix it, or remove both files and run again"
+        secrets_agree || die "$secret_file and $keys_file hold different secrets; remove both and run again"
+        key=$(key_of_keys_file)
+        [ -n "$key" ] || die "$keys_file does not start with an API key; remove both files and run again"
+        printf 'The LiveKit API key and secret already exist; nothing was changed.\n\n'
+        print_settings "$key"
+        exit 0
+    fi
+    die "only one of $secret_file and $keys_file exists; remove it and run again"
+fi
+
+umask 077
+tmp_secret=$(mktemp "$config_dir/.livekit-secret.XXXXXX")
+tmp_keys=$(mktemp "$config_dir/.livekit-keys.XXXXXX")
+trap 'rm -f "$tmp_secret" "$tmp_keys"' EXIT HUP INT TERM
+
+# 16 hex digits of key after LiveKit's customary "API" prefix; 64 hex digits of
+# secret (256 bits), over both sides' 32-byte minimum.
+# A pipeline's exit status is its last command's, so check the lengths: a
+# short read from /dev/urandom must not become a short secret.
+key="API$(random_hex 8)"
+case $key in
+    API????????????????) ;;
+    *) die "could not read random bytes for the API key" ;;
+esac
+{
+    random_hex 32
+    printf '\n'
+} > "$tmp_secret"
+[ "$(wc -c < "$tmp_secret" | tr -d ' ')" -eq 65 ] || die "could not read random bytes for the secret"
+{
+    printf '%s: "' "$key"
+    head -n 1 "$tmp_secret" | tr -d '\n'
+    printf '"\n'
+} > "$tmp_keys"
+
+chown "$merovingian_user:$(id -gn "$merovingian_user")" "$tmp_secret"
+chown "$livekit_user:$(id -gn "$livekit_user")" "$tmp_keys"
+chmod 0400 "$tmp_secret" "$tmp_keys"
+
+# `ln` fails if the name exists, so a file created meanwhile is never replaced.
+ln "$tmp_secret" "$secret_file" || die "$secret_file appeared while this ran; nothing was written"
+if ! ln "$tmp_keys" "$keys_file"; then
+    rm -f "$secret_file"
+    die "$keys_file appeared while this ran; nothing was written"
+fi
+
+printf 'Created %s and %s.\n\n' "$secret_file" "$keys_file"
+print_settings "$key"

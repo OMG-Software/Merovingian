@@ -229,7 +229,7 @@ jobs:
             zlib-devel zlib-static \
             libnghttp2-devel \
             catch-devel perl bison flex m4 \
-            rpm-build systemd-rpm-macros util-linux
+            rpm-build systemd-rpm-macros util-linux systemd
       - uses: actions/checkout@v7
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
@@ -238,12 +238,23 @@ jobs:
           restore-keys: ccache-rpm-${{ matrix.artifact }}-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
-      - name: Run the installed package's startup hardening gate
-        # OPS-5: install the RPM in the release it was built for, then boot the
-        # installed server as the package's unprivileged user with an empty
-        # capability bounding set, as the Debian package jobs do.
+      - name: Install the RPM under an enable-everything preset policy
+        # ADR-0860: %post must not hand merovingian-livekit.service to the host's
+        # preset policy, which could enable the SFU before the operator has set
+        # it up. systemd is installed above, so %systemd_post applies the
+        # policy; with "enable *" first, the server's own unit coming out
+        # enabled proves it did, and the LiveKit unit must still be disabled.
         run: |
+          printf 'enable *\n' > /usr/lib/systemd/system-preset/00-merovingian-ci.preset
           dnf install -y ./merovingian-*.rpm
+          rm /usr/lib/systemd/system-preset/00-merovingian-ci.preset
+          test "$(systemctl is-enabled merovingian.service)" = enabled
+          test "$(systemctl is-enabled merovingian-livekit.service || true)" = disabled
+      - name: Run the installed package's startup hardening gate
+        # OPS-5: boot the RPM installed in the release it was built for as the
+        # package's unprivileged user with an empty capability bounding set, as
+        # the Debian package jobs do.
+        run: |
           setpriv --reuid=merovingian --regid=merovingian --init-groups \
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server

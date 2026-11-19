@@ -1,0 +1,52 @@
+# LiveKit SFU beside the Merovingian homeserver (ADR-0860). Installed disabled:
+# install livekit-server, run merovingian-livekit-setup, copy
+# /etc/merovingian/livekit.yaml.example to /etc/merovingian/livekit.yaml, then
+# `systemctl enable --now merovingian-livekit`. A livekit-server elsewhere than
+# /usr/local/bin (upstream's install location) needs a drop-in ExecStart.
+[Unit]
+Description=LiveKit SFU for the Merovingian homeserver
+Documentation=file:/usr/share/doc/merovingian/user-manual.md https://docs.livekit.io/home/self-hosting/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Its own account, never merovingian's: the SFU takes media from the internet and
+# must not be able to read the homeserver's database, keys or secrets.
+User=merovingian-livekit
+Group=merovingian-livekit
+UMask=0077
+ExecStart=/usr/local/bin/livekit-server --config /etc/merovingian/livekit.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+# TCP and UDP for signalling and media; AF_NETLINK for the interface list the SFU
+# gathers ICE candidates from (Go reads it over netlink on Linux).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+# Every media session uses sockets: the same ceiling as the homeserver's unit.
+LimitNOFILE=65536
+TasksMax=4096
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

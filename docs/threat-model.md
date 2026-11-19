@@ -39,6 +39,8 @@
 - The built-in LiveKit token service (1.1.3): the LiveKit API secret, tokens handed to clients, the `CreateRoom` and
   `GetParticipant` calls to the operator's LiveKit, the federation `rtc/livekit/get_token` route in both directions, the
   delegated delayed leave and the LiveKit webhook (see below)
+- A LiveKit SFU the Linux packages set up on the same host (1.1.3): its own account, its service unit, the shared
+  secret's two files and the setup helper that writes them (see below)
 - Email pushers (outbound SMTP to an operator-configured relay; a client-supplied recipient address)
 - Federation worker IPC channel (local process boundary)
 - MSC4186 sliding-sync connection state (client-chosen `conn_id`)
@@ -3465,3 +3467,36 @@ read the secret file can mint any LiveKit token, and could forge webhooks (which
 depends on LiveKit's view of the call, so a LiveKit that keeps reporting a vanished participant keeps their membership
 alive; the relay, the inbound route, the delegation job and the webhook have been tested only against this server and
 a local stand-in for LiveKit, never another implementation or a real LiveKit.
+
+### A LiveKit SFU on the same host (1.1.3, ADR-0860)
+
+New surface: the Linux packages set up an operator-installed `livekit-server` beside the server. It is a third-party
+process on the same host that takes WebRTC media from anyone holding a token, and holds the same API secret as this
+server. Threats and mitigations:
+
+(a) A compromised SFU reading the homeserver's secrets. It runs as its own `merovingian-livekit` account, never
+`merovingian`, under a systemd unit with no capabilities, `ProtectSystem=strict`, `ProtectHome=true` and
+`PrivateDevices=true`; the OpenRC script gives it only the account. Every file the homeserver keeps is owner-only for
+`merovingian`: the SQLite database is mode `0600` in the `0750` `/var/lib/merovingian`, and the signing key, master key
+and every secret file are mode `0400`. So the SFU can read none of them. It can read only its own key file, which holds
+the LiveKit secret it already has.
+
+(b) The shared secret leaking while it is created. `merovingian-livekit-setup` reads it from `/dev/urandom` under
+`umask 077`, checks that it got all 32 bytes, writes it only to temporary files in the configuration directory, never
+puts it on a command line (where `ps` would show it) and never prints it. It moves each file into place with `ln`, which
+never replaces an existing file, so a file an attacker or the operator created first is never overwritten. Run against
+an existing pair, it refuses either file unless it is a regular file of the right owner with mode `0400`.
+
+(c) Room creation by token holders. The sample configuration turns off `room.auto_create`, so a token can join only a
+room this server created with `CreateRoom` (ADR-0830). Without that, a token for a room LiveKit has already closed
+would recreate it.
+
+(d) The room-service API exposed to the network. The sample binds port 7880 to `127.0.0.1`. Clients reach signalling
+through the operator's TLS proxy, and this server calls `CreateRoom` and `GetParticipant` over loopback `http`, which
+`server.rtc.livekit.api_url` allows only for `127.0.0.1` and `[::1]`.
+
+Residual risk: the media ports (TCP 7881, UDP 50000–60000) are open to the internet and served by code this project
+does not build or review; the packages trust whatever binary is at `/usr/local/bin/livekit-server`, which the
+operator installs and updates; a compromised SFU holds the API secret, so it can mint any LiveKit token and forge
+webhooks (which only prompt checks, above); the unit has been checked only against itself, not run against a real
+`livekit-server` in CI.
