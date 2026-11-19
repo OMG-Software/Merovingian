@@ -226,13 +226,17 @@ namespace
         // MSC4354 (ADR-0854): redaction removes the sticky fields, so the event stops being sticky when the redaction
         // is applied to it. This is the one place a redaction takes effect, for local and federated redactions alike.
         // A failed delete is logged without event content; the row then expires on its own.
-        if (store.sticky_events.contains(target_event_id) && !database::delete_sticky_event(store, target_event_id))
+        if (store.sticky_events.contains(target_event_id))
         {
-            observability::log_diagnostic("redaction", "redaction.sticky_delete_failed",
-                                          {
-                                              {"target_event_id", target_event_id, false}
-            },
-                                          observability::LogEventSeverity::warning);
+            auto const deleted = database::delete_sticky_event(store, target_event_id);
+            if (!deleted)
+            {
+                observability::log_diagnostic("redaction", "redaction.sticky_delete_failed",
+                                              {
+                                                  {"target_event_id", target_event_id, false}
+                },
+                                              observability::LogEventSeverity::warning);
+            }
         }
         observability::log_diagnostic(
             "redaction", "redaction.applied",
