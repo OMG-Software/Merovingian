@@ -936,7 +936,12 @@ file system's:
 * `merovingian-livekit-setup` writes the shared secret twice, as
   `/etc/merovingian/livekit-secret` for `merovingian` and
   `/etc/merovingian/livekit-keys.yaml` for `merovingian-livekit`, each `0400`,
-  never on a command line and never replacing an existing file.
+  from `/dev/urandom`, never on a command line and never replacing an existing
+  file; run again, it refuses a pair that is not two regular files of the right
+  owners with mode `0400`.
+* the RPM `%post` leaves the unit out of `%systemd_post`, so a host preset
+  policy of `enable *` cannot start the SFU before the operator has set it up.
+  The OpenRC script has none of the unit's sandboxing, only the account.
 
 `tests/tooling/test_livekit_companion.py` checks the unit, the OpenRC script,
 the sample configuration and the package scripts against each other, and runs

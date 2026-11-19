@@ -3451,14 +3451,17 @@ process on the same host that takes WebRTC media from anyone holding a token, an
 server. Threats and mitigations:
 
 (a) A compromised SFU reading the homeserver's secrets. It runs as its own `merovingian-livekit` account, never
-`merovingian`, under a unit with no capabilities, `ProtectSystem=strict`, `ProtectHome=true` and `PrivateDevices=true`.
-The database, signing key, master key and every other secret file are owned by `merovingian` and mode `0400`, so the
-SFU can read none of them. It can read only its own key file, which holds the LiveKit secret it already has.
+`merovingian`, under a systemd unit with no capabilities, `ProtectSystem=strict`, `ProtectHome=true` and
+`PrivateDevices=true`; the OpenRC script gives it only the account. Every file the homeserver keeps is owner-only for
+`merovingian`: the SQLite database is mode `0600` in the `0750` `/var/lib/merovingian`, and the signing key, master key
+and every secret file are mode `0400`. So the SFU can read none of them. It can read only its own key file, which holds
+the LiveKit secret it already has.
 
-(b) The shared secret leaking while it is created. `merovingian-livekit-setup` generates it with `openssl rand` under
-`umask 077`, writes it only to temporary files in the configuration directory, never puts it on a command line (where
-`ps` would show it) and never prints it. It moves each file into place with `ln`, which never replaces an existing
-file, so a file an attacker or the operator created first is never overwritten.
+(b) The shared secret leaking while it is created. `merovingian-livekit-setup` reads it from `/dev/urandom` under
+`umask 077`, checks that it got all 32 bytes, writes it only to temporary files in the configuration directory, never
+puts it on a command line (where `ps` would show it) and never prints it. It moves each file into place with `ln`, which
+never replaces an existing file, so a file an attacker or the operator created first is never overwritten. Run against
+an existing pair, it refuses either file unless it is a regular file of the right owner with mode `0400`.
 
 (c) Room creation by token holders. The sample configuration turns off `room.auto_create`, so a token can join only a
 room this server created with `CreateRoom` (ADR-0830). Without that, a token for a room LiveKit has already closed

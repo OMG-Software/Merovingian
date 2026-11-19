@@ -89,7 +89,9 @@ if ! getent passwd merovingian-livekit >/dev/null 2>&1; then
 fi
 
 %post
-%systemd_post merovingian.service merovingian-livekit.service
+# Not merovingian-livekit.service: %%systemd_post applies the host's preset policy, which
+# could enable it before the operator has run merovingian-livekit-setup (ADR-0859).
+%systemd_post merovingian.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token

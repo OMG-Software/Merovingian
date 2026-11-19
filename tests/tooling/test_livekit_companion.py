@@ -32,7 +32,6 @@ CONFIG_PATH = "/etc/merovingian/livekit.yaml"
 KEYS_PATH = "/etc/merovingian/livekit-keys.yaml"
 
 SH = shutil.which("sh")
-OPENSSL = shutil.which("openssl")
 
 
 def unit_directives() -> dict[str, list[str]]:
@@ -101,7 +100,18 @@ class SampleConfigTest(unittest.TestCase):
         self.assertEqual(example_value(r"  auto_create: (\S+)"), "false")
 
     def test_the_signalling_listener_is_loopback_on_the_port_merovingian_calls(self) -> None:
-        self.assertEqual(example_value(r"  - (\S+)"), "127.0.0.1")
+        # Every entry of bind_addresses, not just the first: a second 0.0.0.0 would expose the room service.
+        lines = EXAMPLE.read_text(encoding="utf-8").splitlines()
+        start = lines.index("bind_addresses:") + 1
+        addresses = []
+        for line in lines[start:]:
+            if line.lstrip().startswith("#"):
+                continue
+            match = re.fullmatch(r"  - (\S+)", line)
+            if not match:
+                break
+            addresses.append(match.group(1))
+        self.assertEqual(addresses, ["127.0.0.1"])
         port = example_value(r"port: (\d+)")
         self.assertIn(f"server.rtc.livekit.api_url=http://127.0.0.1:{port}\n", SETUP.read_text(encoding="utf-8"))
 
@@ -129,8 +139,22 @@ class PackagingTest(unittest.TestCase):
                 self.assertIn(f"%{{_unitdir}}/{ACCOUNT}.service\n", text)
                 self.assertIn("%{_sbindir}/merovingian-livekit-setup\n", text)
 
+    def test_no_package_enables_the_unit_on_install(self) -> None:
+        # %systemd_post applies the host's preset policy, which may say "enable *": the unit
+        # must not be handed to it. Stopping it on removal and restarting it on upgrade is fine.
+        for spec in SPECS:
+            text = spec.read_text(encoding="utf-8")
+            with self.subTest(spec=str(spec.relative_to(REPO_ROOT))):
+                post = re.findall(r"^%systemd_post .*$", text, re.MULTILINE)
+                self.assertEqual(post, ["%systemd_post merovingian.service"])
+                self.assertRegex(text, rf"(?m)^%systemd_preun .*\b{ACCOUNT}\.service$")
+                self.assertNotRegex(text, r"(?m)^#[^\n]*(?<!%)%systemd_", "an unescaped macro in a comment expands")
+        postinst = POSTINST.read_text(encoding="utf-8")
+        self.assertNotRegex(postinst, rf"enable[^\n]*{ACCOUNT}")
+        self.assertNotIn("deb-systemd-helper", postinst)
 
-@unittest.skipUnless(os.name == "posix" and SH and OPENSSL, "needs a POSIX sh, chown and openssl")
+
+@unittest.skipUnless(os.name == "posix" and SH and os.path.exists("/dev/urandom"), "needs a POSIX sh and /dev/urandom")
 class SetupHelperTest(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -192,10 +216,11 @@ class SetupHelperTest(unittest.TestCase):
         self.assertNotIn(secret, second.stdout + second.stderr)
 
     def test_files_holding_different_secrets_are_refused(self) -> None:
-        # GIVEN a secret file that no longer matches the keys file.
+        # GIVEN a secret file, still owner-only, that no longer matches the keys file.
         self.assertEqual(self.run_setup().returncode, 0)
         self.secret_file.chmod(0o600)
         self.secret_file.write_text("f" * 64 + "\n", encoding="utf-8")
+        self.secret_file.chmod(0o400)
 
         # WHEN the helper runs again.
         result = self.run_setup()
@@ -204,6 +229,36 @@ class SetupHelperTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("hold different secrets", result.stderr)
         self.assertNotIn("f" * 64, result.stdout + result.stderr)
+
+    def test_an_existing_pair_with_the_wrong_mode_or_type_is_refused_and_left_as_it_is(self) -> None:
+        # Each side's reader refuses a secret file that is not owner-read-only, so a rerun must not report
+        # such a pair as ready.
+        self.assertEqual(self.run_setup().returncode, 0)
+        secret = self.written_secret()
+        for path in (self.secret_file, self.keys_file):
+            with self.subTest(path=path.name, problem="mode 0600"):
+                # GIVEN one file of a matching pair made writable by its owner.
+                path.chmod(0o600)
+
+                # WHEN the helper runs again.
+                result = self.run_setup()
+
+                # THEN it fails naming that file, changes nothing and prints no secret.
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{path} must be a regular file", result.stderr)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertNotIn(secret, result.stdout + result.stderr)
+                path.chmod(0o400)
+        with self.subTest(problem="symbolic link"):
+            # GIVEN the secret file replaced by a link to an owner-only copy of itself.
+            target = self.config_dir / "elsewhere"
+            self.secret_file.rename(target)
+            self.secret_file.symlink_to(target)
+
+            # WHEN the helper runs again, THEN it refuses the link.
+            result = self.run_setup()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(f"{self.secret_file} must be a regular file", result.stderr)
 
     def test_one_file_alone_is_refused_and_left_as_it_is(self) -> None:
         for present in ("livekit-secret", "livekit-keys.yaml"):

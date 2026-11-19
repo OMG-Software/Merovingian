@@ -902,11 +902,17 @@ you the rest.
 
 - a `merovingian-livekit` system account, created on install, that the SFU runs as. It is never the `merovingian`
   account, so the SFU, which takes media from the internet, cannot read the homeserver's database, keys or secrets;
-- the `merovingian-livekit` service (systemd, plus an OpenRC script in the release tarball), installed disabled;
+- the `merovingian-livekit` systemd service, installed disabled: neither package enables it, whatever the host's
+  preset policy says;
 - `/usr/sbin/merovingian-livekit-setup`, which creates the API key and secret both sides share;
 - `/etc/merovingian/livekit.yaml.example`, a LiveKit configuration for this layout.
 
-The BSD packages include none of this, because LiveKit publishes no BSD builds.
+The BSD packages include none of this, because LiveKit publishes no BSD builds. On a Linux host that uses OpenRC
+instead of systemd, which the packages do not set up, take the same pieces from the release tarball before step 1:
+create a `merovingian-livekit` system account and group with no login shell, and install
+`packaging/openrc/merovingian-livekit` as `/etc/init.d/merovingian-livekit` (mode `0755`),
+`packaging/livekit/merovingian-livekit-setup` as `/usr/sbin/merovingian-livekit-setup` (mode `0755`) and
+`config/livekit.yaml.example` as `/etc/merovingian/livekit.yaml.example`.
 
 To set it up, as root:
 
@@ -917,9 +923,11 @@ To set it up, as root:
 2. Run `merovingian-livekit-setup`. It writes `/etc/merovingian/livekit-secret` (owner `merovingian`, mode `0400`) and
    `/etc/merovingian/livekit-keys.yaml` (owner `merovingian-livekit`, mode `0400`), both holding one new 256-bit
    secret, and prints the `server.rtc.livekit.*` lines for `merovingian.conf` and the webhook `api_key`. It never
-   prints the secret or passes it to another program on a command line, and never replaces either file: run again, it
-   checks that the two files agree and prints the settings once more. To change the key, stop both services, remove
-   both files and run it again.
+   prints the secret or passes it to another program on a command line, and never replaces either file. Run again, it
+   checks that both files still have that owner and mode and hold the same secret, and prints the settings once more;
+   it refuses a pair that fails either check. To replace the key and secret, stop both services, remove both files,
+   run it again, put the new `api_key` it prints into `merovingian.conf` (and into `livekit.yaml`'s `webhook` block
+   if you use webhooks), then start both services.
 3. Copy `/etc/merovingian/livekit.yaml.example` to `/etc/merovingian/livekit.yaml` and read it through. It binds
    LiveKit's signalling port, 7880, to `127.0.0.1` only. It turns off `room.auto_create`, because this server creates
    every call's room before issuing a token for it (ADR-0830), so a token can only ever join a room this server made.
@@ -932,8 +940,10 @@ To set it up, as root:
 6. `systemctl enable --now merovingian-livekit` (or `rc-update add merovingian-livekit default` and
    `rc-service merovingian-livekit start`), then restart `merovingian`.
 
-The service runs with no capabilities, a read-only system, no home directory, no devices and the `@system-service`
-system call set. LiveKit refuses a key file that others can read, and the setup helper makes both files owner-only.
+Under systemd the service runs with no capabilities, a read-only system, no home directory, no devices and the
+`@system-service` system call set. The OpenRC script gives it only its own account, a `077` umask and an open-file
+limit, none of the systemd unit's other restrictions; the account is then its only isolation from the homeserver.
+LiveKit refuses a key file that others can read, and the setup helper makes both files owner-only.
 Removing the package stops and disables the service. Purging it leaves the two key files and the account, as it leaves
 `merovingian`'s.
 

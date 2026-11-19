@@ -65,7 +65,7 @@ keys_file=$config_dir/livekit-keys.yaml
 for user in "$merovingian_user" "$livekit_user"; do
     id "$user" >/dev/null 2>&1 || die "no such user: $user"
 done
-command -v openssl >/dev/null 2>&1 || die "openssl is required"
+[ -r /dev/urandom ] || die "cannot read /dev/urandom"
 
 print_settings() {
     cat <<EOF
@@ -89,6 +89,18 @@ key_of_keys_file() {
     sed -n '1s/^\([A-Za-z0-9_.-]*\): .*$/\1/p' "$keys_file"
 }
 
+# Whether $1 is a regular file (not a link) owned by user $2 with mode 0400
+# exactly, as each side's reader requires. `-perm 0400` without a sign matches
+# that mode and no other.
+owner_only() {
+    [ -n "$(find "$1" -prune -type f -user "$2" -perm 0400 2>/dev/null)" ]
+}
+
+# $1 random bytes from the kernel, as lower-case hex on one line.
+random_hex() {
+    od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'
+}
+
 # Whether the two files hold the same secret. Both values stay in this shell's
 # memory: `read` is a builtin, so no process is given them as arguments.
 secrets_agree() {
@@ -103,6 +115,10 @@ secrets_agree() {
 
 if [ -e "$secret_file" ] || [ -e "$keys_file" ]; then
     if [ -e "$secret_file" ] && [ -e "$keys_file" ]; then
+        owner_only "$secret_file" "$merovingian_user" ||
+            die "$secret_file must be a regular file owned by $merovingian_user with mode 0400; fix it, or remove both files and run again"
+        owner_only "$keys_file" "$livekit_user" ||
+            die "$keys_file must be a regular file owned by $livekit_user with mode 0400; fix it, or remove both files and run again"
         secrets_agree || die "$secret_file and $keys_file hold different secrets; remove both and run again"
         key=$(key_of_keys_file)
         [ -n "$key" ] || die "$keys_file does not start with an API key; remove both files and run again"
@@ -120,8 +136,18 @@ trap 'rm -f "$tmp_secret" "$tmp_keys"' EXIT HUP INT TERM
 
 # 16 hex digits of key after LiveKit's customary "API" prefix; 64 hex digits of
 # secret (256 bits), over both sides' 32-byte minimum.
-key="API$(openssl rand -hex 8)"
-openssl rand -hex 32 > "$tmp_secret"
+# A pipeline's exit status is its last command's, so check the lengths: a
+# short read from /dev/urandom must not become a short secret.
+key="API$(random_hex 8)"
+case $key in
+    API????????????????) ;;
+    *) die "could not read random bytes for the API key" ;;
+esac
+{
+    random_hex 32
+    printf '\n'
+} > "$tmp_secret"
+[ "$(wc -c < "$tmp_secret" | tr -d ' ')" -eq 65 ] || die "could not read random bytes for the secret"
 {
     printf '%s: "' "$key"
     head -n 1 "$tmp_secret" | tr -d '\n'
