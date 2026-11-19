@@ -8077,6 +8077,30 @@ namespace
         return ids;
     }
 
+    // Whether any of a sliding-sync request's lists sorts by notification count, which the user's own receipts
+    // change.
+    [[nodiscard]] auto lists_sort_by_notification_count(std::map<std::string, sync::SlidingSyncList> const& lists)
+        -> bool
+    {
+        return std::ranges::any_of(lists, [](auto const& entry) {
+            return std::ranges::find(entry.second.sort, "by_notification_count") != entry.second.sort.end();
+        });
+    }
+
+    // Whether the user has posted a receipt, of any type, in one of `joined_rooms` since `since_sync_stream_id`.
+    // Read through the per-user receipt index: the cost is the user's own receipts in their rooms (ADR-0861).
+    [[nodiscard]] auto own_receipt_moved_in_any(database::PersistentStore const& store,
+                                                std::unordered_set<std::string_view> const& joined_rooms,
+                                                std::string_view user, std::uint64_t since_sync_stream_id) -> bool
+    {
+        return std::ranges::any_of(joined_rooms, [&](std::string_view room_id) {
+            return std::ranges::any_of(database::receipts_of_user_in_room(store, room_id, user),
+                                       [since_sync_stream_id](database::PersistentReceipt const* receipt) {
+                                           return receipt->stream_id > since_sync_stream_id;
+                                       });
+        });
+    }
+
     using StickyIdsByRoom = std::unordered_map<std::string, std::unordered_set<std::string>>;
 
     // What the sticky_events extension adds to one sliding sync response (ADR-0855).
@@ -8552,8 +8576,13 @@ namespace
                         sticky_backlog_exists(store, sticky_rooms, joined_rooms, conn.sticky_delivered,
                                               sticky_now_ms(rt.homeserver), cur_event, ignored_senders);
                 }
+                // The user's own receipt in any joined room can move a room into or out of a list sorted by
+                // notification count, whatever the extensions ask for, so it wakes such a connection (ADR-0861).
+                bool const has_reordering_receipt =
+                    lists_sort_by_notification_count(ssreq.lists) &&
+                    own_receipt_moved_in_any(store, joined_rooms, user, since_sync_stream_id);
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
-                    !has_relevant_typing && !has_relevant_sticky)
+                    !has_relevant_typing && !has_relevant_sticky && !has_reordering_receipt)
                 {
                     // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.

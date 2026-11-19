@@ -3416,3 +3416,70 @@ SCENARIO("a sliding sync long-poll wakes for typing and receipts only within the
         }
     }
 }
+
+namespace
+{
+
+// A sliding sync request whose list `unread` holds the one room ranked first by `sort`, with `extensions` (members
+// such as `"receipts":{...}`, or nothing).
+[[nodiscard]] auto top_room_request(std::string_view conn_id, std::string_view sort, std::string_view extensions)
+    -> std::string
+{
+    return std::string{R"({"conn_id":")"} + std::string{conn_id} +
+           R"(","lists":{"unread":{"ranges":[[0,0]],"sort":[")" + std::string{sort} +
+           R"("],"required_state":[],"timeline_limit":0}},"extensions":{)" + std::string{extensions} + "}}";
+}
+
+} // namespace
+
+// A list sorted by notification count ranks the user's rooms by their unread counts, which the user's own receipts
+// change. A receipt in a room outside the window can bring another room into it, so it wakes the poll whatever the
+// extensions' scope (ADR-0861); a list that does not sort by those counts is not woken by it.
+SCENARIO("a sliding sync long-poll wakes when the user's own receipt reorders a list sorted by notification count",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice's two rooms, where bob has sent two messages in the first and one in the second")
+    {
+        auto const extensions = std::string{GENERATE(R"()", R"("receipts":{"enabled":true,"lists":[]})")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        REQUIRE(put_message(rt, rooms.bob_token, rooms.first, "unread-1", "one") == 200U);
+        auto const last_in_first = send_message_get_id(rt, rooms.bob_token, rooms.first, "two");
+        REQUIRE(put_message(rt, rooms.bob_token, rooms.second, "unread-3", "three") == 200U);
+        auto const poll_after_alice_reads = [&](std::string_view conn_id, std::string_view sort) {
+            auto const body = top_room_request(conn_id, sort, extensions);
+            auto const first = sliding_sync(rt, rooms.alice_token, body);
+            REQUIRE(first.response.status == 200U);
+            std::ignore =
+                post_expect_ok(rt, rooms.alice_token,
+                               "/_matrix/client/v3/rooms/" + rooms.first + "/receipt/m.read/" + last_in_first, "{}");
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" +
+                                sliding_sync_pos(first.response.body);
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, rooms.alice_token, body},
+                                                                         /*can_wait=*/true);
+        };
+
+        WHEN("alice reads the first room, which the list sorted by notification count held")
+        {
+            auto const result = poll_after_alice_reads("by-unread", "by_notification_count");
+            THEN("the poll is answered with the second room, which now ranks first")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(object_member_as_object(rooms_object(result.response.body), rooms.second) != nullptr);
+            }
+        }
+
+        WHEN("alice reads the first room, and the list sorts by name")
+        {
+            auto const result = poll_after_alice_reads("by-name", "by_name");
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}

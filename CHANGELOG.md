@@ -102,6 +102,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   so a child that made only allowed calls no longer fails the `tsan` job at random (ADR-0852).
 * A sliding sync long poll is no longer answered with nothing by a typing or receipt change outside the extension's
   scope (ADR-0861).
+* A sliding sync long poll now wakes when the user's own receipt reorders a list sorted by notification count
+  (ADR-0861).
 * A slower package run of an older `main` commit no longer replaces a newer `latest`, nor does a run `main` dropped:
   publishes run one at a time, and each must be on `main` and equal or descend from the `latest` tag (ADR-0850).
 * Publishing `latest` moves its tag instead of deleting it, so a failed publish can no longer let an older queued build

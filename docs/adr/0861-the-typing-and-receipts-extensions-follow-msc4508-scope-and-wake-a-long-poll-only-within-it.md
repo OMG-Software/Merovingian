@@ -52,11 +52,17 @@ Chosen option: the second.
   extension's scope over the same windows the sticky check uses (the previous response's, or this request's while a
   list's config is new or changed) and the subscribed rooms. Typing is read per room in scope
   (`room_typing_stream_id_for`), no longer by a walk of every room's typing position.
+* Separately from the extensions, a connection with a list sorted `by_notification_count` is woken by the user's own
+  receipt, of any type, in any joined room (`own_receipt_moved_in_any`, through the per-user receipt index). That
+  receipt changes the room's unread count, so a room outside the window can move another into it. The old
+  every-joined-room receipt check caught this only while the receipts extension was on; scoping it would have lost
+  it, so it is its own check now, and the payloads stay scoped to the resulting windows.
 
 ### Positive Consequences
 
 * `{"lists": [...], "rooms": [...]}` means one scope for typing, receipts and sticky events.
 * A connection scoped to its subscriptions, or to a visible-rooms list, is not woken for typing in its other rooms.
+* A list sorted by notification count is re-ranked when the user reads a room, with or without the receipts extension.
 
 ### Negative Consequences
 
