@@ -45,6 +45,29 @@ namespace
         {
             return false;
         }
+        // MSC4186 `tags` / `not_tags`: any one of `tags`, and none of `not_tags`, which "takes priority over `tags`".
+        if (!f.tags.empty() || !f.not_tags.empty())
+        {
+            auto const& tags = lookups.room_tags(room_id);
+            auto const tagged = [&](std::string const& t) {
+                return tags.contains(t);
+            };
+            if (!f.tags.empty() && !std::ranges::any_of(f.tags, tagged))
+            {
+                return false;
+            }
+            if (std::ranges::any_of(f.not_tags, tagged))
+            {
+                return false;
+            }
+        }
+        // MSC4186 `spaces`: a room "can be part of any one of the listed spaces (OR'd)", as a direct child.
+        if (!f.spaces.empty() && !std::ranges::any_of(f.spaces, [&](std::string const& space) {
+                return lookups.space_children(space).contains(std::string{room_id});
+            }))
+        {
+            return false;
+        }
         if (!f.room_types.empty() || !f.not_room_types.empty())
         {
             auto const& type = lookups.room_type(room_id);
@@ -158,8 +181,12 @@ auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::
     // ADR-0864). The persistent store is the source of truth rather than the runtime cache, so sliding sync reports the
     // same rooms as the database of record even when the in-memory cache is stale or was never hydrated. Every key and
     // filter below answers an invited room from its invite, never from the room's events or state.
+    // MSC4186 "Lists" adds the rooms the user knocked on, and those `include_departed_rooms` kept of the ones they
+    // left or were kicked or banned from (ADR-0867), each answered from its membership as an invite is.
     auto room_ids = lookups.joined_rooms();
     std::ranges::move(lookups.invited_rooms(), std::back_inserter(room_ids));
+    std::ranges::move(lookups.knocked_rooms(), std::back_inserter(room_ids));
+    std::ranges::move(lookups.departed_rooms(), std::back_inserter(room_ids));
 
     // Step 2 — apply filters, each answered from the request's lookups (ADR-0665).
     if (list.filters.has_value())
@@ -172,11 +199,26 @@ auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::
 
     auto const total_count = static_cast<std::uint64_t>(room_ids.size());
 
+    // MSC4186 "SyncListConfig": with no `range` "the room list is not limited by range", so the window is the whole
+    // filtered list. MSC4186 "Activity ordering": without MSC3575's `sort`, rooms are ordered by last activity.
+    auto list_with_window = list;
+    if (list.whole_list && !room_ids.empty())
+    {
+        list_with_window.ranges = {
+            SlidingSyncRange{0U, total_count - 1U}
+        };
+    }
+    if (list_with_window.sort.empty())
+    {
+        list_with_window.sort = {"by_recency"};
+    }
+    auto const& windowed = list_with_window;
+
     // Compute each requested sort key once per room. The sort comparator may
     // run O(N log N) times while the caller holds the runtime lock, so it only
     // looks keys up (ADR-0172).
-    auto const sorts_by = [&list](std::string_view key) {
-        return std::ranges::find(list.sort, key) != list.sort.end();
+    auto const sorts_by = [&windowed](std::string_view key) {
+        return std::ranges::find(windowed.sort, key) != windowed.sort.end();
     };
     auto notification_keys = std::unordered_map<std::string, std::uint64_t>{};
     if (sorts_by("by_notification_count"))
@@ -184,8 +226,8 @@ auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::
         notification_keys.reserve(room_ids.size());
         for (auto const& room_id : room_ids)
         {
-            // An invited room has no unread count the user may be told: its events are not theirs to read (ADR-0864).
-            notification_keys.emplace(room_id, lookups.is_invited(room_id)
+            // A room the user is not joined to has no unread count they may be told (ADR-0864, ADR-0867).
+            notification_keys.emplace(room_id, lookups.is_unjoined(room_id)
                                                    ? std::uint64_t{0U}
                                                    : notification_key(lookups, store, room_id, user, unread));
         }
@@ -212,7 +254,7 @@ auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.
     std::stable_sort(room_ids.begin(), room_ids.end(), [&](std::string const& a, std::string const& b) {
-        for (auto const& key : list.sort)
+        for (auto const& key : windowed.sort)
         {
             if (key == "by_notification_count")
             {
@@ -252,19 +294,19 @@ auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::
     });
 
     // Step 4 — window and generate ops.
-    auto const current_window = window_rooms(room_ids, list.ranges);
+    auto const current_window = window_rooms(room_ids, windowed.ranges);
     auto ops = std::vector<SlidingSyncOp>{};
 
     if (prev_window.empty())
     {
         // Initial request for this list: emit SYNC for all ranges.
-        ops = make_sync_ops(room_ids, list.ranges);
+        ops = make_sync_ops(room_ids, windowed.ranges);
     }
     else
     {
         // Incremental: emit SYNC only for ranges whose contents changed.
         auto prev_offset = std::size_t{0U};
-        for (auto const& range : list.ranges)
+        for (auto const& range : windowed.ranges)
         {
             auto const start = static_cast<std::size_t>(range.start);
             auto const end = static_cast<std::size_t>(range.end);

@@ -13,6 +13,7 @@
 #include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
+#include "merovingian/sync/RoomReadKind.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
 #include "merovingian/sync/TimelineWindow.hpp"
@@ -24,6 +25,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -206,6 +208,60 @@ namespace
         return std::ranges::any_of(pairs, [&](auto const& p) {
             return matches_required_state_pair(p.first, p.second, event_type, state_key);
         });
+    }
+
+    // ── MSC4186 required_state configs (ADR-0865) ──────────────────────────
+
+    // Whether a config returns a state entry: an include element matches it and no exclude element does. Under
+    // `lazy_members` an include element reaches `m.room.member` only when it names that type, so `{}` is "everything
+    // but the members" (MSC4186 "Lazy loaded memberships"); the lazily loaded members are added apart from this.
+    [[nodiscard]] auto config_returns_state(RequiredStateConfig const& config, std::string_view event_type,
+                                            std::string_view state_key) noexcept -> bool
+    {
+        auto const is_member = event_type == "m.room.member";
+        auto const included = std::ranges::any_of(config.include, [&](auto const& p) {
+            if (is_member && config.lazy_members && p.first != "m.room.member")
+            {
+                return false;
+            }
+            return matches_required_state_pair(p.first, p.second, event_type, state_key);
+        });
+        return included && !state_event_matches_any(config.exclude, event_type, state_key);
+    }
+
+    // Whether a pair names every member event: type `m.room.member` or any, and any state key.
+    [[nodiscard]] auto pair_names_every_member(std::pair<std::string, std::string> const& p) noexcept -> bool
+    {
+        return (p.first == "*" || p.first == "m.room.member") && p.second == "*";
+    }
+
+    // MSC4186 "Combining room configs": members are lazily loaded only if no config "return[s] all membership events
+    // (and [doesn't] have `lazy_members` set)". A config that excludes any member event does not return all of them.
+    [[nodiscard]] auto config_returns_every_member(RequiredStateConfig const& config) noexcept -> bool
+    {
+        if (config.lazy_members)
+        {
+            return false;
+        }
+        auto const excludes_a_member = std::ranges::any_of(config.exclude, [](auto const& p) {
+            return p.first == "*" || p.first == "m.room.member";
+        });
+        return !excludes_a_member && std::ranges::any_of(config.include, pair_names_every_member);
+    }
+
+    // Whether the combined room config lazily loads members through an MSC4186 config.
+    [[nodiscard]] auto configs_load_members_lazily(SlidingSyncRoomSubscription const& sub) noexcept -> bool
+    {
+        auto const any_lazy = std::ranges::any_of(sub.required_state_configs, [](RequiredStateConfig const& c) {
+            return c.lazy_members;
+        });
+        if (!any_lazy)
+        {
+            return false;
+        }
+        auto const legacy_returns_every_member = std::ranges::any_of(sub.required_state, pair_names_every_member);
+        return !legacy_returns_every_member &&
+               std::ranges::none_of(sub.required_state_configs, config_returns_every_member);
     }
 
     // ── required_state sentinel resolution ("$ME" / "$LAZY") ───────────────
@@ -419,14 +475,46 @@ namespace
         constexpr std::size_t max_heroes = 5U;
         auto heroes = std::vector<SlidingSyncHero>{};
 
-        // The first `max_heroes` other joined users in the room's own membership rows (ADR-0437).
-        auto hero_user_ids = std::vector<std::string>{};
+        // MSC4186 "heroes": "the same users as the `m.heroes` section" of /v3/sync, from the room's own membership rows
+        // (ADR-0437): the first `max_heroes` other users who are joined, then invited; the left and banned ones only
+        // "when no joined or invited members are available".
+        auto joined = std::vector<std::string>{};
+        auto invited = std::vector<std::string>{};
+        auto departed = std::vector<std::string>{};
         database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& m) {
-            if (hero_user_ids.size() < max_heroes && m.user_id != self_user_id && m.membership == "join")
+            if (m.user_id == self_user_id)
             {
-                hero_user_ids.push_back(m.user_id);
+                return;
+            }
+            if (m.membership == "join" && joined.size() < max_heroes)
+            {
+                joined.push_back(m.user_id);
+            }
+            else if (m.membership == "invite" && invited.size() < max_heroes)
+            {
+                invited.push_back(m.user_id);
+            }
+            else if ((m.membership == "leave" || m.membership == "ban") && departed.size() < max_heroes)
+            {
+                departed.push_back(m.user_id);
             }
         });
+        auto hero_user_ids = std::move(joined);
+        auto* const departed_or_none = hero_user_ids.empty() && invited.empty() ? &departed : nullptr;
+        for (auto* const more : {&invited, departed_or_none})
+        {
+            if (more == nullptr)
+            {
+                continue;
+            }
+            for (auto& user_id : *more)
+            {
+                if (hero_user_ids.size() < max_heroes)
+                {
+                    hero_user_ids.push_back(std::move(user_id));
+                }
+            }
+        }
 
         for (auto const& hero_user_id : hero_user_ids)
         {
@@ -642,6 +730,15 @@ auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscripti
         }
     }
     combined.required_state = std::move(pruned);
+
+    // MSC4186 configs are kept apart, so each one's `exclude` filters only what it includes (ADR-0865).
+    for (auto const& config : list.required_state_configs)
+    {
+        if (std::ranges::find(combined.required_state_configs, config) == combined.required_state_configs.end())
+        {
+            combined.required_state_configs.push_back(config);
+        }
+    }
     return combined;
 }
 
@@ -673,6 +770,12 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
     // ── Name and avatar ─────────────────────────────────────────────────────
     resp.name = state_content_string(store, room_id, "m.room.name", "name");
     resp.avatar = state_content_string(store, room_id, "m.room.avatar", "url");
+    // MSC4186 `name` / `avatar` `null`: removed. An event with no usable value is the spec's removal (an absent or
+    // empty `name` is treated as no `m.room.name`); an initial response sends nothing for it.
+    resp.name_removed = !is_initial && !resp.name.has_value() &&
+                        database::find_current_state_event_id(store, room_id, "m.room.name", "").has_value();
+    resp.avatar_removed = !is_initial && !resp.avatar.has_value() &&
+                          database::find_current_state_event_id(store, room_id, "m.room.avatar", "").has_value();
 
     // ── is_dm ───────────────────────────────────────────────────────────────
     // The room is in the user's m.direct global account data, parsed once per request.
@@ -693,7 +796,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
     resp.timestamp = latest_timestamp(store, room_id);
 
     // ── Heroes ──────────────────────────────────────────────────────────────
-    if (sub.include_heroes)
+    // MSC4186: "Heroes are only included if the room name is not set", whether or not the request asked for them with
+    // MSC3575's `include_heroes` (ADR-0865).
+    if (!resp.name.has_value())
     {
         resp.heroes = build_heroes(store, room_id, user);
     }
@@ -835,11 +940,14 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
     }
 
     // ── required_state ──────────────────────────────────────────────────────
-    if (!sub.required_state.empty())
+    if (!sub.required_state.empty() || !sub.required_state_configs.empty())
     {
-        auto const lazy_load_room_members = std::ranges::any_of(sub.required_state, [](auto const& p) {
+        // MSC3575's "$LAZY" pair, or an MSC4186 config's `lazy_members` that no other config overrides.
+        auto const legacy_lazy = std::ranges::any_of(sub.required_state, [](auto const& p) {
             return p.first == "m.room.member" && p.second == "$LAZY";
         });
+        auto const configs_lazy = configs_load_members_lazily(sub);
+        auto const lazy_load_room_members = legacy_lazy || configs_lazy;
         resp.lazy_load_members = lazy_load_room_members;
 
         // Members relevant to this response's timeline, and — among those —
@@ -866,8 +974,21 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
             resolve_required_state(sub.required_state, user, timeline_membership, scope_lazy_to_timeline);
 
         // The room's own state rows, in storage order (ADR-0344), not every room's.
+        // A lazily loaded member is never filtered by `exclude` (MSC4186): it is matched apart from the configs. As
+        // for "$LAZY", that is the timeline's members when the timeline is limited or the room initial, and otherwise
+        // every member change since the floor (MSC4186's "all membership updates ... when `limited` is false").
+        auto const lazily_loaded = [&](std::string_view event_type, std::string_view state_key) {
+            return configs_lazy && event_type == "m.room.member" &&
+                   (!scope_lazy_to_timeline || timeline_membership.contains(std::string{state_key}));
+        };
         database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& se) {
-            if (!state_event_matches_any(resolved_required_state, se.event_type, se.state_key))
+            auto const requested = state_event_matches_any(resolved_required_state, se.event_type, se.state_key) ||
+                                   std::ranges::any_of(sub.required_state_configs,
+                                                       [&](RequiredStateConfig const& c) {
+                                                           return config_returns_state(c, se.event_type, se.state_key);
+                                                       }) ||
+                                   lazily_loaded(se.event_type, se.state_key);
+            if (!requested)
             {
                 return;
             }
@@ -965,6 +1086,186 @@ auto add_sticky_sender_members(database::PersistentStore const& store, std::stri
         }
     }
     return added;
+}
+
+namespace
+{
+    // MSC4186 "StrippedState": the `type`, `state_key`, `content` and `sender` of an event, or nullopt.
+    [[nodiscard]] auto stripped_state_value(std::string const& event_json) -> std::optional<canonicaljson::Value>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto stripped = canonicaljson::Object{};
+        for (auto const* const key : {"content", "sender", "state_key", "type"})
+        {
+            if (auto const* value = find_member(*root, key); value != nullptr)
+            {
+                stripped.emplace_back(key, std::make_unique<canonicaljson::Value>(*value));
+            }
+        }
+        return canonicaljson::Value{std::move(stripped)};
+    }
+
+    // The user's own current m.room.member event in the room, by the state index, or nullptr.
+    [[nodiscard]] auto own_member_event(database::PersistentStore const& store, std::string_view room_id,
+                                        std::string_view user) -> database::PersistentEvent const*
+    {
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user);
+        if (!event_id.has_value())
+        {
+            return nullptr;
+        }
+        auto const found = store.events.find(*event_id);
+        return found == store.events.end() ? nullptr : &*found;
+    }
+
+    // Whether the combined room config asks for a state entry of a departed room: a pair, a config, or a lazily loaded
+    // member, which for a departed room is only the user's own (the timeline holds no one else).
+    [[nodiscard]] auto departed_state_requested(SlidingSyncRoomSubscription const& sub, std::string_view user,
+                                                std::string_view event_type, std::string_view state_key) -> bool
+    {
+        auto const own = std::unordered_set<std::string>{std::string{user}};
+        auto const pairs = resolve_required_state(sub.required_state, user, own, /*scope_lazy_to_timeline=*/true);
+        if (state_event_matches_any(pairs, event_type, state_key))
+        {
+            return true;
+        }
+        if (std::ranges::any_of(sub.required_state_configs, [&](RequiredStateConfig const& c) {
+                return config_returns_state(c, event_type, state_key);
+            }))
+        {
+            return true;
+        }
+        return configs_load_members_lazily(sub) && event_type == "m.room.member" && state_key == user;
+    }
+
+    // What a departed room's state event says of itself: its type, state key and, for the room's name or avatar,
+    // the value, read from one parse of its JSON.
+    struct DepartedStateEntry
+    {
+        std::string type{};
+        std::string state_key{};
+        std::optional<std::string> name_or_avatar{};
+    };
+
+    [[nodiscard]] auto departed_state_entry(std::string const& event_json) -> std::optional<DepartedStateEntry>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        auto const* type_val = root == nullptr ? nullptr : find_member(*root, "type");
+        auto const* key_val = root == nullptr ? nullptr : find_member(*root, "state_key");
+        auto const* type = type_val == nullptr ? nullptr : as_string(*type_val);
+        auto const* key = key_val == nullptr ? nullptr : as_string(*key_val);
+        if (type == nullptr || key == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto entry = DepartedStateEntry{*type, *key, std::nullopt};
+        auto const is_name = *type == "m.room.name";
+        if ((!is_name && *type != "m.room.avatar") || !key->empty())
+        {
+            return entry;
+        }
+        auto const* content_val = find_member(*root, "content");
+        auto const* content = content_val == nullptr ? nullptr : as_object(*content_val);
+        auto const* value = content == nullptr ? nullptr : find_member(*content, is_name ? "name" : "url");
+        auto const* text = value == nullptr ? nullptr : as_string(*value);
+        if (text != nullptr && !text->empty())
+        {
+            entry.name_or_avatar = *text;
+        }
+        return entry;
+    }
+
+    // An event's `origin_server_ts`, or 0.
+    [[nodiscard]] auto origin_server_ts_of(std::string const& event_json) -> std::uint64_t
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        auto const* ts = root == nullptr ? nullptr : find_member(*root, "origin_server_ts");
+        auto const* value = ts == nullptr ? nullptr : std::get_if<std::int64_t>(&ts->storage());
+        return value == nullptr || *value < 0 ? 0U : static_cast<std::uint64_t>(*value);
+    }
+} // namespace
+
+auto build_departed_room_response(database::PersistentStore const& store, std::string_view room_id,
+                                  std::string_view user, SlidingSyncRoomSubscription const& sub,
+                                  RoomReadAccess const& access, HistoryVisibility& visibility,
+                                  std::string_view device_id) -> SlidingSyncRoomResponse
+{
+    auto resp = SlidingSyncRoomResponse{};
+    resp.initial = true;
+    auto const* const own = own_member_event(store, room_id, user);
+    if (access.kind != RoomReadKind::as_of)
+    {
+        auto stripped = canonicaljson::Array{};
+        if (own != nullptr)
+        {
+            if (auto value = stripped_state_value(own->json); value.has_value())
+            {
+                stripped.push_back(std::move(*value));
+            }
+        }
+        resp.invite_state_json = serialized_client_event(canonicaljson::Value{std::move(stripped)});
+        return resp;
+    }
+    auto viewer = ViewerEventUnsigned{store, visibility, user, device_id};
+    // The state as of the departure, never later (RoomReadAccess, ADR-0084).
+    for (auto const& event_id :
+         room_state_event_ids(store, room_id, access, std::nullopt).value_or(std::vector<std::string>{}))
+    {
+        auto const found = store.events.find(event_id);
+        auto const entry = found == store.events.end() ? std::nullopt : departed_state_entry(found->json);
+        if (!entry.has_value())
+        {
+            continue;
+        }
+        if (entry->name_or_avatar.has_value())
+        {
+            (entry->type == "m.room.name" ? resp.name : resp.avatar) = entry->name_or_avatar;
+        }
+        if (!departed_state_requested(sub, user, entry->type, entry->state_key))
+        {
+            continue;
+        }
+        if (auto json = client_event_json(store, *found, viewer); !json.empty())
+        {
+            resp.required_state_json.push_back(std::move(json));
+        }
+    }
+    // The timeline: the event that ended the stay and, when a later one (a ban after leaving) is current, that one.
+    auto timeline = std::vector<database::PersistentEvent const*>{};
+    if (auto const boundary = store.events.find(access.boundary_event_id); boundary != store.events.end())
+    {
+        timeline.push_back(&*boundary);
+    }
+    if (own != nullptr && own->event_id != access.boundary_event_id)
+    {
+        timeline.push_back(own);
+    }
+    for (auto const* const ev : timeline)
+    {
+        if (!visibility.can_see(*ev) || sub.timeline_limit == 0U)
+        {
+            continue;
+        }
+        if (auto json = client_event_json(store, *ev, viewer); !json.empty())
+        {
+            resp.timeline_json.push_back(std::move(json));
+            if (!resp.prev_batch.has_value())
+            {
+                resp.prev_batch = std::to_string(ev->stream_ordering);
+            }
+        }
+    }
+    // Earlier events the user could see are not in it; `/messages` from `prev_batch` reaches them.
+    resp.limited = true;
+    resp.timestamp = timeline.empty() ? 0U : origin_server_ts_of(timeline.back()->json);
+    return resp;
 }
 
 auto read_receipt_markers(homeserver::HomeserverRuntime const& /*rt*/, database::PersistentStore const& store,

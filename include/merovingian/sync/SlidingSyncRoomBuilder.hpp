@@ -7,6 +7,7 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/ReadMarkers.hpp"
+#include "merovingian/sync/RoomReadAccess.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncRequestLookups.hpp"
@@ -156,6 +157,19 @@ namespace merovingian::sync
 [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
                                        std::string_view user, ReadMarkers const& markers, UnreadEventClassifier& unread)
     -> std::uint64_t;
+
+// MSC4186: a room the user left, or was kicked or banned from, that a list holds (ADR-0867). Nothing after the
+// departure is the user's: `access` is `room_read_access_for` of the room. A room the user was joined to (`as_of`) is
+// sent the name, avatar and `required_state` of the state as of the departure, matched by `sub` as a joined room's,
+// and a timeline of the user's own membership events from the departure on, `limited` with a `prev_batch`, so
+// `/messages` pages back through what they could see. A room they never joined (`none`: a rejected or withdrawn
+// invite, a retracted knock) is sent only stripped state (MSC4186 "Invite/knock/rejections"): their own current
+// m.room.member event, stripped. No counts, heroes or unread counts: those would be read from the room as it is now.
+// Every response is `initial`, since it is sent once per change of membership.
+[[nodiscard]] auto build_departed_room_response(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view user, SlidingSyncRoomSubscription const& sub,
+                                                RoomReadAccess const& access, HistoryVisibility& visibility,
+                                                std::string_view device_id) -> SlidingSyncRoomResponse;
 
 // count_unread_by_thread()'s highlights, summed over threads. Used for both sliding sync and
 // the legacy /sync `unread_notifications.highlight_count`.

@@ -37,6 +37,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854, ADR-0857).
 * The Linux packages set up a LiveKit SFU you install beside the server: a `merovingian-livekit` account and disabled
   service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0860).
+* Sliding sync reads the MSC4186 request forms beside the older ones: `required_state` objects, `range`, and the
+  `is_invited`, `spaces`, `tags` and `not_tags` filters; at most 100 lists and 100 room subscriptions (ADR-0865).
+* Sliding sync rooms carry `bump_stamp`, `membership`, `lists` and `stripped_state`, a removed name or avatar is `null`,
+  heroes are sent whenever a room has no name, and a change of `is_dm` resends the room (ADR-0865).
+* Sliding sync lists hold the rooms a user knocked on, was kicked or banned from, or left after the connection was
+  sent them, each read only as of the departure (MSC4186 "Lists", ADR-0867).
+* A sliding sync `pos` works as `from` / `to` in `/messages`, `/relations` and `/keys/changes` (ADR-0866).
+* The sliding sync extensions answer under the MSC-prefixed names too (MSC4508, MSC4538, MSC4543, MSC4548, MSC4551),
+  which `/versions` lists (ADR-0865).
+* The account_data extension follows its `lists` and `rooms` scope, whatever the user's membership; receipts send a
+  room's initial receipts on entering scope and those on a new timeline (MSC4548, MSC4551, ADR-0865).
 
 ## Security Fixes
 
@@ -62,6 +73,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   visibility only (ADR-0862).
 * A sticky event that expires a sender's row in another room refreshes the federation worker's snapshot of that room,
   so the worker stops serving the removed event (ADR-0862).
+* A sliding sync `pos` is bound to the user and device it was issued to; any other is `M_UNKNOWN_POS`, so one user can
+  no longer continue another's connection (ADR-0866).
 
 ## Bug fixes
 
@@ -132,6 +145,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   at its own position, so the next request does not receive it again (ADR-0864).
 * A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
   never a pass over every room the server holds (ADR-0665).
+  acknowledges it rather than receiving the invite again (ADR-0864).
+* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and stays in the list as `leave`, as
+  MSC4186 says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
+* Sliding sync's e2ee extension sends no `device_lists` without a `pos`, and `timeout` without a `pos` is ignored
+  (MSC4543, MSC4186, ADR-0865).
 
 ## Release notes
 
@@ -139,7 +157,9 @@ Version 1.1.3 is in progress: a LiveKit token service built into the server for 
 an exact `state_after` on `/sync`, and sticky events (MSC4354) for Element Call. It adds migrations 004
 (`livekit_delegations`) and 005 (`sticky_events`). After a restart, the first `state_after` sync of each room with news
 carries its whole state once. A SQLite server no longer refuses writes under sustained write load, and
-`database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request and the full matrix in
+`database.pool_size` now applies to PostgreSQL only. Sliding sync follows MSC4186: every
+`pos` issued before the upgrade is refused once (`M_UNKNOWN_POS`, clients start a new connection), and kicked, banned
+and left rooms now appear in lists with their `membership`. CI now runs a core gate on a pull request and the full matrix in
 the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate
 alone.
 

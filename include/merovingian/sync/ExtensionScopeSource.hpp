@@ -24,6 +24,11 @@ struct ExtensionScopeSource final
     // room re-entering the receipts scope the receipts it missed, and returns the history this response leaves. With
     // none, every room is read from the request's position alone and no history is returned.
     ExtensionScopeHistory const* history{nullptr};
+    // Each joined room of the response with a timeline, with the event IDs it holds, and those of them whose entry is
+    // `initial` or `expanded_timeline`. MSC4551: a room entering the receipts scope is sent the receipts on its
+    // timeline, and so is a room whose timeline holds events the connection has not been sent.
+    std::unordered_map<std::string, std::unordered_set<std::string>> timeline_event_ids{};
+    std::unordered_set<std::string> fresh_timeline_rooms{};
 };
 
 } // namespace merovingian::sync

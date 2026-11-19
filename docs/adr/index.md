@@ -738,3 +738,7 @@
 * [0862 - A sliding sync pos carries a page, and sticky delivery keeps redactions withheld, refreshes trimmed rooms and loads sticky senders](0862-a-sliding-sync-pos-carries-a-page-and-sticky-delivery-keeps-redactions-withheld-refreshes-trimmed-rooms-and-loads-sticky-senders.md)
 * [0863 - A room entering the typing or receipts scope is sent what it lacks](0863-a-room-entering-the-typing-or-receipts-scope-is-sent-what-it-lacks.md)
 * [0864 - Sliding sync lists hold invited rooms as stripped state, and a new or ended invite wakes the long poll](0864-sliding-sync-lists-hold-invited-rooms-as-stripped-state-and-a-new-or-ended-invite-wakes-the-long-poll.md)
+* [0865 - Sliding sync reads the MSC4186 request forms leniently, and answers extensions under the names they were asked by](0865-sliding-sync-reads-the-msc4186-request-forms-leniently-and-answers-extensions-under-the-names-they-were-asked-by.md)
+* [0866 - A sliding sync pos is bound to the user and device it was issued to](0866-a-sliding-sync-pos-is-bound-to-the-user-and-device-it-was-issued-to.md)
+* [0867 - Sliding sync lists hold knocked, left, kicked and banned rooms](0867-sliding-sync-lists-hold-knocked-left-kicked-and-banned-rooms.md)
+* [0868 - The typing and receipts extensions keep their event wrapper](0868-the-typing-and-receipts-extensions-keep-their-event-wrapper.md)

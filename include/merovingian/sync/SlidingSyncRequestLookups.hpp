@@ -11,6 +11,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace merovingian::sync
@@ -45,8 +46,33 @@ public:
     // this invite now (an ignored inviter, blocked invites, held room state that does not have it yet; ADR-0864).
     auto withhold_invite(std::string_view room_id) -> void;
 
-    // True when `room_id` is encrypted: its current m.room.encryption state event, or for an invited room the
-    // invite's stripped state, since a user only invited may not read the room's state (ADR-0864).
+    // MSC4186 "Lists": the server list also holds rooms the user "knocked on, left, or been kicked or banned from".
+    // The rooms the user has a knock membership in, in no particular order.
+    [[nodiscard]] auto knocked_rooms() -> std::vector<std::string>;
+
+    // True when the user's membership in `room_id` is knock.
+    [[nodiscard]] auto is_knocked(std::string_view room_id) -> bool;
+
+    // Decides which rooms the user left, was kicked from or was banned from belong in the lists, and must run before
+    // any list or `departed_rooms` reads them (ADR-0867): a room they were kicked or banned from always, unless banned
+    // without ever joining; one they left themselves only if `previously_sent` holds it (this connection was sent it).
+    // A room the user never joined whose kick a user they ignore sent is left out, as such an invite is.
+    auto include_departed_rooms(std::unordered_set<std::string> const& previously_sent,
+                                std::unordered_set<std::string> const& ignored_senders) -> void;
+
+    // The rooms `include_departed_rooms` kept, in no particular order.
+    [[nodiscard]] auto departed_rooms() -> std::vector<std::string>;
+
+    // `leave` or `ban` for a room `include_departed_rooms` kept, or empty.
+    [[nodiscard]] auto departed_membership(std::string_view room_id) -> std::string_view;
+
+    // True when the user is not joined to `room_id`: invited, knocked, or departed. Such a room is ranked and filtered
+    // by its membership only, never by events or state after it (ADR-0864, ADR-0867).
+    [[nodiscard]] auto is_unjoined(std::string_view room_id) -> bool;
+
+    // True when `room_id` is encrypted: its current m.room.encryption state event, or for an invited or knocked room
+    // the stripped state, since a user only invited may not read the room's state (ADR-0864). A departed room counts
+    // as encrypted only when its encryption event predates the departure (ADR-0867).
     [[nodiscard]] auto is_encrypted(std::string_view room_id) -> bool;
 
     // True when `room_id` is in the user's m.direct.
@@ -54,6 +80,13 @@ public:
 
     // True when `room_id` is tagged m.favourite for the user.
     [[nodiscard]] auto is_favourite(std::string_view room_id) -> bool;
+
+    // The tags of the user's `m.tag` account data in `room_id` (MSC4186 `tags` / `not_tags`).
+    [[nodiscard]] auto room_tags(std::string_view room_id) -> std::unordered_set<std::string> const&;
+
+    // The rooms the current `m.space.child` state of `space_id` names with a non-empty `via`, or none when the user is
+    // not joined to `space_id` (MSC4186 `spaces`: joined spaces only, no subspaces). Read once per space and request.
+    [[nodiscard]] auto space_children(std::string_view space_id) -> std::unordered_set<std::string> const&;
 
     // content.type of the room's m.room.create event (the invite's stripped copy for an invited room), or empty.
     [[nodiscard]] auto room_type(std::string_view room_id) -> std::string const&;
@@ -95,9 +128,15 @@ private:
     std::vector<std::string> m_joined{};
     // Each invited room with its invite membership row's stream ordering.
     std::unordered_map<std::string, std::uint64_t> m_invited{};
+    // Each knocked room with its knock row's stream ordering.
+    std::unordered_map<std::string, std::uint64_t> m_knocked{};
+    // Each `leave` or `ban` row, room to (stream ordering, membership), and those `include_departed_rooms` kept.
+    std::unordered_map<std::string, std::pair<std::uint64_t, std::string>> m_departure_rows{};
+    std::unordered_map<std::string, std::pair<std::uint64_t, std::string>> m_departed{};
     bool m_direct_loaded{false};
     std::unordered_set<std::string> m_direct{};
-    std::unordered_map<std::string, bool> m_favourites{};
+    std::unordered_map<std::string, std::unordered_set<std::string>> m_tags{};
+    std::unordered_map<std::string, std::unordered_set<std::string>> m_space_children{};
     std::unordered_map<std::string, std::string> m_room_types{};
     std::unordered_map<std::string, ReadMarkers> m_markers{};
     std::uint64_t m_membership_rows_visited{0U};

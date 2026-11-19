@@ -20,9 +20,10 @@ namespace merovingian::sync
 struct SlidingSyncLimits final
 {
     std::uint32_t timeline_limit{100U};
-    std::uint32_t room_subscriptions{256U};
+    // MSC4186: "Max subscriptions: 100" and "Max lists: 100"; the handler never lets configuration raise either.
+    std::uint32_t room_subscriptions{100U};
     std::uint32_t required_state_entries{256U};
-    std::uint32_t lists{32U};
+    std::uint32_t lists{100U};
     std::uint32_t sort_keys{3U};
     std::uint32_t bump_event_types{64U};
     // What a connection retains of its requests (ADR-0663): entries in a list's room_types and in its

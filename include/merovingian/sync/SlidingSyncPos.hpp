@@ -31,4 +31,10 @@ struct SlidingSyncPos final
 // spelling.
 [[nodiscard]] auto decode_sliding_sync_pos(std::string_view encoded) -> std::optional<SlidingSyncPos>;
 
+// The stream token a pagination `from` / `to` names when it is a /sync `next_batch` or a sliding sync `pos` as the
+// server sends it (`<pos>-<64 hex digits>`, ADR-0866). MSC4186: "A `pos` token can be used in `/messages` and
+// `/relations` APIs, in the same way as a `next_batch` from `/v3/sync`". The binding is not checked: a pagination token
+// only names where to read from, and every event read is still judged for the caller. nullopt for anything else.
+[[nodiscard]] auto decode_sync_position_token(std::string_view text) -> std::optional<StreamToken>;
+
 } // namespace merovingian::sync

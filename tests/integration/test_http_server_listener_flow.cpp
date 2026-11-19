@@ -19,6 +19,7 @@
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/SlidingSyncPosBinding.hpp"
 #include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
@@ -42,6 +43,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -2032,20 +2034,28 @@ SCENARIO("sync admission bounds one account across devices without holding the r
                                                                       merovingian::tests::registration_token);
         REQUIRE(alice.ok);
         REQUIRE(bob.ok);
-        auto tokens = std::vector<std::string>{};
-        for (auto device = 0U; device < 5U; ++device)
-        {
-            auto const login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, alice.value,
-                                                                               "DEVICE" + std::to_string(device));
-            REQUIRE(login.ok);
-            tokens.push_back(login.value);
-        }
-        auto const bob_login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, bob.value, "BOB");
-        REQUIRE(bob_login.ok);
         auto const since =
             merovingian::sync::encode_stream_token({runtime.homeserver.database.next_stream_ordering - 1U, 0U,
                                                     runtime.homeserver.database.persistent_store.next_sync_stream_id,
                                                     runtime.homeserver.database.persistent_store.stream_token_epoch});
+        // A sliding sync pos is bound to the user and device it was issued to (ADR-0866), so each device's poll
+        // carries the same position bound to that device.
+        auto sliding_pos_by_token = std::map<std::string, std::string>{};
+        auto const login_device = [&](std::string const& user_id, std::string const& device_id) {
+            auto const login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, user_id, device_id);
+            REQUIRE(login.ok);
+            auto const bound = merovingian::homeserver::bind_sliding_sync_pos(
+                since, user_id, device_id, runtime.homeserver.database.mutual_rooms_token_key->bytes());
+            REQUIRE(bound.has_value());
+            sliding_pos_by_token[login.value] = *bound;
+            return login.value;
+        };
+        auto tokens = std::vector<std::string>{};
+        for (auto device = 0U; device < 5U; ++device)
+        {
+            tokens.push_back(login_device(alice.value, "DEVICE" + std::to_string(device)));
+        }
+        auto const bob_token = login_device(bob.value, "BOB");
         auto pool = merovingian::net::ThreadPool{32U};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto clients = std::vector<merovingian::core::FileDescriptor>{};
@@ -2063,7 +2073,7 @@ SCENARIO("sync admission bounds one account across devices without holding the r
                 // set_presence=offline: this test is about admission of parked polls; a poll that marks
                 // its user online changes the stream and is answered at once instead of parking. Sliding sync
                 // marks its user online too since ADR-0495, and reads the parameter from the URL.
-                since + "&timeout=1500&set_presence=offline" +
+                (sliding ? sliding_pos_by_token.at(token) : since) + "&timeout=1500&set_presence=offline" +
                 " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
                 (sliding ? "\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}" : "\r\nConnection: close\r\n\r\n");
             REQUIRE(send_all(client.get(), request));
@@ -2092,7 +2102,7 @@ SCENARIO("sync admission bounds one account across devices without holding the r
                 std::ignore = request_poll(tokens[i % tokens.size()]);
             }
             auto const alice_admitted = clients.size();
-            auto const bob_admitted = request_poll(bob_login.value);
+            auto const bob_admitted = request_poll(bob_token);
             clients.clear(); // Disconnect every admitted poll before stopping the pool.
             pool.request_stop();
 

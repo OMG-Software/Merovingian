@@ -8,11 +8,11 @@
 // from. This should be the next_batch token returned by an earlier call to this endpoint." The spec lists no error
 // for a token the server cannot serve, so such a token is served as an initial sync. MSC4186 (sliding sync) answers
 // an unknown `pos` with 400 M_UNKNOWN_POS.
-#include "../support/SqliteCloser.hpp"
-#include "../support/SqliteInsertFault.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
+#include "../support/SqliteCloser.hpp"
+#include "../support/SqliteInsertFault.hpp"
 #include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -26,6 +26,7 @@
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/SlidingSyncPosBinding.hpp"
 #include "merovingian/homeserver/StreamTokenEpoch.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/ToDevicePosition.hpp"
@@ -644,9 +645,13 @@ SCENARIO("Sliding sync positions from another stream token epoch acknowledge not
 
         WHEN("bob sends a pos from another epoch")
         {
-            auto const pos = merovingian::sync::encode_stream_token({0U, 0U, store.next_sync_stream_id, other_epoch});
+            // Bound to bob's device as an issued pos is (ADR-0866), so the epoch alone is what makes it unknown.
+            auto const pos = merovingian::homeserver::bind_sliding_sync_pos(
+                merovingian::sync::encode_stream_token({0U, 0U, store.next_sync_stream_id, other_epoch}),
+                "@bob:example.org", bob.device_id, runtime.homeserver.database.mutual_rooms_token_key->bytes());
+            REQUIRE(pos.has_value());
             auto const answered = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", path + "?pos=" + pos, bob.token, R"({"conn_id":"encryption"})"}, false);
+                runtime, {"POST", path + "?pos=" + *pos, bob.token, R"({"conn_id":"encryption"})"}, false);
 
             THEN("it is an unknown position")
             {

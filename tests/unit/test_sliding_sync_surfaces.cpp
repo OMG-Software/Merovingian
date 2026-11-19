@@ -569,10 +569,12 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
         };
 
         auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
-        requests.to_device = merovingian::sync::ExtToDeviceRequest{true, 0U, std::optional<std::string>{"abc"}};
+        requests.to_device = merovingian::sync::ExtToDeviceRequest{
+            .enabled = true, .limit = 0U, .since = std::optional<std::string>{"abc"}};
         requests.e2ee = merovingian::sync::ExtE2eeRequest{true};
-        requests.account_data = merovingian::sync::ExtAccountDataRequest{true};
-        // Receipts cover the list alone (`rooms: []`); typing covers room-b's subscription alone (`lists: []`).
+        // Account data and receipts cover the list alone (`rooms: []`); typing covers room-b's subscription alone
+        // (`lists: []`). MSC4548: account data follows its MSC4508 scope, not the rooms of the response.
+        requests.account_data = merovingian::sync::ExtAccountDataRequest{.enabled = true, .rooms = named({})};
         requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true, .rooms = named({})};
         requests.typing = merovingian::sync::ExtTypingRequest{
             .enabled = true, .lists = named({}), .rooms = named({"!room-b:example.org"})};
@@ -584,7 +586,7 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
         WHEN("the enabled extensions are built for the current response")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       2U, 2U, store, {"!room-a:example.org"}, scope);
+                                                                       2U, 2U, store, scope);
 
             THEN("each extension returns only the expected scoped data")
             {
@@ -671,8 +673,10 @@ SCENARIO("Sliding sync account_data extension delivers content holding fractiona
 
         WHEN("the account_data extension is built")
         {
+            // MSC4548: room-a is in the extension's scope through its room subscription.
+            auto const scope = merovingian::sync::ExtensionScopeSource{.subscriptions = {"!room-a:example.org"}};
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       2U, 2U, store, {"!room-a:example.org"}, {});
+                                                                       2U, 2U, store, scope);
 
             THEN("the tag arrives with its order")
             {
@@ -738,7 +742,7 @@ SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms an
         WHEN("the extensions are built for alice with rooms named explicitly")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       0U, 10U, store, {"!joined:example.org"}, scope);
+                                                                       0U, 10U, store, scope);
 
             THEN("the room she has left is dropped from both extensions")
             {
@@ -784,7 +788,7 @@ SCENARIO("Sliding sync collapses a repeated device-list subject to a single entr
         WHEN("the e2ee extension is built for an initial request")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       0U, 50U, store, {}, {});
+                                                                       0U, 50U, store, {});
 
             THEN("the subject is reported once rather than once per change row")
             {
@@ -807,7 +811,7 @@ SCENARIO("Sliding sync collapses a repeated device-list subject to a single entr
         WHEN("the e2ee extension is built for an incremental request")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       10U, 50U, store, {}, {});
+                                                                       10U, 50U, store, {});
 
             THEN("the subject is still collapsed to a single entry")
             {
@@ -922,13 +926,15 @@ SCENARIO("Sliding sync room list ordering is fixed by the sort keys, not by the 
             }
         }
 
+        // MSC4186 "Lists": the list is "sorted by recent activity"; with no sort key and no bump event types, each
+        // room's newest event of any type ranks it.
         WHEN("rooms are sorted with no sort key")
         {
-            THEN("rooms order by room ID")
+            THEN("rooms order by their newest event")
             {
                 for (auto const& store : stores)
                 {
-                    REQUIRE(sorted_rooms(store.get(), {}, {}) == sort_fixture_rooms("abcdefgh"));
+                    REQUIRE(sorted_rooms(store.get(), {}, {}) == sort_fixture_rooms("agedfcbh"));
                 }
             }
         }
@@ -981,7 +987,7 @@ SCENARIO("Sliding sync receipts and typing group one pass of their tables into t
         WHEN("the extensions are built from position 4")
         {
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       4U, 10U, store, {}, scope, ignored);
+                                                                       4U, 10U, store, scope, ignored);
 
             THEN("each room's receipts are its own, newer than the position, and not from the ignored user")
             {
@@ -1017,7 +1023,7 @@ SCENARIO("Sliding sync receipts and typing group one pass of their tables into t
             {
                 auto const index = merovingian::sync::room_access_index(store, "@alice:example.org");
                 auto const shared = merovingian::sync::build_extensions(
-                    runtime, "@alice:example.org", "ALICE", requests, 4U, 10U, store, index, {}, scope, ignored);
+                    runtime, "@alice:example.org", "ALICE", requests, 4U, 10U, store, index, scope, ignored);
                 REQUIRE(shared.receipts.has_value());
                 REQUIRE(shared.typing.has_value());
                 REQUIRE(shared.receipts->rooms_json == responses.receipts->rooms_json);
@@ -1084,7 +1090,7 @@ SCENARIO("Sliding sync receipts and typing extensions serve the joined rooms of 
             requests.receipts = merovingian::sync::ExtReceiptsRequest{.enabled = true, .lists = lists, .rooms = rooms};
             requests.typing = merovingian::sync::ExtTypingRequest{.enabled = true, .lists = lists, .rooms = rooms};
             auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
-                                                                       0U, 10U, store, {}, scope);
+                                                                       0U, 10U, store, scope);
             REQUIRE(responses.receipts.has_value());
             REQUIRE(responses.typing.has_value());
             // Each read behind its own check, which clang-tidy can see (a REQUIRE is not one).
@@ -1157,7 +1163,7 @@ SCENARIO("Sliding sync typing and receipts send what a room entering their scope
                 .history = &history,
             };
             return merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests, 20U, 30U,
-                                                       store, {}, scope);
+                                                       store, scope);
         };
 
         WHEN("!a stayed in both scopes, !b comes back to receipts after dropping out at 10, and !c is new to both")

@@ -2400,10 +2400,11 @@ SCENARIO("MSC4186 sliding sync rejects requests that exceed the subscription and
         auto& rt = started.runtime;
         auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
-        WHEN("the request has 257 room_subscriptions")
+        // MSC4186 "Max subscriptions: 100".
+        WHEN("the request has 101 room_subscriptions")
         {
             auto body = std::string{R"({"room_subscriptions":{)"};
-            for (auto i = 0; i < 257; ++i)
+            for (auto i = 0; i < 101; ++i)
             {
                 body += (i == 0 ? "" : ",") + std::string{"\"!room"} + std::to_string(i) + R"(:example.org":{})";
             }
@@ -2417,10 +2418,10 @@ SCENARIO("MSC4186 sliding sync rejects requests that exceed the subscription and
             }
         }
 
-        WHEN("the request has exactly 256 room_subscriptions")
+        WHEN("the request has exactly 100 room_subscriptions")
         {
             auto body = std::string{R"({"room_subscriptions":{)"};
-            for (auto i = 0; i < 256; ++i)
+            for (auto i = 0; i < 100; ++i)
             {
                 body += (i == 0 ? "" : ",") + std::string{"\"!room"} + std::to_string(i) + R"(:example.org":{})";
             }
@@ -2849,9 +2850,11 @@ SCENARIO("MSC4186 sliding sync member counts and heroes follow joins and leaves"
                         rt, {"POST", "/_matrix/client/v3/rooms/" + shared_room + "/leave", bob_token, "{}"})
                         .response.status == 200U);
 
-            THEN("the shared room counts one joined and shows no hero")
+            THEN("the shared room counts one joined and shows bob, who left, as its hero")
             {
-                REQUIRE(counts_of(shared_room) == std::pair{std::int64_t{1}, std::size_t{0U}});
+                // MSC4186 "heroes" are /v3/sync's `m.heroes`: left users stand in when no joined or invited member
+                // other than alice remains.
+                REQUIRE(counts_of(shared_room) == std::pair{std::int64_t{1}, std::size_t{1U}});
             }
         }
     }
@@ -3151,10 +3154,13 @@ SCENARIO("A sliding-sync long-poll from an account with no room examines no tabl
         seed_foreign_events(rt, 3000U);
         seed_foreign_memberships(rt, 3000U);
 
-        WHEN("it long-polls with a fresh connection")
+        WHEN("it long-polls with the pos of a fresh connection's first answer")
         {
+            // MSC4186 `timeout` is "Ignored when no `pos` is set", so the first request is answered at once.
+            auto const first = long_poll(rt, token, {});
+            REQUIRE(first.status == merovingian::homeserver::DispatchResult::Status::complete);
             auto const before = relevance_rows(rt);
-            auto const result = long_poll(rt, token, {});
+            auto const result = long_poll(rt, token, sliding_sync_pos(first.response.body));
             auto const examined = relevance_rows(rt) - before;
 
             THEN("the poll parks, having examined a handful of rows")
@@ -3282,14 +3288,16 @@ auto bob_acts_in(merovingian::homeserver::ClientServerRuntime& rt, SharedRooms c
 
 // A sliding sync request with the list `all` over the first ten rooms, a subscription to `subscribed` when it is not
 // empty, and `extension` enabled with the scope keys `scope` (members such as `"lists":[]`, or nothing).
+// A timeline of one event, the message bob read: MSC4551 sends a room entering the receipts scope only the user's own
+// receipts and every user's on the events of its timeline in that response ("Which receipts").
 [[nodiscard]] auto scoped_extension_request(std::string_view conn_id, std::string_view extension,
                                             std::string_view scope, std::string const& subscribed = {}) -> std::string
 {
     auto body = std::string{R"({"conn_id":")"} + std::string{conn_id} +
-                R"(","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":0}})";
+                R"(","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":1}})";
     if (!subscribed.empty())
     {
-        body += R"(,"room_subscriptions":{")" + subscribed + R"(":{"required_state":[],"timeline_limit":0}})";
+        body += R"(,"room_subscriptions":{")" + subscribed + R"(":{"required_state":[],"timeline_limit":1}})";
     }
     return body + R"(,"extensions":{")" + std::string{extension} + R"(":{"enabled":true)" + (scope.empty() ? "" : ",") +
            std::string{scope} + "}}}";
@@ -3497,11 +3505,12 @@ namespace
 
 // A sliding sync request whose list `favourites` holds the user's rooms tagged `m.favourite`, with `extension` enabled
 // over every list.
+// One timeline event, for the receipts the room brings in when it enters the list (MSC4551 "Which receipts").
 [[nodiscard]] auto favourites_request(std::string_view conn_id, std::string_view extension) -> std::string
 {
     return std::string{R"({"conn_id":")"} + std::string{conn_id} +
            R"(","lists":{"favourites":{"ranges":[[0,9]],"filters":{"is_favourite":true},"required_state":[],)" +
-           R"("timeline_limit":0}},"extensions":{")" + std::string{extension} + R"(":{"enabled":true}}})";
+           R"("timeline_limit":1}},"extensions":{")" + std::string{extension} + R"(":{"enabled":true}}})";
 }
 
 } // namespace

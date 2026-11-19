@@ -198,23 +198,40 @@ namespace
 
     // ── account_data extension ────────────────────────────────────────────────
 
+    // MSC4548. `scope_rooms` are the rooms of the extension's MSC4508 scope, whatever the user's membership in them:
+    // "Room account data MUST be returned for an in-scope room regardless of the user's membership in it". `history`
+    // is the connection's at the request's `pos`, or null, when a room is new to the scope only if it is new to the
+    // connection (`initial_room_ids`, ADR-0493).
     [[nodiscard]] auto build_account_data(database::PersistentStore const& store, std::string_view user,
                                           std::uint64_t since_sync_stream_id,
-                                          std::vector<std::string> const& response_room_ids,
+                                          std::vector<std::string> const& scope_rooms,
+                                          ExtensionScopeHistory const* history,
                                           std::unordered_set<std::string> const& initial_room_ids)
         -> ExtAccountDataResponse
     {
         auto resp = ExtAccountDataResponse{};
-        // One lookup per row, not a scan of the response's rooms per row.
-        auto const response_rooms =
-            std::unordered_set<std::string_view>{response_room_ids.begin(), response_room_ids.end()};
+        // One lookup per row, not a scan of the scope per row.
+        auto const in_scope = std::unordered_set<std::string_view>{scope_rooms.begin(), scope_rooms.end()};
+        // "When the extension is enabled for the first time on a connection, the response MUST contain all of the
+        // user's global account data"; re-enabling it may send all of it too.
+        auto const global_floor =
+            history != nullptr && !history->account_data_enabled ? std::uint64_t{0U} : since_sync_stream_id;
+        auto const enters_scope = [&](std::string const& room_id) {
+            return history != nullptr ? !history->account_data_enabled || !history->account_data_rooms.contains(room_id)
+                                      : initial_room_ids.contains(room_id);
+        };
 
         database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& data) {
-            // A room the connection has not been sent has had none of its account data, so every row of it goes
-            // down whatever its age; any other row goes down when it changed after `since`. No spec text states
-            // this; it is this server's reading (ADR-0493).
-            auto const room_is_new_to_connection = !data.room_id.empty() && initial_room_ids.contains(data.room_id);
-            if (data.stream_id <= since_sync_stream_id && !room_is_new_to_connection)
+            if (!data.room_id.empty() && !in_scope.contains(data.room_id))
+            {
+                return;
+            }
+            // A room entering the scope, for the first time or again, is sent all of its account data, whatever its
+            // age; any other row goes down when it changed after `since`.
+            auto const floor = data.room_id.empty()         ? global_floor
+                               : enters_scope(data.room_id) ? std::uint64_t{0U}
+                                                            : since_sync_stream_id;
+            if (data.stream_id <= floor)
             {
                 return;
             }
@@ -229,11 +246,7 @@ namespace
             }
             else
             {
-                // Room-scoped account data is only surfaced for rooms in the response.
-                if (response_rooms.contains(data.room_id))
-                {
-                    resp.rooms_json[data.room_id].push_back(std::move(json));
-                }
+                resp.rooms_json[data.room_id].push_back(std::move(json));
             }
         });
         return resp;
@@ -241,11 +254,37 @@ namespace
 
     // ── receipts extension ────────────────────────────────────────────────────
 
-    // `floors` holds the rooms re-entering the receipts scope, each with the position it dropped out at: such a room
-    // is sent the receipts that changed after that position, the others those after `since_sync_stream_id`.
+    // MSC4551 "Which receipts". `first_entry` holds the rooms entering the scope for the first time (on this
+    // connection, since the extension was turned on, or since the user rejoined): such a room is sent its initial
+    // receipts, the user's own and every user's on the events of `timelines`, and nothing older. `floors` holds the
+    // rooms re-entering the scope, each with the position it dropped out at: such a room is sent the receipts that
+    // changed after that position, the others those after `since_sync_stream_id`. A room of `timelines` that is not
+    // entering is also sent every user's receipts on those events: its entry is `initial` or `expanded_timeline`.
+    struct ReceiptSelection
+    {
+        std::unordered_map<std::string, std::uint64_t> floors{};
+        std::unordered_set<std::string> first_entry{};
+        std::unordered_map<std::string, std::unordered_set<std::string>> timelines{};
+    };
+
+    [[nodiscard]] auto receipt_is_selected(database::PersistentReceipt const& receipt, std::string_view user,
+                                           std::uint64_t since_sync_stream_id, ReceiptSelection const& selection)
+        -> bool
+    {
+        auto const timeline = selection.timelines.find(receipt.room_id);
+        auto const on_timeline = timeline != selection.timelines.end() && timeline->second.contains(receipt.event_id);
+        if (selection.first_entry.contains(receipt.room_id))
+        {
+            return receipt.user_id == user || on_timeline;
+        }
+        auto const floor = selection.floors.find(receipt.room_id);
+        return on_timeline ||
+               receipt.stream_id > (floor != selection.floors.end() ? floor->second : since_sync_stream_id);
+    }
+
     [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                       std::uint64_t since_sync_stream_id, std::vector<std::string> const& joined_rooms,
-                                      std::unordered_map<std::string, std::uint64_t> const& floors,
+                                      ReceiptSelection const& selection,
                                       std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
     {
         auto resp = ExtReceiptsResponse{};
@@ -265,8 +304,7 @@ namespace
         for (auto const* receipt_row : rows)
         {
             auto const& receipt = *receipt_row;
-            auto const floor = floors.find(receipt.room_id);
-            if (receipt.stream_id <= (floor != floors.end() ? floor->second : since_sync_stream_id))
+            if (!receipt_is_selected(receipt, user, since_sync_stream_id, selection))
             {
                 continue;
             }
@@ -415,6 +453,38 @@ namespace
         return next;
     }
 
+    // MSC4551 "Which receipts": per room of the scope, the floor of a room back in it (ADR-0863), whether it enters it
+    // for the first time on this connection, and the timeline whose receipts it is sent: a first entry's, or an initial
+    // or expanded room's. Without the connection's history no room is a first entry.
+    [[nodiscard]] auto select_receipts(std::vector<std::string> const& rooms, ExtensionScopeHistory const* history,
+                                       std::uint64_t since_sync_stream_id, ExtensionScopeSource const& extension_scope)
+        -> ReceiptSelection
+    {
+        auto selection = ReceiptSelection{};
+        for (auto const& room_id : rooms)
+        {
+            if (history != nullptr)
+            {
+                if (auto const floor = receipt_floor_for(*history, room_id, since_sync_stream_id);
+                    floor < since_sync_stream_id)
+                {
+                    selection.floors.emplace(room_id, floor);
+                }
+                else if (!history->receipt_rooms.contains(room_id))
+                {
+                    selection.first_entry.insert(room_id);
+                }
+            }
+            auto const timeline = extension_scope.timeline_event_ids.find(room_id);
+            if (timeline != extension_scope.timeline_event_ids.end() &&
+                (selection.first_entry.contains(room_id) || extension_scope.fresh_timeline_rooms.contains(room_id)))
+            {
+                selection.timelines.emplace(room_id, timeline->second);
+            }
+        }
+        return selection;
+    }
+
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -422,7 +492,7 @@ namespace
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
-                      std::vector<std::string> const& response_room_ids, ExtensionScopeSource const& extension_scope,
+                      ExtensionScopeSource const& extension_scope,
                       std::unordered_set<std::string> const& ignored_senders,
                       std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
@@ -432,14 +502,14 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const room_access =
         needs_access ? room_access_index(store, user) : std::map<std::string, RoomAccess, std::less<>>{};
     return build_extensions(rt, user, device_id, ext_req, since_sync_stream_id, current_sync_stream_id, store,
-                            room_access, response_room_ids, extension_scope, ignored_senders, initial_room_ids);
+                            room_access, extension_scope, ignored_senders, initial_room_ids);
 }
 
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
                       std::map<std::string, RoomAccess, std::less<>> const& room_access,
-                      std::vector<std::string> const& response_room_ids, ExtensionScopeSource const& extension_scope,
+                      ExtensionScopeSource const& extension_scope,
                       std::unordered_set<std::string> const& ignored_senders,
                       std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
@@ -455,9 +525,16 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
         resp.e2ee = build_e2ee(rt, store, user, device_id, since_sync_stream_id);
     }
 
+    auto const* const history = extension_scope.history;
+    auto next_history = ExtensionScopeHistory{};
+    auto account_data_rooms = std::vector<std::string>{};
     if (ext_req.account_data.has_value() && ext_req.account_data->enabled)
     {
-        resp.account_data = build_account_data(store, user, since_sync_stream_id, response_room_ids, initial_room_ids);
+        // MSC4548: the MSC4508 scope, whatever the user's membership; not only the rooms of the response.
+        account_data_rooms = extension_scope_rooms(ext_req.account_data->lists, ext_req.account_data->rooms,
+                                                   extension_scope.list_windows, extension_scope.subscriptions);
+        resp.account_data =
+            build_account_data(store, user, since_sync_stream_id, account_data_rooms, history, initial_room_ids);
     }
 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
@@ -466,28 +543,19 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     // room_subscriptions classification). Each serves the joined rooms of its own MSC4508 scope (ADR-0861).
     // With the connection's scope history, a room entering the typing scope and a room re-entering the receipts
     // scope are sent what MSC4508 asks for, and the history this response leaves is returned (ADR-0863).
-    auto const* const history = extension_scope.history;
-    auto next_history = ExtensionScopeHistory{};
     if (wants_receipts)
     {
         auto const rooms = joined_extension_scope_rooms(ext_req.receipts->lists, ext_req.receipts->rooms,
                                                         extension_scope, room_access);
-        auto floors = std::unordered_map<std::string, std::uint64_t>{};
+        auto const selection = select_receipts(rooms, history, since_sync_stream_id, extension_scope);
         if (history != nullptr)
         {
-            for (auto const& room_id : rooms)
-            {
-                if (auto const floor = receipt_floor_for(*history, room_id, since_sync_stream_id);
-                    floor < since_sync_stream_id)
-                {
-                    floors.emplace(room_id, floor);
-                }
-            }
             next_history = receipts_scope_history(*history, rooms, since_sync_stream_id, room_access);
         }
-        auto receipts = build_receipts(rt, user, since_sync_stream_id, rooms, floors, ignored_senders);
-        resp.sent_on_scope_entry = std::ranges::any_of(floors, [&receipts](auto const& entry) {
-            return receipts.rooms_json.contains(entry.first);
+        auto receipts = build_receipts(rt, user, since_sync_stream_id, rooms, selection, ignored_senders);
+        resp.sent_on_scope_entry = std::ranges::any_of(rooms, [&](std::string const& room_id) {
+            return (selection.floors.contains(room_id) || selection.first_entry.contains(room_id)) &&
+                   receipts.rooms_json.contains(room_id);
         });
         resp.receipts = std::move(receipts);
     }
@@ -512,6 +580,8 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     }
     if (history != nullptr)
     {
+        next_history.account_data_enabled = resp.account_data.has_value();
+        next_history.account_data_rooms.insert(account_data_rooms.begin(), account_data_rooms.end());
         resp.scope_history = std::move(next_history);
     }
 

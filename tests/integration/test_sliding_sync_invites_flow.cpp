@@ -409,7 +409,7 @@ SCENARIO("An invited room reported once is not sent again by the next poll",
     }
 }
 
-SCENARIO("A rejected, withdrawn or accepted invite changes the invitee's sliding sync list",
+SCENARIO("A rejected, withdrawn or accepted invite changes the invitee's sliding sync room",
          "[homeserver][sliding-sync][invites][integration]")
 {
     GIVEN("benandez's connection that has been sent james's invite, and the pos of that response")
@@ -430,12 +430,24 @@ SCENARIO("A rejected, withdrawn or accepted invite changes the invitee's sliding
             expect_ok(rt, fixture.benandez_token, "POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", "{}");
             auto const next = poll(rt, fixture.benandez_token, persephone_body, pos, 5000U);
 
-            THEN("his long-poll returns and the room has left the list")
+            // MSC4186 "Lists": a room the user left stays in the list when it was "previously sent to the client in
+            // that connection", and "Invite/knock/rejections": a never-joined room is sent `stripped_state` (ADR-0867).
+            THEN("his long-poll returns and the room stays in the list as left, with stripped state only")
             {
                 REQUIRE(next.status == hs::DispatchResult::Status::complete);
-                REQUIRE(list_count(next.response.body, "rooms") == 1);
-                REQUIRE(list_rooms(next.response.body, "rooms") == std::vector<std::string>{fixture.shared_room});
-                REQUIRE_FALSE(room_entry(next.response.body, room_id).present);
+                REQUIRE(list_count(next.response.body, "rooms") == 2);
+                // The room keeps its place in the window, so no SYNC op names it; the room says which list holds it.
+                auto const entry = room_entry(next.response.body, room_id);
+                REQUIRE(entry.present);
+                auto const* lists = object_member_as_array(entry.value, "lists");
+                REQUIRE(lists != nullptr);
+                REQUIRE(lists->size() == 1U);
+                REQUIRE(std::get<std::string>(lists->front().storage()) == "rooms");
+                auto const* membership = string_member(entry.value, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
+                REQUIRE(object_member(entry.value, "stripped_state") != nullptr);
+                REQUIRE(object_member(entry.value, "timeline") == nullptr);
             }
         }
 
@@ -445,12 +457,23 @@ SCENARIO("A rejected, withdrawn or accepted invite changes the invitee's sliding
                       R"({"user_id":"@benandez:example.org"})");
             auto const next = poll(rt, fixture.benandez_token, persephone_body, pos, 5000U);
 
-            THEN("his long-poll returns and the room has left the list")
+            // MSC4186 "Lists": a room the user was kicked from is always in the list (ADR-0867).
+            THEN("his long-poll returns and the room stays in the list as left, with stripped state only")
             {
                 REQUIRE(next.status == hs::DispatchResult::Status::complete);
-                REQUIRE(list_count(next.response.body, "rooms") == 1);
-                REQUIRE_FALSE(contains(list_rooms(next.response.body, "rooms"), room_id));
-                REQUIRE_FALSE(room_entry(next.response.body, room_id).present);
+                REQUIRE(list_count(next.response.body, "rooms") == 2);
+                // The room keeps its place in the window, so no SYNC op names it; the room says which list holds it.
+                auto const entry = room_entry(next.response.body, room_id);
+                REQUIRE(entry.present);
+                auto const* lists = object_member_as_array(entry.value, "lists");
+                REQUIRE(lists != nullptr);
+                REQUIRE(lists->size() == 1U);
+                REQUIRE(std::get<std::string>(lists->front().storage()) == "rooms");
+                auto const* membership = string_member(entry.value, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
+                REQUIRE(object_member(entry.value, "stripped_state") != nullptr);
+                REQUIRE(object_member(entry.value, "timeline") == nullptr);
             }
         }
 

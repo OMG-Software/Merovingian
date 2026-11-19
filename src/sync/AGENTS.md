@@ -19,8 +19,8 @@ Spec authority:
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
-| `SlidingSyncPos.cpp` | `encode_sliding_sync_pos` / `decode_sliding_sync_pos`: a sliding sync `pos`, a stream token and an optional `.<page>` read strictly (ADR-0862) |
-| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
+| `SlidingSyncPos.cpp` | `encode_sliding_sync_pos` / `decode_sliding_sync_pos`: a sliding sync `pos`, a stream token and an optional `.<page>` read strictly (ADR-0862); `decode_sync_position_token`, a stream token or a bound `pos` as a pagination token (ADR-0866) |
+| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined, invited, knocked and departed rooms (own membership rows; `include_departed_rooms` decides which departed ones a list holds, ADR-0867), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
@@ -56,6 +56,12 @@ page is not 0. A response that delivers sticky events while no stream advanced c
 the next request acknowledges it rather than reading as a retry; every other response has page 0. The page names a
 response only: every stream comparison reads the token. Read a `pos` with `decode_sliding_sync_pos`, never
 `decode_stream_token`, and never put a page on a classic `/sync` token.
+
+On the wire a `pos` is bound to the user and device it was issued to (ADR-0866): `bind_sliding_sync_pos`
+(`homeserver/SlidingSyncPosBinding.hpp`) appends a keyed hash, and the handler unbinds a request's `pos` before decoding
+it; one that does not unbind is `400 M_UNKNOWN_POS`. The connection state keeps the unbound position. A pagination
+endpoint that accepts a `pos` (`/messages`, `/relations`, `/keys/changes`) reads it with `decode_sync_position_token`,
+which takes the position and does not check the hash.
 
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `StreamToken.hpp` — never parse or construct tokens manually.
@@ -127,7 +133,8 @@ request that names many:
 
 - `joined`: serve in full.
 - `invited`: stripped invite state only (`invite_state`), no timeline, no `required_state`.
-- `none` (no membership, leave, ban, knock): omit silently.
+- `none` (no membership, leave, ban, knock): omit silently from subscriptions and extensions. Lists hold knocked and
+  departed rooms (below); a subscription never serves one.
 
 `world_readable` is not permission to subscribe. The extensions drop rooms the caller has not
 joined.
@@ -140,6 +147,19 @@ current state or events. The handler withholds the invites it may not show (`wit
 `build_room_response`: it is sent `invite_state` only, recorded as `invite:<room_id>` in `rooms_seen` at the invite row's own stream ordering (never the visible position, which a commit in flight can leave below it). `parse_sliding_sync_request` clamps `timeline_limit` to
 `sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions,
 `required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
+`build_room_response`: it is sent `invite_state` only, recorded as `invite:<room_id>` in `rooms_seen`.
+
+Lists also hold knocked, kicked and banned rooms, and left rooms the connection was sent before (MSC4186 "Lists",
+ADR-0867). Their sort keys come from the membership row (`recency`), their name key is empty, a departed room counts as
+encrypted only if the encryption event predates the departure, and they are never passed to `build_room_response`: a
+knock is sent its stripped state, a departure `build_departed_room_response` (state as of the departure, the user's own
+membership events, never anything later), each once per membership change under `membership:<room_id>`. `rooms_seen`
+also holds `dm:<room_id>` for a joined room last sent as a DM (ADR-0865); any reader that treats its keys as room IDs
+strips `invite:`, `membership:` and `dm:` (`sliding_previously_sent_rooms`).
+
+`parse_sliding_sync_request` clamps `timeline_limit` to
+`sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions (100),
+`required_state` pairs, lists (100), sort keys per list (3) and `bump_event_types` per list (64)
 (the handler answers a violation 400 `M_INVALID_PARAM`). It also caps `room_types`/`not_room_types` (16 each), ranges (16) per list, a `conn_id` and list name (255 bytes) and the bytes of lists a request would make a connection keep (64 KiB; `sliding_sync_retained_bytes`); `sliding_sync_json` refuses a request that would take the device's connections past 256 KiB together, before creating its entry (ADR-0663). A new field a connection stores copies into `sliding_sync_retained_bytes`.
 
 A room's sliding sync timeline is read through `newest_timeline_window`, like `/sync`'s, so it stops after `max_timeline_rows_skipped` rows not taken and then is `limited` with a `prev_batch` where the walk stopped (ADR-0664). Never add a loop over `room_in_stream_order` that `continue`s on a visibility test.
@@ -163,10 +183,18 @@ same cap. A new room-scoped extension takes MSC4508's `lists` and `rooms` and se
 
 ## Sliding sync account data
 
-The `account_data` extension sends a global row when it changed after `since`, and a room row when it changed after `since`
-or when the room is new to the connection (`initial_room_ids`: built with `is_initial`, so not in `conn.rooms_seen`): such a
-room has been sent nothing, so all of its room account data goes down (ADR-0493). Neither v1.19 nor MSC4186 states this rule; it is this server's reading, set out in
-that ADR. A room in the response is found through a hash set of `response_room_ids`, never a scan per row.
+The `account_data` extension (MSC4548, ADR-0865) serves the rooms of its MSC4508 scope (`extension_scope_rooms` over the
+handler's `ExtensionScopeSource`), whatever the user's membership, not the rooms of the response. It sends a global row
+when it changed after `since`, and all of them when the connection's `ExtensionScopeHistory` says the extension was off;
+a room row when it changed after `since`, or every row of a room entering the scope (not in `account_data_rooms`), which
+covers a room new to the connection (ADR-0493). With no history it falls back to `initial_room_ids`. A room is found in
+the scope through a hash set, never a scan per row. Room account data outside the scope does not wake a long poll.
+
+The receipts extension (MSC4551) sends a room entering its scope for the first time its initial receipts: the user's
+own and every user's on the events of its timeline in this response (`ExtensionScopeSource::timeline_event_ids`), and
+nothing older; a room whose entry is `initial` or `expanded_timeline` (`fresh_timeline_rooms`) also gets the receipts on
+its timeline. Typing and receipts keep their `{type, content}` wrapper (ADR-0868). Every extension answers under each
+name its request used, bare or MSC-prefixed (`ExtensionNames`, `name_sliding_extensions`).
 
 A room's timeline is built newest first and stops at `timeline_limit + 1` events (ADR-0494); a filter added to that walk is a
 per-event test. Counts, heroes and required state read the room's own membership and state rows
@@ -358,7 +386,8 @@ Tests that write events straight into a `PersistentStore` must record a state gr
 once across both lists however many rows the store holds for it in the range —
 spec: client-server-api.md, "Extensions to /sync".
 
-An initial sync (`since` absent, or a sliding sync with no `pos`) deliberately
+A sliding sync request with no `pos` is sent no `device_lists` at all (MSC4543 "Device lists", ADR-0865); the client
+fills the gap with `/keys/changes`. An initial classic sync (`since` absent) deliberately
 reports the full set rather than nothing, so a freshly logged-in device is
 prompted to `/keys/query` its own user's devices straight away. The spec permits
 either ("the server need only populate this property for an incremental

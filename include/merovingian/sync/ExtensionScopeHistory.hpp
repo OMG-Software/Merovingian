@@ -24,6 +24,11 @@ struct ExtensionScopeHistory final
     // no receipt. A room that comes back is sent the receipts that changed after it, not only those after the
     // request's position (MSC4508's re-entry rule).
     std::unordered_map<std::string, std::uint64_t> receipt_floors{};
+    // Whether the account_data extension was on, and the rooms of its scope, whatever the user's membership in them
+    // (MSC4548). With it off, the next response that turns it on sends all global account data; a room in scope that
+    // is not here enters it and is sent all of its account data, which covers a room re-entering the scope too.
+    bool account_data_enabled{false};
+    std::unordered_set<std::string> account_data_rooms{};
 };
 
 } // namespace merovingian::sync
