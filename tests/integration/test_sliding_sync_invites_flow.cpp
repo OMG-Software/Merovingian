@@ -550,3 +550,110 @@ SCENARIO("An invite from an ignored user neither wakes a sliding sync long-poll 
         }
     }
 }
+
+SCENARIO("A response that reports an invite at an unchanged position gets a new page, so it is acknowledged",
+         "[homeserver][sliding-sync][invites][integration]")
+{
+    GIVEN("benandez invited by james, and a connection whose one list leaves invites out")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const james = register_user(rt, "james");
+        auto const benandez_token = register_user(rt, "benandez");
+        auto const room_id = make_room(rt, james, R"({"preset":"private_chat"})");
+        invite(rt, james, room_id, benandez);
+        constexpr auto joined_only =
+            std::string_view{R"({"lists":{"joined":{"ranges":[[0,99]],"required_state":[],"timeline_limit":1,)"
+                             R"("filters":{"is_invite":false}}}})"};
+        constexpr auto with_invites = std::string_view{
+            R"({"lists":{"joined":{"ranges":[[0,99]],"required_state":[],"timeline_limit":1,)"
+            R"("filters":{"is_invite":false}},"all":{"ranges":[[0,99]],"required_state":[],"timeline_limit":1}}})"};
+        auto const first = poll(rt, benandez_token, joined_only, {}, 0U);
+        REQUIRE_FALSE(room_entry(first.response.body, room_id).present);
+        auto const pos = pos_of(first);
+
+        WHEN("he adds an unfiltered list with nothing new on the server, then polls from the pos it returned")
+        {
+            auto const reported = poll(rt, benandez_token, with_invites, pos, 0U);
+            auto const reported_pos = pos_of(reported);
+            auto const next = poll(rt, benandez_token, with_invites, reported_pos, 0U);
+
+            THEN("the invite is sent once, under a pos of its own, and the next poll does not replay it")
+            {
+                REQUIRE(room_entry(reported.response.body, room_id).present);
+                REQUIRE(reported_pos != pos);
+                REQUIRE_FALSE(room_entry(next.response.body, room_id).present);
+            }
+        }
+    }
+}
+
+SCENARIO("A new invite no list's filters would hold leaves a sliding sync long-poll parked",
+         "[homeserver][sliding-sync][invites][integration]")
+{
+    GIVEN("benandez's connection whose one list holds only encrypted rooms")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const james = register_user(rt, "james");
+        auto const benandez_token = register_user(rt, "benandez");
+        constexpr auto encrypted_only =
+            std::string_view{R"({"lists":{"encrypted":{"ranges":[[0,99]],"required_state":[],"timeline_limit":1,)"
+                             R"("filters":{"is_encrypted":true}}}})"};
+        auto const pos = pos_of(poll(rt, benandez_token, encrypted_only, {}, 0U));
+
+        WHEN("james invites him to an unencrypted room, and then to an encrypted one")
+        {
+            // A private_chat room is encrypted by default (rooms::EncryptionPolicy); a public_chat room is not.
+            static_cast<void>(make_room(rt, james, R"({"preset":"public_chat","invite":["@benandez:example.org"]})"));
+            auto const unencrypted_wait = poll(rt, benandez_token, encrypted_only, pos, 5000U);
+            auto const encrypted_room =
+                make_room(rt, james, R"({"preset":"private_chat","invite":["@benandez:example.org"]})");
+            auto const encrypted_wait = poll(rt, benandez_token, encrypted_only, pos, 5000U);
+
+            THEN("the unencrypted invite leaves the poll parked, and the encrypted one answers it")
+            {
+                REQUIRE(unencrypted_wait.status == hs::DispatchResult::Status::needs_wait);
+                REQUIRE(encrypted_wait.status == hs::DispatchResult::Status::complete);
+                REQUIRE(contains(list_rooms(encrypted_wait.response.body, "encrypted"), encrypted_room));
+            }
+        }
+    }
+}
+
+SCENARIO("A withdrawn invite outside every window answers a sliding sync long-poll",
+         "[homeserver][sliding-sync][invites][integration]")
+{
+    GIVEN("benandez joined to one room and invited to another, with a window of one room that holds the joined one")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        auto const invited_room = make_room(rt, fixture.james, R"({"preset":"private_chat"})");
+        invite(rt, fixture.james, invited_room, benandez);
+        send_text(rt, fixture.james, fixture.shared_room, "t1", "newer than the invite");
+        constexpr auto top_only = std::string_view{
+            R"({"lists":{"top":{"ranges":[[0,0]],"sort":["by_recency"],"required_state":[],"timeline_limit":1}}})"};
+        auto const first = poll(rt, fixture.benandez_token, top_only, {}, 0U);
+        REQUIRE(list_count(first.response.body, "top") == 2);
+        REQUIRE(list_rooms(first.response.body, "top") == std::vector<std::string>{fixture.shared_room});
+        REQUIRE_FALSE(room_entry(first.response.body, invited_room).present);
+        auto const pos = pos_of(first);
+
+        WHEN("james withdraws the invite he was never sent, and benandez's long-poll runs")
+        {
+            expect_ok(rt, fixture.james, "POST", "/_matrix/client/v3/rooms/" + invited_room + "/kick",
+                      R"({"user_id":"@benandez:example.org"})");
+            auto const next = poll(rt, fixture.benandez_token, top_only, pos, 5000U);
+
+            THEN("the poll is answered with the list's new count")
+            {
+                REQUIRE(next.status == hs::DispatchResult::Status::complete);
+                REQUIRE(list_count(next.response.body, "top") == 1);
+            }
+        }
+    }
+}

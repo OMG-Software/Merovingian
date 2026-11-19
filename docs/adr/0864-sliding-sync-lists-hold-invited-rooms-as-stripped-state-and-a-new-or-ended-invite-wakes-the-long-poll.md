@@ -60,11 +60,19 @@ Chosen option: the second.
   An `invite:` entry whose room is no longer an invite of the user is dropped.
 * **The wake.** With lists or subscriptions requested, the check reads the user's own membership rows (already read for
   the joined set) and answers the poll when:
-  * an invite row is newer than `since`, is deliverable, and a list without `is_invite: false` or a subscription could
-    hold it; or
-  * a row newer than `since` is not an invite for a room the connection has an `invite:` entry for: the invite was
-    rejected, withdrawn or accepted.
-  Every other row and every event in a room the user is not in still parks the poll.
+  * an invite row is newer than `since`, is deliverable, and a subscription or a list whose every filter it passes
+    (`room_passes_list_filters`, read from its stripped state as the list reads it) could hold it; or
+  * a row newer than `since` is not an invite: a join, a leave, a kick, a ban, or the end of an invite (rejected,
+    withdrawn or accepted). Any of them can change a list's `count` and window, whether or not the connection was ever
+    sent the room: an invite outside every window that ends moves the count, and the room was never in `rooms_seen`.
+  An invite the user may not be shown or that no list would hold, and every event in a room the user is not in, still
+  park the poll. Keeping the end-of-invite wake to rooms with an `invite:` entry was tried first and missed an invite
+  withdrawn outside the window; tracking every listed invite on the connection instead was rejected as more state for
+  one early answer, which a ban in a room the user never joined can also cost.
+* **The page.** A response that reports an invite while no stream advanced carries the request's page plus one
+  ([ADR-0862](0862-a-sliding-sync-pos-carries-a-page-and-sticky-delivery-keeps-redactions-withheld-refreshes-trimmed-rooms-and-loads-sticky-senders.md)),
+  so the next request acknowledges it. A list added at an unchanged position can bring an invite the connection was
+  never sent; without the page, the next request reads as a retry and the invite is sent again on every poll.
 
 ### Positive Consequences
 

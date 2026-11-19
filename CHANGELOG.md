@@ -126,6 +126,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   position, and a new invite (createRoom or `/invite`) ends a waiting long poll at once (ADR-0864).
 * A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
   sent as a new joined room (ADR-0864).
+* Any change of a user's own membership other than a new invite answers their sliding sync long poll, so an invite
+  withdrawn outside every window updates the list's count; a new invite answers it only if a list's filters hold it.
+* A sliding sync response that reports an invite at an unchanged position carries a new page, so the next request
+  acknowledges it rather than receiving the invite again (ADR-0864).
 
 ## Release notes
 

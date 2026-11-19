@@ -125,6 +125,12 @@ namespace
 
 } // namespace
 
+auto room_passes_list_filters(SlidingSyncRequestLookups& lookups, std::string_view room_id,
+                              SlidingSyncFilters const& filters) -> bool
+{
+    return passes_filters(lookups, room_id, filters);
+}
+
 auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user, SlidingSyncList const& list,
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store)
     -> RoomListResult

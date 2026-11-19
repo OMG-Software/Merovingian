@@ -190,6 +190,13 @@ SCENARIO("A request's lookups answer an invited room from its invite, not from t
         add_state(store, id, "m.room.encryption", "$enc");
         add_state(store, id, "m.room.create", "$create");
         add_state(store, id, "m.room.name", "$name");
+        auto create = db::PersistentEvent{};
+        create.event_id = "$create";
+        create.room_id = id;
+        create.sender_user_id = "@bob:example.org";
+        create.json = R"({"type":"m.room.create","state_key":"","content":{"type":"m.space"}})";
+        create.stream_ordering = 1U;
+        store.events.push_back(std::move(create));
         auto name = db::PersistentEvent{};
         name.event_id = "$name";
         name.room_id = id;
@@ -206,7 +213,8 @@ SCENARIO("A request's lookups answer an invited room from its invite, not from t
         invite.invite_state_events_json = {
             R"({"type":"m.room.create","state_key":"","sender":"@bob:example.org","content":{}})",
             R"({"type":"m.room.name","state_key":"","sender":"@bob:example.org","content":{"name":"Invited"}})"};
-        REQUIRE(db::upsert_invite(store, std::move(invite)));
+        auto const invite_stored = db::upsert_invite(store, std::move(invite));
+        REQUIRE(invite_stored);
         db::rebuild_membership_index(store);
         db::rebuild_state_index(store);
         auto lookups = sync::SlidingSyncRequestLookups{store, alice};

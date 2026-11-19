@@ -42,4 +42,10 @@ namespace merovingian::sync
                                      database::PersistentStore const& store, UnreadEventClassifier& unread,
                                      SlidingSyncRequestLookups& lookups) -> RoomListResult;
 
+// Whether `room_id` passes a list's `filters`, answered from the request's `lookups` as `compute_room_list` answers it
+// (an invited room from its stripped state). The long-poll wake asks it of a new invite, so an invite no list would
+// hold does not answer the poll (ADR-0864).
+[[nodiscard]] auto room_passes_list_filters(SlidingSyncRequestLookups& lookups, std::string_view room_id,
+                                            SlidingSyncFilters const& filters) -> bool;
+
 } // namespace merovingian::sync
