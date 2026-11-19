@@ -153,6 +153,14 @@ class PackagingTest(unittest.TestCase):
         self.assertNotRegex(postinst, rf"enable[^\n]*{ACCOUNT}")
         self.assertNotIn("deb-systemd-helper", postinst)
 
+    def test_the_opensuse_spec_marks_only_the_server_unit_for_its_preset(self) -> None:
+        # openSUSE's %systemd_post presets only units %systemd_pre marked as new, so without it
+        # the host's policy never applied to merovingian.service. The LiveKit unit is never marked.
+        text = (REPO_ROOT / "packaging" / "opensuse" / "merovingian.spec").read_text(encoding="utf-8")
+        pre_section = text.split("\n%pre\n", 1)[1].split("\n%post\n", 1)[0]
+        self.assertEqual(re.findall(r"(?m)^%systemd_pre .*$", pre_section), ["%systemd_pre merovingian.service"])
+        self.assertEqual(re.findall(r"(?m)^%systemd_pre .*$", text), ["%systemd_pre merovingian.service"])
+
 
 @unittest.skipUnless(os.name == "posix" and SH and os.path.exists("/dev/urandom"), "needs a POSIX sh and /dev/urandom")
 class SetupHelperTest(unittest.TestCase):

@@ -2368,8 +2368,10 @@ awaiting traffic. Send SIGINT or SIGTERM to stop.`
 
 ### systemd
 
-Distro packages install `packaging/systemd/merovingian.service`. Enable and start
-it:
+Distro packages install `packaging/systemd/merovingian.service`. The `.deb`
+enables it on install. The `.rpm` packages (Fedora, RHEL and openSUSE) leave it
+to the host's systemd preset policy, which on those distributions disables a new
+unit unless a preset file names it. Enable and start it:
 
 ```sh
 systemctl enable --now merovingian.service

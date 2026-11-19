@@ -38,6 +38,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
+* The openSUSE package now runs `%systemd_pre`, so the host's systemd preset policy applies to `merovingian.service` on
+  install as it does on Fedora and RHEL; without it openSUSE never applied the policy.
 * `use_state_after`: a room forked at `since` now gets exactly what changed since what the client was told, read from an
   in-memory log of state changes, and so does a left room (ADR-0827).
 * SQLite writes share one connection, whatever `database.pool_size` says: a second write connection waited for the

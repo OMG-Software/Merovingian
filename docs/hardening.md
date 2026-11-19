@@ -943,7 +943,9 @@ file system's:
   policy of `enable *` cannot start the SFU before the operator has set it up.
   The Fedora package job in `packages.yml` installs each RPM under exactly that
   policy and fails unless `merovingian.service` comes out enabled (the policy
-  ran) and `merovingian-livekit.service` disabled.
+  ran) and `merovingian-livekit.service` disabled. On openSUSE, where
+  `%systemd_post` presets only units `%systemd_pre` marked as new, the spec's
+  `%pre` marks `merovingian.service` alone, never the LiveKit unit.
   The OpenRC script has none of the unit's sandboxing, only the account.
 
 `tests/tooling/test_livekit_companion.py` checks the unit, the OpenRC script,

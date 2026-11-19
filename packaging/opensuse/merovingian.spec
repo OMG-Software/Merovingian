@@ -102,6 +102,11 @@ if ! getent passwd merovingian-livekit >/dev/null 2>&1; then
             -c "LiveKit SFU for Merovingian" \
             merovingian-livekit
 fi
+# openSUSE's %%systemd_post applies the preset policy only to units %%systemd_pre
+# marked as new before their files were installed; without this it applies none.
+# Never merovingian-livekit.service: it stays disabled until the operator has run
+# merovingian-livekit-setup (ADR-0860).
+%systemd_pre merovingian.service
 
 %post
 # Not merovingian-livekit.service: %%systemd_post applies the host's preset policy, which
