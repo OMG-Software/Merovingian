@@ -363,6 +363,8 @@ shell = find_program('sh')
       'unit/test_config_turn_uris.cpp',
       'unit/test_config_rtc.cpp',
       'unit/test_config_delayed_events.cpp',
+      'unit/test_config_sticky_events.cpp',
+      'unit/test_sticky_event.cpp',
       'unit/test_identity_bind_domains.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',

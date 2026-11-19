@@ -1078,6 +1078,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                             "must be between " + std::to_string(min_delayed_event_delay_ms) + " and " +
                                 std::to_string(max_delayed_event_delay_ms) + " milliseconds"});
     }
+    validate_count("server.sticky_events.max_per_sender", config.server().sticky_events.max_per_sender,
+                   max_sticky_events_per_sender);
     validate_count("server.client_api.max_sync_rooms", config.server().client_api.max_sync_rooms, 10000U);
     validate_count("server.client_api.max_sync_events_per_room", config.server().client_api.max_sync_events_per_room,
                    1000U);
