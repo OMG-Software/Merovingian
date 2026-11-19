@@ -43,6 +43,16 @@ install -d -m 0755 "${STAGING}/etc/merovingian"
 install -m 0644 config/merovingian.conf.example \
     "${STAGING}/etc/merovingian/merovingian.conf.example"
 
+# 5a. LiveKit beside Merovingian (ADR-0859): the unit, installed disabled, the
+#     key setup helper and the sample LiveKit configuration. livekit-server
+#     itself is not shipped.
+install -D -m 0644 packaging/systemd/merovingian-livekit.service \
+    "${STAGING}/lib/systemd/system/merovingian-livekit.service"
+install -D -m 0755 packaging/livekit/merovingian-livekit-setup \
+    "${STAGING}/usr/sbin/merovingian-livekit-setup"
+install -m 0644 config/livekit.yaml.example \
+    "${STAGING}/etc/merovingian/livekit.yaml.example"
+
 # 6. Install license
 install -D -m 0644 LICENSE \
     "${STAGING}/usr/share/doc/${PKG_NAME}/copyright"

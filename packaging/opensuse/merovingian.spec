@@ -73,6 +73,14 @@ install -D -m 0644 packaging/systemd/merovingian.service \
 install -d -m 0755 %{buildroot}%{_sysconfdir}/merovingian
 install -m 0644 config/merovingian.conf.example \
     %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
+# LiveKit beside Merovingian (ADR-0859): unit installed disabled, key setup helper,
+# sample LiveKit configuration. livekit-server itself is not shipped.
+install -D -m 0644 packaging/systemd/merovingian-livekit.service \
+    %{buildroot}%{_unitdir}/merovingian-livekit.service
+install -D -m 0755 packaging/livekit/merovingian-livekit-setup \
+    %{buildroot}%{_sbindir}/merovingian-livekit-setup
+install -m 0644 config/livekit.yaml.example \
+    %{buildroot}%{_sysconfdir}/merovingian/livekit.yaml.example
 
 %pre
 if ! getent group merovingian >/dev/null 2>&1; then
@@ -84,9 +92,19 @@ if ! getent passwd merovingian >/dev/null 2>&1; then
             -c "Merovingian homeserver" \
             merovingian
 fi
+# The LiveKit SFU's own account (ADR-0859): it never shares merovingian's.
+if ! getent group merovingian-livekit >/dev/null 2>&1; then
+    groupadd -r merovingian-livekit
+fi
+if ! getent passwd merovingian-livekit >/dev/null 2>&1; then
+    useradd -r -g merovingian-livekit -d /nonexistent -M \
+            -s /sbin/nologin \
+            -c "LiveKit SFU for Merovingian" \
+            merovingian-livekit
+fi
 
 %post
-%systemd_post merovingian.service
+%systemd_post merovingian.service merovingian-livekit.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
@@ -97,10 +115,10 @@ if [ ! -f "${TOKEN_FILE}" ]; then
 fi
 
 %preun
-%systemd_preun merovingian.service
+%systemd_preun merovingian.service merovingian-livekit.service
 
 %postun
-%systemd_postun_with_restart merovingian.service
+%systemd_postun_with_restart merovingian.service merovingian-livekit.service
 
 %files
 %license LICENSE
@@ -111,8 +129,11 @@ fi
 %{_libexecdir}/merovingian/merovingian-thumbnail-worker
 %{_libexecdir}/merovingian/merovingian-fed-worker
 %{_unitdir}/merovingian.service
+%{_unitdir}/merovingian-livekit.service
+%{_sbindir}/merovingian-livekit-setup
 %dir %{_sysconfdir}/merovingian
 %{_sysconfdir}/merovingian/merovingian.conf.example
+%{_sysconfdir}/merovingian/livekit.yaml.example
 
 %changelog
 * Tue Nov 17 2026 James Chapman <claude@ping.me.uk> - 1.1.3-1

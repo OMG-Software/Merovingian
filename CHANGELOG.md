@@ -21,6 +21,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The integration tests run as four parallel Catch2 shards, with `[postgresql]` and `[serial]` scenarios kept apart
   and a check that the shards together run every scenario once (ADR-0845).
 * CI workflows can be started by hand on a branch with no pull request (`workflow_dispatch`) (ADR-0841).
+* The Linux packages set up a LiveKit SFU you install beside the server: a `merovingian-livekit` account and disabled
+  service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0859).
 
 ## Security Fixes
 
@@ -29,6 +31,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * LiveKit's webhook is believed only when signed with the API secret for its exact body and recent, and even then only
   brings a check forward: it never sends or restarts an event (ADR-0833).
 * The federation worker refuses to start if a Landlock rule would let it read the LiveKit API secret file (ADR-0062).
+* The packaged LiveKit SFU never runs as `merovingian`, has no capabilities, and gets the API secret in a file of its
+  own; the setup helper never prints the secret, passes it in argv or replaces a file (ADR-0859).
 * A LiveKit call's host lookup counts against the call's deadline: the exchange gets only the time the lookup left,
   and none starts once the deadline has passed (ADR-0830).
 

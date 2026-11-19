@@ -894,6 +894,49 @@ and, on the stable path only, the same with type `m.livekit`. `/_matrix/client/v
 and `org.matrix.msc4195.stable`. The `.well-known` `org.matrix.msc4143.rtc_foci` member is not served by the built-in
 service, because the older clients that read it expect `lk-jwt-service`'s OpenID flow.
 
+##### Running LiveKit beside Merovingian
+
+The Linux packages (`.deb` and `.rpm`) set up a LiveKit SFU on the same host as the server, for the built-in token
+service (ADR-0859). They do not ship LiveKit itself: you install `livekit-server` from LiveKit, and the packages give
+you the rest.
+
+- a `merovingian-livekit` system account, created on install, that the SFU runs as. It is never the `merovingian`
+  account, so the SFU, which takes media from the internet, cannot read the homeserver's database, keys or secrets;
+- the `merovingian-livekit` service (systemd, plus an OpenRC script in the release tarball), installed disabled;
+- `/usr/sbin/merovingian-livekit-setup`, which creates the API key and secret both sides share;
+- `/etc/merovingian/livekit.yaml.example`, a LiveKit configuration for this layout.
+
+The BSD packages include none of this, because LiveKit publishes no BSD builds.
+
+To set it up, as root:
+
+1. Install `livekit-server` from [LiveKit's releases](https://github.com/livekit/livekit/releases) to
+   `/usr/local/bin/livekit-server`, LiveKit's own install location, checking the release's checksum. For another
+   location, give the service an `ExecStart=` drop-in (`systemctl edit merovingian-livekit`), or set
+   `livekit_command` in `/etc/conf.d/merovingian-livekit` under OpenRC.
+2. Run `merovingian-livekit-setup`. It writes `/etc/merovingian/livekit-secret` (owner `merovingian`, mode `0400`) and
+   `/etc/merovingian/livekit-keys.yaml` (owner `merovingian-livekit`, mode `0400`), both holding one new 256-bit
+   secret, and prints the `server.rtc.livekit.*` lines for `merovingian.conf` and the webhook `api_key`. It never
+   prints the secret or passes it to another program on a command line, and never replaces either file: run again, it
+   checks that the two files agree and prints the settings once more. To change the key, stop both services, remove
+   both files and run it again.
+3. Copy `/etc/merovingian/livekit.yaml.example` to `/etc/merovingian/livekit.yaml` and read it through. It binds
+   LiveKit's signalling port, 7880, to `127.0.0.1` only. It turns off `room.auto_create`, because this server creates
+   every call's room before issuing a token for it (ADR-0830), so a token can only ever join a room this server made.
+   To use webhooks (above), uncomment its `webhook` block and give it the printed API key and your client address.
+4. Add the printed lines to `merovingian.conf`, with `server.rtc.livekit.url` set to the SFU's public `wss` address.
+   `server.rtc.livekit.api_url` stays `http://127.0.0.1:7880`: this server calls LiveKit over loopback.
+5. Serve the `wss` address from your TLS reverse proxy, passing WebSocket upgrades through to `http://127.0.0.1:7880`.
+   Open TCP 7881 and UDP 50000–60000 in the firewall. Clients reach these media ports directly, not through the
+   proxy, and LiveKit binds them on every address whatever `bind_addresses` says.
+6. `systemctl enable --now merovingian-livekit` (or `rc-update add merovingian-livekit default` and
+   `rc-service merovingian-livekit start`), then restart `merovingian`.
+
+The service runs with no capabilities, a read-only system, no home directory, no devices and the `@system-service`
+system call set. LiveKit refuses a key file that others can read, and the setup helper makes both files owner-only.
+Removing the package stops and disables the service. Purging it leaves the two key files and the account, as it leaves
+`merovingian`'s.
+
 ##### An external `lk-jwt-service` — `server.rtc.livekit.service_url`
 
 | Key | Default | When to change |

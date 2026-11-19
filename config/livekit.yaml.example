@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LiveKit SFU configuration for running LiveKit beside Merovingian on one host
+# (ADR-0859). Copy it to /etc/merovingian/livekit.yaml; the merovingian-livekit
+# service reads it from there. Install livekit-server yourself (see the user
+# manual, "Running LiveKit beside Merovingian"); the packages do not ship it.
+#
+# Run merovingian-livekit-setup once first: it creates the key file named below
+# and prints the server.rtc.livekit.* lines for merovingian.conf.
+
+# Signalling and the room service API. Bound to loopback: a TLS reverse proxy
+# serves it to clients as server.rtc.livekit.url (wss://...), and Merovingian
+# calls it directly as server.rtc.livekit.api_url (http://127.0.0.1:7880).
+# bind_addresses covers this listener only, not the media ports below.
+port: 7880
+bind_addresses:
+  - 127.0.0.1
+
+# The API key and secret, "<key>: <secret>", written by merovingian-livekit-setup.
+# Only the merovingian-livekit user can read it; LiveKit refuses a key file with
+# any permission for others.
+key_file: /etc/merovingian/livekit-keys.yaml
+
+rtc:
+  # Media. These ports are reached by clients directly, not through the proxy:
+  # open TCP 7881 and UDP 50000-60000 in the firewall.
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  # Learn the host's public address by STUN. Behind 1:1 NAT with a known
+  # address, set node_ip instead.
+  use_external_ip: true
+
+room:
+  # Merovingian creates each call's room (CreateRoom) before it issues a token
+  # for it (ADR-0830), so joining never needs to create one: a token holder can
+  # join only a room Merovingian made.
+  auto_create: false
+  empty_timeout: 300
+
+# Webhooks let Merovingian end a dropped participant's call membership within
+# seconds instead of 30 (ADR-0833). Use the API key merovingian-livekit-setup
+# printed, and this server's client address. Leave the block commented out to
+# run without webhooks.
+# webhook:
+#   api_key: APIxxxxxxxxxxxxxxxx
+#   urls:
+#     - https://matrix.example.org/_merovingian/livekit/webhook
+
+logging:
+  level: info

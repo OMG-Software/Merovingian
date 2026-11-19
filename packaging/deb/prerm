@@ -5,6 +5,12 @@ case "$1" in
         if [ -d /run/systemd/system ]; then
             systemctl --no-reload disable merovingian.service >/dev/null 2>&1 || true
             systemctl stop merovingian.service >/dev/null 2>&1 || true
+            # The LiveKit unit is the operator's to enable; stop it only when the
+            # package goes, since the unit file goes with it.
+            if [ "$1" = "remove" ]; then
+                systemctl --no-reload disable merovingian-livekit.service >/dev/null 2>&1 || true
+                systemctl stop merovingian-livekit.service >/dev/null 2>&1 || true
+            fi
         fi
         ;;
 esac

@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LiveKit SFU beside the Merovingian homeserver (ADR-0859). Install
+# livekit-server, run merovingian-livekit-setup and copy
+# /etc/merovingian/livekit.yaml.example to /etc/merovingian/livekit.yaml first.
+# Set livekit_command in /etc/conf.d/merovingian-livekit for a livekit-server
+# elsewhere than /usr/local/bin.
+
+description="LiveKit SFU for the Merovingian homeserver"
+command="${livekit_command:-/usr/local/bin/livekit-server}"
+command_args="--config /etc/merovingian/livekit.yaml"
+# Its own account, never merovingian's: the SFU takes media from the internet and
+# must not be able to read the homeserver's database, keys or secrets.
+command_user="merovingian-livekit:merovingian-livekit"
+supervisor="supervise-daemon"
+pidfile="/run/merovingian-livekit.pid"
+umask=0077
+rc_ulimit="-n 65536"
+
+depend() {
+    need net
+    after firewall
+}

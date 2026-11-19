@@ -16,9 +16,11 @@ SH = shutil.which("sh")
 
 # The files the script copies from the checkout besides the binaries.
 CHECKOUT_FILES = (
-    "config/merovingian.conf.example", "LICENSE", "README.md",
+    "config/merovingian.conf.example", "config/livekit.yaml.example", "LICENSE", "README.md",
     "docs/user-manual.md", "docs/release-process.md", "docs/security-review-checklist.md",
     "packaging/systemd/merovingian.service", "packaging/openrc/merovingian", "packaging/rc.d/merovingian",
+    "packaging/systemd/merovingian-livekit.service", "packaging/openrc/merovingian-livekit",
+    "packaging/livekit/merovingian-livekit-setup",
     "packaging/deb/control", "packaging/rpm/merovingian.spec", "packaging/freebsd/+MANIFEST",
     "packaging/openbsd/DESCR", "packaging/openbsd/PLIST", "packaging/netbsd/Makefile",
 )
@@ -90,7 +92,9 @@ class StageReleaseTarballTests(unittest.TestCase):
                 self.assertTrue((root / path).is_file())
         self.assertEqual((root / "INSTALL-PREFIX").read_text(encoding="utf-8"), "/usr/local\n")
         for relative in ("config/merovingian.conf.example", "LICENSE", "docs/user-manual.md",
-                         "packaging/deb/control", "packaging/netbsd/Makefile"):
+                         "packaging/deb/control", "packaging/netbsd/Makefile", "config/livekit.yaml.example",
+                         "packaging/systemd/merovingian-livekit.service",
+                         "packaging/livekit/merovingian-livekit-setup"):
             self.assertTrue((root / relative).is_file(), relative)
         self.assertFalse((self.work / "pkg.staging").exists())
 

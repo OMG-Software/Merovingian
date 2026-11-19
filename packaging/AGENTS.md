@@ -13,8 +13,9 @@ Contains the package metadata and init scripts for each supported OS.
 | `freebsd/` | FreeBSD port / pkg manifest |
 | `netbsd/` | NetBSD pkgsrc files |
 | `openbsd/` | OpenBSD port |
-| `systemd/` | `merovingian.service` unit file |
-| `openrc/` | OpenRC init script |
+| `systemd/` | `merovingian.service` unit file; `merovingian-livekit.service`, the LiveKit SFU's unit, installed disabled (ADR-0859) |
+| `openrc/` | OpenRC init scripts: `merovingian` and `merovingian-livekit` |
+| `livekit/` | `merovingian-livekit-setup`, which writes the API secret LiveKit and the server share (ADR-0859) |
 | `rc.d/` | BSD `rc.d` script |
 | `postgresql/` | `provision-roles.sql` — provisions separate migration/runtime PostgreSQL roles for production deployments (the federation worker opens no database and has no role of its own, ADR-0733) |
 
@@ -36,5 +37,9 @@ Contains the package metadata and init scripts for each supported OS.
   configuration directory, the one its rc.d script reads. A key added to
   `config/merovingian.conf.example` goes into the BSD example too; `tests/tooling/test_example_config.py`
   fails until it does (ADR-0738).
-- The systemd unit must set `PrivateTmp=true`, `NoNewPrivileges=true`, and
+- **The LiveKit SFU runs as `merovingian-livekit`, never `merovingian`** (ADR-0859). No package script creates,
+  reads or prints its API secret: only `merovingian-livekit-setup`, run by the operator, writes it. The unit, the OpenRC
+  script, `config/livekit.yaml.example` and the helper must name the same account, paths and port;
+  `tests/tooling/test_livekit_companion.py` checks them. The packages never ship `livekit-server` itself.
+- The systemd units must set `PrivateTmp=true`, `NoNewPrivileges=true`, and
   `ProtectSystem=strict` at minimum. See `docs/hardening.md` for the full list.
