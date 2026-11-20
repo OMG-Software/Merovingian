@@ -47,8 +47,12 @@ How should code pass a string constant to a ranges algorithm, and how is the for
 Chosen option: 1. A `std::string_view` compares with itself and with `std::string`, so the concept holds on every
 compiler, and the `sv` suffix adds two characters. `scripts/reject-unsafe.sh` reads each C and C++ file whole (so a
 literal that the formatter wraps onto the next line is still seen) and refuses `std::ranges::find`, `find_last`,
-`count`, `contains` or `remove` whose value argument is an unsuffixed string literal; the pre-commit hook and every CI
-job that runs the gate stop it on any compiler. A production file scopes the `using namespace` to the function that
+`count`, `contains` or `remove` whose value is an unsuffixed string literal, plain or raw: the second argument of the
+range overload or the third of the iterator and sentinel overload, read as the whole run of adjacent literals the
+compiler joins (`"long" "name"sv` is accepted). It reads the file a token at a time, stepping over comments, character
+literals and string literals whole, so a call written in a comment or inside a literal is not refused. The pre-commit
+hook and every CI job that runs the gate stop the form on any compiler. A `grep` error, such as a PCRE limit on a file
+far larger than any in the tree, fails the gate instead of passing it. A production file scopes the `using namespace` to the function that
 needs it; a test file may put it at file scope after its includes.
 
 ### Positive Consequences
@@ -58,9 +62,9 @@ needs it; a test file may put it at file scope after its includes.
 
 ### Negative Consequences
 
-* The rule reads text, not C++: a first argument with a top-level comma inside template brackets
-  (`std::map<int, int>{}`) hides a call from it. A typed value is never refused, but such a call would still reach the
-  compiler.
+* The rule reads text, not C++: a range or iterator argument with a top-level comma inside template brackets or braces
+  (`std::map<int, int>{}`) hides a call from it, and so does a preprocessor macro that expands to one. A typed value
+  is never refused, but such a call would still reach the compiler.
 * Another algorithm that compares with a value (`replace`, `remove_copy`) is not covered until it is added to the rule.
 
 ## Pros and Cons of the Options

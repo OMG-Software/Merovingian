@@ -220,6 +220,55 @@ class RejectUnsafeRangesStringLiteralTests(GateRunner):
         # THEN none of them is rejected.
         self.assert_accepted({"src/a.cpp": source})
 
+    def test_the_iterator_overload_value_is_checked(self) -> None:
+        # GIVEN the iterator-and-sentinel overloads, whose value is the third argument
+        # and has the same comparison requirement.
+        # WHEN the gate runs.
+        # THEN a bare literal there is rejected...
+        self.assert_rejected({"src/a.cpp": 'auto i = std::ranges::find(names.begin(), names.end(), "x");\n'})
+        self.assert_rejected({"src/b.cpp": 'auto n = std::ranges::count(begin(v), end(v), "x", &T::name);\n'})
+        # AND a typed value there is accepted.
+        self.assert_accepted({"src/c.cpp": 'auto i = std::ranges::find(names.begin(), names.end(), "x"sv);\n'})
+
+    def test_raw_and_concatenated_literals_are_read_whole(self) -> None:
+        # GIVEN raw literals and adjacent literals, which the compiler joins into one.
+        # WHEN the gate runs.
+        # THEN the value's type is the joined literal's: bare is rejected...
+        self.assert_rejected({"src/a.cpp": 'auto i = std::ranges::find(names, R"(x)");\n'})
+        self.assert_rejected({"src/b.cpp": 'auto i = std::ranges::find(names, "long" "name");\n'})
+        self.assert_rejected({"src/c.cpp": 'auto i = std::ranges::find(names, u8R"tag(a)" b)tag");\n'})
+        # AND suffixed is accepted, whichever part carries the suffix.
+        self.assert_accepted({"src/d.cpp": 'auto i = std::ranges::find(names, R"(x)"sv);\n'})
+        self.assert_accepted({"src/e.cpp": 'auto i = std::ranges::find(names, "long" "name"sv);\n'})
+        self.assert_accepted({"src/f.cpp": 'auto i = std::ranges::find(names,\n    "long"\n    "name"sv);\n'})
+
+    def test_calls_inside_comments_and_strings_are_accepted(self) -> None:
+        # GIVEN the banned form written only in comments and string or raw literals,
+        # some of them spanning lines.
+        source = (
+            '// Previously: std::ranges::find(names, "x")\n'
+            '/* std::ranges::count(names,\n   "x") */\n'
+            'auto const doc = "std::ranges::find(names, \\"x\\")";\n'
+            'auto const raw = R"(\nstd::ranges::find(names, "x")\n)";\n'
+            "char const quote = '\"'; auto y = 1'000; // std::ranges::find(v, \"x\")\n"
+        )
+        # WHEN the gate runs.
+        # THEN none of it is code, and nothing is rejected.
+        self.assert_accepted({"src/a.cpp": source})
+
+    def test_a_call_after_a_comment_or_literal_is_still_rejected(self) -> None:
+        # GIVEN real calls that follow a comment, a string holding "//" and quotes, a raw
+        # literal and a digit separator.
+        source = (
+            '/* "unterminated in a comment */ auto s = "a // b \\" c";\n'
+            'auto r = R"(")";\n'
+            "auto n = 1'000;\n"
+            'auto i = std::ranges::find(names, "x");\n'
+        )
+        # WHEN the gate runs.
+        # THEN the call is rejected.
+        self.assert_rejected({"src/a.cpp": source})
+
 
 class RejectUnsafeNeedsPcreGrepTests(unittest.TestCase):
     """Without a grep that has -P the gate fails closed instead of checking nothing.
