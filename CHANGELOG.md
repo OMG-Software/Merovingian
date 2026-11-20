@@ -137,31 +137,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   state has none, rather than at the oldest sticky event (ADR-0862).
 * Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
   list or room subscription could hold ends a waiting long poll at once (ADR-0864).
-* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
-  sent as a new joined room (ADR-0864).
+* A rejected or withdrawn invite wakes the invitee's sliding sync long poll and stays in the list as `leave`, as MSC4186
+  says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
 * Any other change of a user's own membership answers their sliding sync long poll, so an invite withdrawn outside
-  every window updates the list's count; a new invite does only if a subscription or a list's filters hold it.
-* A sliding sync response reporting an invite at an unchanged position carries a new page, and the invite is recorded
-  at its own position, so the next request does not receive it again (ADR-0864).
-* A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
-  never a pass over every room the server holds (ADR-0665).
-  acknowledges it rather than receiving the invite again (ADR-0864).
-  position, and a new invite (createRoom or `/invite`) ends a waiting long poll at once (ADR-0864).
-* Any change of a user's own membership other than a new invite answers their sliding sync long poll, so an invite
-  withdrawn outside every window updates the list; a new invite answers it only if a list's filters hold it.
-* A sliding sync response that reports an invite, a knock or a departure at an unchanged position carries a new page,
-  so the next request acknowledges it rather than receiving the room again (ADR-0864, ADR-0867).
-* Sliding sync lists now hold the rooms a user is invited to, with `invite_state` only and sorted by the invite's
-  position, and a new invite (createRoom or `/invite`) that a list or a room subscription could hold ends a waiting
-  long poll at once (ADR-0864).
-* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and stays in the list as `leave`, as
-  MSC4186 says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
-* Any change of a user's own membership other than a new invite answers their sliding sync long poll, so an invite
-  withdrawn outside every window updates the list; a new invite answers it only if a room subscription names its room
-  or a list's filters hold it.
-* A sliding sync response that reports an invite, a knock or a departure at an unchanged position carries a new page,
-  so the next request acknowledges it rather than receiving the room again; the connection records an invite at its
-  own position, so an invite stored while another write is still committing is not sent twice (ADR-0864, ADR-0867).
+  every window updates the list; a new invite does only if a subscription or a list's filters hold it.
+* A sliding sync response reporting an invite, knock or departure at an unchanged position carries a new page, and an
+  invite is recorded at its own position, so the next request does not receive the room again (ADR-0864, ADR-0867).
 * A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
   never a pass over every room the server holds (ADR-0665).
 * Sliding sync's e2ee extension sends no `device_lists` without a `pos`, and `timeout` without a `pos` is ignored
@@ -173,11 +154,10 @@ Version 1.1.3 is in progress: a LiveKit token service built into the server for 
 an exact `state_after` on `/sync`, and sticky events (MSC4354) for Element Call. It adds migrations 004
 (`livekit_delegations`) and 005 (`sticky_events`). After a restart, the first `state_after` sync of each room with news
 carries its whole state once. A SQLite server no longer refuses writes under sustained write load, and
-`database.pool_size` now applies to PostgreSQL only. Sliding sync follows MSC4186: every
-`pos` issued before the upgrade is refused once (`M_UNKNOWN_POS`, clients start a new connection), and kicked, banned
-and left rooms now appear in lists with their `membership`. CI now runs a core gate on a pull request and the full matrix in
-the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate
-alone.
+`database.pool_size` now applies to PostgreSQL only. Sliding sync follows MSC4186: every `pos` issued before the upgrade
+is refused once (`M_UNKNOWN_POS`, clients start a new connection), and kicked, banned and left rooms now appear in lists
+with their `membership`. CI now runs a core gate on a pull request and the full matrix in the merge queue: turn the
+merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate alone.
 
 # Version 1.1.2
 
