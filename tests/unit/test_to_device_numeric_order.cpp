@@ -93,9 +93,11 @@ public:
                         std::uint32_t limit, std::string_view since) -> merovingian::sync::ExtToDeviceResponse
 {
     auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
-    requests.to_device = merovingian::sync::ExtToDeviceRequest{true, limit, std::string{since}};
+    requests.to_device =
+        merovingian::sync::ExtToDeviceRequest{.enabled = true, .limit = limit, .since = std::string{since}};
     auto const responses = merovingian::sync::build_extensions(runtime, "@bob:example.org", "BOB_DEVICE", requests, 0U,
-                                                               store.next_sync_stream_id, store, {}, {});
+                                                               store.next_sync_stream_id, store,
+                                                               merovingian::sync::ExtensionScopeSource{});
     REQUIRE(responses.to_device.has_value());
     return *responses.to_device;
 }

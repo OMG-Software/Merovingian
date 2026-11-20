@@ -6,11 +6,13 @@
 // MSC4508 is not in Matrix v1.19, so these are project-level checks.
 
 #include "merovingian/sync/ExtensionScope.hpp"
+#include "merovingian/sync/ExtensionScopeHistory.hpp"
 #include "merovingian/sync/ExtensionScopeSource.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
@@ -162,6 +164,35 @@ SCENARIO("an extension serves only the joined rooms of its scope", "[sync][exten
             THEN("nothing is kept")
             {
                 REQUIRE(rooms.empty());
+            }
+        }
+    }
+}
+
+// MSC4551: a room entering the receipts scope for the first time is sent the user's own receipts; one that comes back
+// is sent the receipts after the position it dropped out at, which can equal `since` when a response only took a page.
+SCENARIO("a room is first in the receipts scope only when the connection never held it there",
+         "[sync][extension-scope]")
+{
+    GIVEN("a scope history holding one room and a floor for another, the floor equal to since")
+    {
+        auto history = merovingian::sync::ExtensionScopeHistory{};
+        history.receipt_rooms.insert("!held:x");
+        history.receipt_floors.emplace("!back:x", std::uint64_t{20U});
+        constexpr auto since = std::uint64_t{20U};
+
+        WHEN("each is asked whether it enters the scope for the first time")
+        {
+            THEN("only the room with neither an entry nor a floor does")
+            {
+                REQUIRE(merovingian::sync::enters_receipts_scope(history, "!new:x"));
+                REQUIRE_FALSE(merovingian::sync::enters_receipts_scope(history, "!held:x"));
+                REQUIRE_FALSE(merovingian::sync::enters_receipts_scope(history, "!back:x"));
+            }
+
+            THEN("the room that came back is read from its floor")
+            {
+                REQUIRE(merovingian::sync::receipt_floor_for(history, "!back:x", since) == since);
             }
         }
     }

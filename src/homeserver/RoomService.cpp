@@ -146,6 +146,7 @@
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/RoomReadAccess.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
+#include "merovingian/sync/SlidingSyncPos.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
@@ -10596,7 +10597,8 @@ namespace
         {
             return plain;
         }
-        auto const decoded = token.has_value() ? sync::decode_stream_token(*token) : std::nullopt;
+        // MSC4186: a sliding sync `pos` names a position as a /sync `next_batch` does (ADR-0866).
+        auto const decoded = token.has_value() ? sync::decode_sync_position_token(*token) : std::nullopt;
         if (!decoded.has_value())
         {
             return std::optional<std::uint64_t>{};

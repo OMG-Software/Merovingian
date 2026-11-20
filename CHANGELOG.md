@@ -39,6 +39,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0860).
 * Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
   list or room subscription could hold ends a waiting long poll at once; one already sent never does (ADR-0864).
+* Sliding sync reads the MSC4186 request forms beside the older ones: `required_state` objects, `range`, and the
+  `is_invited`, `spaces`, `tags` and `not_tags` filters; at most 100 lists and 100 room subscriptions (ADR-0865).
+* Sliding sync rooms carry `bump_stamp`, `membership`, `lists` and `stripped_state`, a removed name or avatar is `null`,
+  heroes are sent whenever a room has no name, and a change of `is_dm` resends the room (ADR-0865).
+* Sliding sync lists hold the rooms a user knocked on, was kicked or banned from, or left after the connection was
+  sent them, each read only as of the departure (MSC4186 "Lists", ADR-0867).
+* A sliding sync `pos` works as `from` / `to` in `/messages`, `/relations` and `/keys/changes` (ADR-0866).
+* The sliding sync extensions answer under the MSC-prefixed names too (MSC4508, MSC4538, MSC4543, MSC4548, MSC4551),
+  which `/versions` lists (ADR-0865).
+* The account_data extension follows its `lists` and `rooms` scope, whatever the user's membership; receipts send a
+  room's initial receipts on entering scope and those on a new timeline (MSC4548, MSC4551, ADR-0865).
 
 ## Security Fixes
 
@@ -64,6 +75,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   visibility only (ADR-0862).
 * A sticky event that expires a sender's row in another room refreshes the federation worker's snapshot of that room,
   so the worker stops serving the removed event (ADR-0862).
+* A sliding sync `pos` is bound to the user and device it was issued to; any other is `M_UNKNOWN_POS`, so one user can
+  no longer continue another's connection (ADR-0866).
 
 ## Bug fixes
 
@@ -124,14 +137,43 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
 * A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
   state has none, rather than at the oldest sticky event (ADR-0862).
-* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
-  sent as a new joined room (ADR-0864).
+* A rejected or withdrawn invite wakes the invitee's sliding sync long poll and stays in the list as `leave`, as MSC4186
+  says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
 * Any other change of a user's own membership answers their sliding sync long poll, so an invite withdrawn outside
-  every window updates the list's count; a new invite does only if a subscription or a list's filters hold it.
-* A sliding sync response reporting an invite at an unchanged position carries a new page, and the invite is recorded
-  at its own position, so the next request does not receive it again (ADR-0864).
+  every window updates the list; a new invite does only if a subscription or a list's filters hold it.
+* A sliding sync response reporting an invite, knock or departure at an unchanged position carries a new page, and an
+  invite is recorded at its own position, so the next request does not receive the room again (ADR-0864, ADR-0867).
 * A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
   never a pass over every room the server holds (ADR-0665).
+* Sliding sync's e2ee extension sends no `device_lists` without a `pos`, and `timeout` without a `pos` is ignored
+  (MSC4543, MSC4186, ADR-0865).
+* Turning on sliding sync's `account_data`, or a room entering its or the receipts scope, answers a long poll with what
+  predates `pos`, under a new page, and is not sent again (MSC4548, MSC4551, ADR-0869).
+* A sliding sync room whose name or avatar changed or was removed is sent again, `null` once removed, even with no
+  timeline or `required_state` to carry it (MSC4186, ADR-0869).
+* A sliding sync long poll wakes for a tag that moves a room into a list filtered on `tags` or `not_tags`, and for an
+  `m.direct` change of a sent room's `is_dm` (ADR-0869).
+* A knock on a room this server holds is filtered on its encryption, type and name, which read empty before.
+* A departed room's sliding sync timeline holds at most `timeline_limit` events, its `prev_batch` from the oldest kept.
+* An invite into a sliding sync list filtered on `spaces` answers a long poll; the space read as not joined before.
+* A sliding sync knock or departure stored while an earlier commit was in flight is sent once; every later poll
+  sent the room again, and woke for it, until that commit ended (ADR-0867).
+* A sliding sync `required_state` object reads `"*"` as a literal type or state key, as MSC4186 says; it matched
+  every value, so `exclude: [{"state_key": "*"}]` withheld every state event (ADR-0865).
+* A room a sliding sync connection held in its receipts scope before is not sent its initial receipts again when it
+  comes back with a floor equal to `since`; only a room never held there is (ADR-0869).
+* A departed room is filtered by `is_encrypted` as it was when the stay ended; an encryption event sent after the
+  user left counted, so a later ban moved the room into the encrypted list (ADR-0867).
+* A kicked or banned room built with lazy members holds the kicker's member event, and one sent with
+  `timeline_limit` 0 carries a `prev_batch` with its `limited` (ADR-0867).
+* Deciding a departed room's place in a sliding sync list reads the user's own membership row, not every row of the
+  room, and its `by_recency` key parses at most 128 KiB of event JSON per room (ADR-0867, ADR-0655).
+* A list the previous sliding sync request had and this one dropped no longer puts its window in an extension's
+  scope or its long-poll check, so typing or receipts there no longer answer the poll with nothing (ADR-0861).
+* A sliding sync room whose name or avatar state resolution removed is sent `null` for it; it was left out, so the
+  client kept the old one (ADR-0869).
+* An invite rejected or withdrawn while a sliding sync request asked for no lists is listed as `leave` when the lists
+  come back; the room was dropped as never sent (ADR-0867).
 
 ## Release notes
 
@@ -139,9 +181,10 @@ Version 1.1.3 is in progress: a LiveKit token service built into the server for 
 an exact `state_after` on `/sync`, and sticky events (MSC4354) for Element Call. It adds migrations 004
 (`livekit_delegations`) and 005 (`sticky_events`). After a restart, the first `state_after` sync of each room with news
 carries its whole state once. A SQLite server no longer refuses writes under sustained write load, and
-`database.pool_size` now applies to PostgreSQL only. CI now runs a core gate on a pull request and the full matrix in
-the merge queue: turn the merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate
-alone.
+`database.pool_size` now applies to PostgreSQL only. Sliding sync follows MSC4186: every `pos` issued before the upgrade
+is refused once (`M_UNKNOWN_POS`, clients start a new connection), and kicked, banned and left rooms now appear in lists
+with their `membership`. CI now runs a core gate on a pull request and the full matrix in the merge queue: turn the
+merge queue on in the "Protect main" ruleset, or pull requests merge after the core gate alone.
 
 # Version 1.1.2
 

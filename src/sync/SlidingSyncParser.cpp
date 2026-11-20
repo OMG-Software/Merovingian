@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/sync/RequiredStateElement.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -131,6 +132,64 @@ namespace
         return total;
     }
 
+    [[nodiscard]] auto pairs_cost(std::vector<std::pair<std::string, std::string>> const& pairs) noexcept
+        -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& [type, state_key] : pairs)
+        {
+            total += string_cost(type) + string_cost(state_key);
+        }
+        return total;
+    }
+
+    [[nodiscard]] auto elements_cost(std::vector<RequiredStateElement> const& elements) noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& element : elements)
+        {
+            total += sizeof(RequiredStateElement) + (element.type.has_value() ? element.type->size() : 0U) +
+                     (element.state_key.has_value() ? element.state_key->size() : 0U);
+        }
+        return total;
+    }
+
+    [[nodiscard]] auto configs_cost(std::vector<RequiredStateConfig> const& configs) noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& config : configs)
+        {
+            total += sizeof(RequiredStateConfig) + elements_cost(config.include) + elements_cost(config.exclude);
+        }
+        return total;
+    }
+
+    // The entries a room config's `required_state` names, in either form: each is matched against the room's state.
+    template <typename RoomConfig>
+    [[nodiscard]] auto required_state_entries(RoomConfig const& config) noexcept -> std::size_t
+    {
+        auto entries = config.required_state.size();
+        for (auto const& request : config.required_state_configs)
+        {
+            entries += request.include.size() + request.exclude.size();
+        }
+        return entries;
+    }
+
+    // The appendices' "Opaque Identifiers" grammar, which MSC4186 requires of list keys: 1 to 255 of
+    // [0-9A-Za-z-._~].
+    [[nodiscard]] auto is_opaque_identifier(std::string_view id) noexcept -> bool
+    {
+        if (id.empty() || id.size() > 255U)
+        {
+            return false;
+        }
+        return std::ranges::all_of(id, [](char const c) {
+            return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '.' ||
+                   c == '_' || c == '~';
+        });
+    }
+
     // Per map node: the node links and the key string object, beside the list itself.
     constexpr auto list_node_overhead = std::uint64_t{64U};
 
@@ -173,7 +232,98 @@ namespace
         return out;
     }
 
-    // Parse [[type, state_key], ...] required_state arrays.
+    // A list's `room_types` or `not_room_types`: strings, and MSC4186's `null` for "rooms which do not have a room
+    // type", held as the empty string, which is what a room with no type reads as. Anything else is skipped.
+    [[nodiscard]] auto extract_room_types(canonicaljson::Value const& v) -> std::vector<std::string>
+    {
+        auto out = std::vector<std::string>{};
+        auto const* arr = as_array(v);
+        if (arr == nullptr)
+        {
+            return out;
+        }
+        for (auto const& item : *arr)
+        {
+            if (auto const* s = as_string(item); s != nullptr)
+            {
+                out.push_back(*s);
+            }
+            else if (std::holds_alternative<std::nullptr_t>(item.storage()))
+            {
+                out.emplace_back();
+            }
+        }
+        return out;
+    }
+
+    // One MSC4186 `RequiredStateElement`: an omitted field matches anything, a present one only its own value ("*" is
+    // not a wildcard here). An element that is not an object, or names a field that is not a string, matches nothing
+    // and is skipped.
+    [[nodiscard]] auto parse_required_state_element(canonicaljson::Value const& v)
+        -> std::optional<RequiredStateElement>
+    {
+        auto const* obj = as_object(v);
+        if (obj == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto element = RequiredStateElement{};
+        if (auto const* type = find_member(*obj, "type"); type != nullptr)
+        {
+            auto const* s = as_string(*type);
+            if (s == nullptr)
+            {
+                return std::nullopt;
+            }
+            element.type = *s;
+        }
+        if (auto const* state_key = find_member(*obj, "state_key"); state_key != nullptr)
+        {
+            auto const* s = as_string(*state_key);
+            if (s == nullptr)
+            {
+                return std::nullopt;
+            }
+            element.state_key = *s;
+        }
+        return element;
+    }
+
+    [[nodiscard]] auto parse_required_state_elements(canonicaljson::Object const& request, std::string_view key)
+        -> std::vector<RequiredStateElement>
+    {
+        auto out = std::vector<RequiredStateElement>{};
+        auto const* v = find_member(request, key);
+        auto const* arr = v != nullptr ? as_array(*v) : nullptr;
+        if (arr == nullptr)
+        {
+            return out;
+        }
+        for (auto const& item : *arr)
+        {
+            if (auto element = parse_required_state_element(item); element.has_value())
+            {
+                out.push_back(std::move(*element));
+            }
+        }
+        return out;
+    }
+
+    // MSC4186 "RequiredStateRequest": `{include, exclude, lazy_members}`.
+    [[nodiscard]] auto parse_required_state_request(canonicaljson::Object const& request) -> RequiredStateConfig
+    {
+        auto config = RequiredStateConfig{};
+        config.include = parse_required_state_elements(request, "include");
+        config.exclude = parse_required_state_elements(request, "exclude");
+        if (auto const* v = find_member(request, "lazy_members"); v != nullptr)
+        {
+            auto const* b = as_bool(*v);
+            config.lazy_members = b != nullptr && *b;
+        }
+        return config;
+    }
+
+    // Parse [[type, state_key], ...] required_state arrays (the MSC3575 form).
     [[nodiscard]] auto parse_required_state(canonicaljson::Value const& v)
         -> std::vector<std::pair<std::string, std::string>>
     {
@@ -201,6 +351,18 @@ namespace
         return out;
     }
 
+    // A list's or subscription's `required_state`, in either form: the MSC4186 object or the MSC3575 array of pairs.
+    template <typename RoomConfig>
+    auto read_required_state(canonicaljson::Value const& v, RoomConfig& config) -> void
+    {
+        if (auto const* request = as_object(v); request != nullptr)
+        {
+            config.required_state_configs.push_back(parse_required_state_request(*request));
+            return;
+        }
+        config.required_state = parse_required_state(v);
+    }
+
     [[nodiscard]] auto parse_filters(canonicaljson::Object const& obj) -> SlidingSyncFilters
     {
         auto f = SlidingSyncFilters{};
@@ -211,12 +373,28 @@ namespace
                 f.is_encrypted = *b;
             }
         }
-        if (auto const* v = find_member(obj, "is_invite"); v != nullptr)
+        // MSC4186 renamed `is_invite` to `is_invited`; a request that sends both is read from the new name.
+        for (auto const* const key : {"is_invite", "is_invited"})
         {
-            if (auto const* b = as_bool(*v); b != nullptr)
+            if (auto const* v = find_member(obj, key); v != nullptr)
             {
-                f.is_invite = *b;
+                if (auto const* b = as_bool(*v); b != nullptr)
+                {
+                    f.is_invite = *b;
+                }
             }
+        }
+        if (auto const* v = find_member(obj, "spaces"); v != nullptr)
+        {
+            f.spaces = extract_unique_strings(*v);
+        }
+        if (auto const* v = find_member(obj, "tags"); v != nullptr)
+        {
+            f.tags = extract_unique_strings(*v);
+        }
+        if (auto const* v = find_member(obj, "not_tags"); v != nullptr)
+        {
+            f.not_tags = extract_unique_strings(*v);
         }
         if (auto const* v = find_member(obj, "is_dm"); v != nullptr)
         {
@@ -234,11 +412,11 @@ namespace
         }
         if (auto const* v = find_member(obj, "room_types"); v != nullptr)
         {
-            f.room_types = extract_strings(*v);
+            f.room_types = extract_room_types(*v);
         }
         if (auto const* v = find_member(obj, "not_room_types"); v != nullptr)
         {
-            f.not_room_types = extract_strings(*v);
+            f.not_room_types = extract_room_types(*v);
         }
         return f;
     }
@@ -279,6 +457,10 @@ namespace
             }
             list.ranges.push_back(*single);
         }
+        else
+        {
+            list.whole_list = true;
+        }
 
         if (auto const* v = find_member(obj, "sort"); v != nullptr)
         {
@@ -287,7 +469,7 @@ namespace
 
         if (auto const* v = find_member(obj, "required_state"); v != nullptr)
         {
-            list.required_state = parse_required_state(*v);
+            read_required_state(*v, list);
         }
 
         if (auto const* v = find_member(obj, "timeline_limit"); v != nullptr)
@@ -329,7 +511,7 @@ namespace
 
         if (auto const* v = find_member(obj, "required_state"); v != nullptr)
         {
-            sub.required_state = parse_required_state(*v);
+            read_required_state(*v, sub);
         }
         if (auto const* v = find_member(obj, "timeline_limit"); v != nullptr)
         {
@@ -410,80 +592,105 @@ namespace
         return req;
     }
 
+    // One extension's request object, read from its MSC-prefixed key when the request sent it and from its bare key
+    // otherwise, with the keys the request used (ADR-0865). `object` is null when neither key holds an object.
+    struct ExtensionObject final
+    {
+        canonicaljson::Object const* object{nullptr};
+        ExtensionNames names{};
+    };
+
+    [[nodiscard]] auto extension_object(canonicaljson::Object const& extensions, std::string_view bare,
+                                        std::string_view prefixed) -> ExtensionObject
+    {
+        auto const* const bare_value = find_member(extensions, bare);
+        auto const* const prefixed_value = find_member(extensions, prefixed);
+        auto const* const bare_object = bare_value != nullptr ? as_object(*bare_value) : nullptr;
+        auto const* const prefixed_object = prefixed_value != nullptr ? as_object(*prefixed_value) : nullptr;
+        auto found = ExtensionObject{};
+        found.object = prefixed_object != nullptr ? prefixed_object : bare_object;
+        found.names.bare = bare_object != nullptr;
+        found.names.prefixed = prefixed_object != nullptr;
+        return found;
+    }
+
+    [[nodiscard]] auto parse_enabled(canonicaljson::Object const& o) -> bool
+    {
+        auto const* v = find_member(o, "enabled");
+        if (v == nullptr)
+        {
+            return false;
+        }
+        auto const* b = as_bool(*v);
+        return b != nullptr && *b;
+    }
+
+    // MSC4538: "A `limit` that is not a positive integer ... MUST be rejected with a 400 and an error code of
+    // `M_BAD_JSON`"; the handler answers `limit_refused`.
+    [[nodiscard]] auto parse_to_device_request(canonicaljson::Object const& o, ExtensionNames names)
+        -> ExtToDeviceRequest
+    {
+        auto req = ExtToDeviceRequest{};
+        req.enabled = parse_enabled(o);
+        req.names = names;
+        if (auto const* lv = find_member(o, "limit"); lv != nullptr)
+        {
+            auto const* n = as_int(*lv);
+            if (n == nullptr || *n <= 0)
+            {
+                req.limit_refused = true;
+            }
+            else
+            {
+                req.limit = static_cast<std::uint64_t>(*n);
+            }
+        }
+        if (auto const* sv = find_member(o, "since"); sv != nullptr)
+        {
+            if (auto const* s = as_string(*sv); s != nullptr)
+            {
+                req.since = *s;
+            }
+        }
+        return req;
+    }
+
+    template <typename ScopedRequest>
+    [[nodiscard]] auto parse_scoped_request(canonicaljson::Object const& o, ExtensionNames names) -> ScopedRequest
+    {
+        auto req = ScopedRequest{};
+        req.enabled = parse_enabled(o);
+        req.names = names;
+        read_extension_scope(o, req);
+        return req;
+    }
+
     [[nodiscard]] auto parse_extension_requests(canonicaljson::Object const& obj) -> SlidingSyncExtensionRequests
     {
         auto ext = SlidingSyncExtensionRequests{};
 
-        auto parse_enabled = [&](canonicaljson::Object const& o) -> bool {
-            auto const* v = find_member(o, "enabled");
-            if (v == nullptr)
-            {
-                return false;
-            }
-            auto const* b = as_bool(*v);
-            return b != nullptr && *b;
-        };
-
-        if (auto const* v = find_member(obj, "to_device"); v != nullptr)
+        if (auto const found = extension_object(obj, "to_device", "org.matrix.msc4538.to_device");
+            found.object != nullptr)
         {
-            if (auto const* o = as_object(*v); o != nullptr)
-            {
-                auto req = ExtToDeviceRequest{};
-                req.enabled = parse_enabled(*o);
-                if (auto const* lv = find_member(*o, "limit"); lv != nullptr)
-                {
-                    if (auto const* n = as_int(*lv); n != nullptr && *n > 0)
-                    {
-                        req.limit = static_cast<std::uint64_t>(*n);
-                    }
-                }
-                if (auto const* sv = find_member(*o, "since"); sv != nullptr)
-                {
-                    if (auto const* s = as_string(*sv); s != nullptr)
-                    {
-                        req.since = *s;
-                    }
-                }
-                ext.to_device = req;
-            }
+            ext.to_device = parse_to_device_request(*found.object, found.names);
         }
-
-        if (auto const* v = find_member(obj, "e2ee"); v != nullptr)
+        if (auto const found = extension_object(obj, "e2ee", "org.matrix.msc4543.e2ee"); found.object != nullptr)
         {
-            if (auto const* o = as_object(*v); o != nullptr)
-            {
-                ext.e2ee = ExtE2eeRequest{parse_enabled(*o)};
-            }
+            ext.e2ee = ExtE2eeRequest{parse_enabled(*found.object), found.names};
         }
-
-        if (auto const* v = find_member(obj, "account_data"); v != nullptr)
+        if (auto const found = extension_object(obj, "account_data", "org.matrix.msc4548.account_data");
+            found.object != nullptr)
         {
-            if (auto const* o = as_object(*v); o != nullptr)
-            {
-                ext.account_data = ExtAccountDataRequest{parse_enabled(*o)};
-            }
+            ext.account_data = parse_scoped_request<ExtAccountDataRequest>(*found.object, found.names);
         }
-
-        if (auto const* v = find_member(obj, "receipts"); v != nullptr)
+        if (auto const found = extension_object(obj, "receipts", "org.matrix.msc4551.receipts");
+            found.object != nullptr)
         {
-            if (auto const* o = as_object(*v); o != nullptr)
-            {
-                auto req = ExtReceiptsRequest{};
-                req.enabled = parse_enabled(*o);
-                read_extension_scope(*o, req);
-                ext.receipts = std::move(req);
-            }
+            ext.receipts = parse_scoped_request<ExtReceiptsRequest>(*found.object, found.names);
         }
-
-        if (auto const* v = find_member(obj, "typing"); v != nullptr)
+        if (auto const found = extension_object(obj, "typing", "org.matrix.msc4508.typing"); found.object != nullptr)
         {
-            if (auto const* o = as_object(*v); o != nullptr)
-            {
-                auto req = ExtTypingRequest{};
-                req.enabled = parse_enabled(*o);
-                read_extension_scope(*o, req);
-                ext.typing = std::move(req);
-            }
+            ext.typing = parse_scoped_request<ExtTypingRequest>(*found.object, found.names);
         }
 
         ext.sticky_events = parse_sticky_events_request(obj);
@@ -521,6 +728,63 @@ namespace
             query = query.substr(amp + 1U);
         }
         return {};
+    }
+
+    // The room-scoped extensions name rooms as room_subscriptions does and lists as `lists` does (MSC4508), and each
+    // name costs a lookup under the runtime lock, so the same caps bound them.
+    [[nodiscard]] auto extension_limit_violation(SlidingSyncExtensionRequests const& extensions,
+                                                 SlidingSyncLimits const& limits) -> std::optional<std::string_view>
+    {
+        if (extensions.receipts.has_value())
+        {
+            if (exceeds(extensions.receipts->rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the receipts extension";
+            }
+            if (exceeds(extensions.receipts->lists, limits.lists))
+            {
+                return "too many lists in the receipts extension";
+            }
+        }
+        if (extensions.typing.has_value())
+        {
+            if (exceeds(extensions.typing->rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the typing extension";
+            }
+            if (exceeds(extensions.typing->lists, limits.lists))
+            {
+                return "too many lists in the typing extension";
+            }
+        }
+        if (extensions.account_data.has_value())
+        {
+            if (exceeds(extensions.account_data->rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the account_data extension";
+            }
+            if (exceeds(extensions.account_data->lists, limits.lists))
+            {
+                return "too many lists in the account_data extension";
+            }
+        }
+        if (extensions.sticky_events.has_value())
+        {
+            if (extensions.sticky_events->limit_refused)
+            {
+                return "the sticky_events limit must be at least 1";
+            }
+            auto const& sticky = *extensions.sticky_events;
+            if (exceeds(sticky.rooms, limits.room_subscriptions))
+            {
+                return "too many rooms in the sticky_events extension";
+            }
+            if (exceeds(sticky.lists, limits.lists))
+            {
+                return "too many lists in the sticky_events extension";
+            }
+        }
+        return std::nullopt;
     }
 
 } // namespace
@@ -642,13 +906,12 @@ auto sliding_sync_retained_bytes(std::map<std::string, SlidingSyncList> const& l
         total += list_node_overhead + string_cost(name) + sizeof(SlidingSyncList);
         total += list.ranges.size() * sizeof(SlidingSyncRange);
         total += strings_cost(list.sort) + strings_cost(list.bump_event_types);
-        for (auto const& [type, state_key] : list.required_state)
-        {
-            total += string_cost(type) + string_cost(state_key);
-        }
+        total += pairs_cost(list.required_state) + configs_cost(list.required_state_configs);
         if (list.filters.has_value())
         {
-            total += strings_cost(list.filters->room_types) + strings_cost(list.filters->not_room_types);
+            auto const& f = *list.filters;
+            total += strings_cost(f.room_types) + strings_cost(f.not_room_types) + strings_cost(f.spaces) +
+                     strings_cost(f.tags) + strings_cost(f.not_tags);
         }
     }
     return total;
@@ -686,6 +949,10 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
         {
             return "list name too long";
         }
+        if (!is_opaque_identifier(name))
+        {
+            return "a list key must be an opaque identifier";
+        }
         if (list.ranges.size() > limits.ranges)
         {
             return "too many ranges in a list";
@@ -700,8 +967,15 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
             {
                 return "too many not_room_types in a list";
             }
+            // Each named space costs a walk of its m.space.child state, and each tag a comparison per room.
+            auto const& f = *list.filters;
+            if (f.spaces.size() > limits.room_types || f.tags.size() > limits.room_types ||
+                f.not_tags.size() > limits.room_types)
+            {
+                return "too many spaces or tags in a list";
+            }
         }
-        if (list.required_state.size() > limits.required_state_entries)
+        if (required_state_entries(list) > limits.required_state_entries)
         {
             return "too many required_state entries in a list";
         }
@@ -716,59 +990,32 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     }
     for ([[maybe_unused]] auto const& [room_id, subscription] : request.room_subscriptions)
     {
-        if (subscription.required_state.size() > limits.required_state_entries)
+        if (required_state_entries(subscription) > limits.required_state_entries)
         {
             return "too many required_state entries in a room subscription";
         }
     }
-    // The room-scoped extensions name rooms as room_subscriptions does and lists as `lists` does (MSC4508), and each
-    // name costs a lookup under the runtime lock, so the same caps bound them.
     if (request.extensions.has_value())
     {
-        auto const& extensions = *request.extensions;
-        if (extensions.receipts.has_value())
+        if (auto const violation = extension_limit_violation(*request.extensions, limits); violation.has_value())
         {
-            if (exceeds(extensions.receipts->rooms, limits.room_subscriptions))
-            {
-                return "too many rooms in the receipts extension";
-            }
-            if (exceeds(extensions.receipts->lists, limits.lists))
-            {
-                return "too many lists in the receipts extension";
-            }
-        }
-        if (extensions.typing.has_value())
-        {
-            if (exceeds(extensions.typing->rooms, limits.room_subscriptions))
-            {
-                return "too many rooms in the typing extension";
-            }
-            if (exceeds(extensions.typing->lists, limits.lists))
-            {
-                return "too many lists in the typing extension";
-            }
-        }
-        if (extensions.sticky_events.has_value())
-        {
-            if (extensions.sticky_events->limit_refused)
-            {
-                return "the sticky_events limit must be at least 1";
-            }
-            auto const& sticky = *extensions.sticky_events;
-            if (exceeds(sticky.rooms, limits.room_subscriptions))
-            {
-                return "too many rooms in the sticky_events extension";
-            }
-            if (exceeds(sticky.lists, limits.lists))
-            {
-                return "too many lists in the sticky_events extension";
-            }
+            return violation;
         }
     }
     // The count caps bound the entries; this bounds what they weigh, since a string may be as long as the body.
     if (sliding_sync_retained_bytes(request) > limits.retained_bytes_per_connection)
     {
         return "the lists are too large to keep for a connection";
+    }
+    return std::nullopt;
+}
+
+auto sliding_sync_request_malformation(SlidingSyncRequest const& request) -> std::optional<std::string_view>
+{
+    if (request.extensions.has_value() && request.extensions->to_device.has_value() &&
+        request.extensions->to_device->limit_refused)
+    {
+        return "the to_device limit must be a positive integer";
     }
     return std::nullopt;
 }

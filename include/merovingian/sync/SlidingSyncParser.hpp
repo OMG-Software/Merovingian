@@ -37,6 +37,13 @@ namespace merovingian::sync
 [[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, SlidingSyncLimits limits)
     -> std::optional<std::string_view>;
 
+// Why a parsed request is malformed in a way the MSCs answer with 400 M_BAD_JSON, or nullopt: a to_device `limit` that
+// is not a positive integer (MSC4538). A list or subscription without MSC4186's required `timeline_limit` or
+// `required_state` is not refused: it takes the defaults, as it did before (ADR-0865). The caller answers this before
+// any limit or state is read.
+[[nodiscard]] auto sliding_sync_request_malformation(SlidingSyncRequest const& request)
+    -> std::optional<std::string_view>;
+
 // The bytes a connection keeps of a request: its conn_id, and for each list its name and the strings, ranges
 // and fixed size of its configuration, at the size the copy has in memory. A caller sums it across a device's
 // connections (ADR-0663).

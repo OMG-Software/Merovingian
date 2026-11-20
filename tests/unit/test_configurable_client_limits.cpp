@@ -217,9 +217,10 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
 
         WHEN("the list-shape caps are read")
         {
-            THEN("they are 32 lists, 3 sort keys per list and 64 bump event types per list")
+            // MSC4186 "Max lists: 100".
+            THEN("they are 100 lists, 3 sort keys per list and 64 bump event types per list")
             {
-                REQUIRE(limits.lists == 32U);
+                REQUIRE(limits.lists == 100U);
                 REQUIRE(limits.sort_keys == 3U);
                 REQUIRE(limits.bump_event_types == 64U);
             }
@@ -338,10 +339,10 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
     {
         auto const limits = merovingian::sync::SlidingSyncLimits{};
 
-        WHEN("33 lists are sent")
+        WHEN("101 lists are sent")
         {
             auto request = merovingian::sync::SlidingSyncRequest{};
-            for (auto i = std::size_t{0U}; i < 33U; ++i)
+            for (auto i = std::size_t{0U}; i < 101U; ++i)
             {
                 request.lists.emplace("list" + std::to_string(i), merovingian::sync::SlidingSyncList{});
             }

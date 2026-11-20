@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -286,6 +287,126 @@ SCENARIO("A request's lookups answer an invited room from its invite, not from t
             {
                 REQUIRE_FALSE(lookups.is_invited(id));
                 REQUIRE(lookups.invited_rooms().empty());
+            }
+        }
+    }
+}
+
+// PR #608 review: a knock on a room this server holds keeps no invite record, so its filters and name key are read
+// from the room's current state, the source its `stripped_state` is built from; a knock on a room on another server is
+// read from its record, as an invite is.
+SCENARIO("A request's lookups answer a local knock from the room's current state", "[sync][sliding-sync][unit]")
+{
+    GIVEN("a room this server holds, named Current, encrypted and a space, that alice has knocked on, with no record")
+    {
+        auto store = db::PersistentStore{};
+        auto const id = room_name(2U);
+        store.rooms.push_back(db::PersistentRoom{id, "@bob:example.org", false});
+        store.memberships.push_back(db::PersistentMembership{id, alice, "knock", 9U});
+        add_state(store, id, "m.room.encryption", "$enc");
+        add_state(store, id, "m.room.create", "$create");
+        add_state(store, id, "m.room.name", "$name");
+        auto const add_event = [&](std::string event_id, std::string json, std::uint64_t ordering) {
+            auto event = db::PersistentEvent{};
+            event.event_id = std::move(event_id);
+            event.room_id = id;
+            event.sender_user_id = "@bob:example.org";
+            event.json = std::move(json);
+            event.stream_ordering = ordering;
+            store.events.push_back(std::move(event));
+        };
+        add_event("$create", R"({"type":"m.room.create","state_key":"","content":{"type":"m.space"}})", 1U);
+        add_event("$enc",
+                  R"({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}})", 2U);
+        add_event("$name", R"({"type":"m.room.name","state_key":"","content":{"name":"Current"}})", 3U);
+        db::rebuild_membership_index(store);
+        db::rebuild_state_index(store);
+        auto lookups = sync::SlidingSyncRequestLookups{store, alice};
+
+        WHEN("its sort keys and filters are asked for")
+        {
+            auto const& room_name_key = lookups.room_name(id);
+            auto const encrypted = lookups.is_encrypted(id);
+            auto const& type = lookups.room_type(id);
+
+            THEN("each is the room's current state, as its stripped state tells alice")
+            {
+                REQUIRE(lookups.is_knocked(id));
+                REQUIRE(room_name_key == "Current");
+                REQUIRE(encrypted);
+                REQUIRE(type == "m.space");
+            }
+        }
+    }
+}
+
+// PR #608 review: a long poll's invite check builds fresh lookups and never lists the joined rooms, so a space filter
+// read joined spaces from a list nothing had filled, and an invite into a list filtered on `spaces` left the poll
+// waiting. A space's children are read from the user's own join rows until the joined rooms are listed.
+SCENARIO("A request's lookups find a joined space's children without listing the joined rooms",
+         "[sync][sliding-sync][unit]")
+{
+    GIVEN("alice joined to a space whose state names one child with a via and one without, and invited to the child")
+    {
+        auto store = db::PersistentStore{};
+        auto const space = room_name(0U);
+        auto const child = room_name(1U);
+        auto const stray = room_name(2U);
+        for (auto const& id : {space, child, stray})
+        {
+            store.rooms.push_back(db::PersistentRoom{id, "@bob:example.org", false});
+        }
+        store.memberships.push_back(db::PersistentMembership{space, alice, "join", 1U});
+        store.memberships.push_back(db::PersistentMembership{child, alice, "invite", 4U});
+        auto const add_child = [&](std::string const& state_key, std::string event_id, std::string json,
+                                   std::uint64_t ordering) {
+            store.state.push_back(db::PersistentStateEvent{space, "m.space.child", state_key, event_id});
+            auto event = db::PersistentEvent{};
+            event.event_id = std::move(event_id);
+            event.room_id = space;
+            event.sender_user_id = "@bob:example.org";
+            event.json = std::move(json);
+            event.stream_ordering = ordering;
+            store.events.push_back(std::move(event));
+        };
+        add_child(child, "$child", R"({"type":"m.space.child","content":{"via":["example.org"]}})", 2U);
+        add_child(stray, "$stray", R"({"type":"m.space.child","content":{}})", 3U);
+        db::rebuild_membership_index(store);
+        db::rebuild_state_index(store);
+
+        WHEN("the space's children are asked for by lookups that have answered only the invite")
+        {
+            auto lookups = sync::SlidingSyncRequestLookups{store, alice};
+            auto const invited = lookups.is_invited(child);
+            auto const children = lookups.space_children(space);
+
+            THEN("the child with a via is found, and the server's room table is never read")
+            {
+                REQUIRE(invited);
+                REQUIRE(children == std::unordered_set<std::string>{child});
+                REQUIRE(lookups.room_rows_visited() == 0U);
+            }
+        }
+        WHEN("the joined rooms are listed first")
+        {
+            auto lookups = sync::SlidingSyncRequestLookups{store, alice};
+            auto const joined = lookups.joined_rooms();
+            auto const children = lookups.space_children(space);
+
+            THEN("the same child is found")
+            {
+                REQUIRE(joined == std::vector<std::string>{space});
+                REQUIRE(children == std::unordered_set<std::string>{child});
+            }
+        }
+        WHEN("the space is asked for by a user who is not joined to it")
+        {
+            auto lookups = sync::SlidingSyncRequestLookups{store, "@carol:example.org"};
+            auto const children = lookups.space_children(space);
+
+            THEN("it names no room")
+            {
+                REQUIRE(children.empty());
             }
         }
     }

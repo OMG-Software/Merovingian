@@ -608,7 +608,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_search_page_size` | `100` | 1..1,000 |
 | `max_search_context_events` | `100` | 1..1,000 |
 | `sliding_sync_max_timeline_limit` | `100` | 1..1,000 |
-| `sliding_sync_max_room_subscriptions` | `256` | 1..4,096 |
+| `sliding_sync_max_room_subscriptions` | `100` | 1..4,096 (above 100 acts as 100: MSC4186 caps a request at 100 subscriptions) |
 | `sliding_sync_max_required_state_entries` | `256` | 1..4,096 |
 | `sliding_sync_connections_per_device` | `16` | 1..64 |
 | `max_registration_validation_sessions` | `1024` | 1..65,536 |

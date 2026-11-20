@@ -55,4 +55,17 @@ namespace merovingian::sync
 [[nodiscard]] auto receipt_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
                                      std::uint64_t since_sync_stream_id) -> std::uint64_t;
 
+// Whether `room_id`, in the receipts extension's joined scope now, enters it for the first time on this connection:
+// neither held there by `history` nor dropped out of it with a floor. MSC4551: such a room is sent the user's own
+// receipts whatever their age, so the long-poll check and `build_extensions` both ask this. A room with a floor is a
+// re-entry however its floor compares with `since`.
+[[nodiscard]] auto enters_receipts_scope(ExtensionScopeHistory const& history, std::string const& room_id) -> bool;
+
+// The sync stream position after which an account-data row is sent (MSC4548): 0 for a global row (`room_id` empty)
+// while the extension was off, and for a room row whose room was not in the extension's scope, so all of it goes
+// down; `since_sync_stream_id` otherwise. The long-poll check and `build_extensions` both read it, so a poll is woken
+// only for what the response sends.
+[[nodiscard]] auto account_data_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
+                                          std::uint64_t since_sync_stream_id) -> std::uint64_t;
+
 } // namespace merovingian::sync

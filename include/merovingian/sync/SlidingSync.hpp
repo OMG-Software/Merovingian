@@ -21,7 +21,8 @@ namespace merovingian::sync
 
 // Source-compatible defaults for standalone callers and existing tests.
 inline constexpr std::uint64_t sliding_sync_max_timeline_limit{100U};
-inline constexpr std::size_t sliding_sync_max_room_subscriptions{256U};
+// MSC4186 "Max subscriptions: 100": a request naming more is refused whatever the configuration says.
+inline constexpr std::size_t sliding_sync_max_room_subscriptions{100U};
 inline constexpr std::size_t sliding_sync_max_required_state_entries{256U};
 
 } // namespace merovingian::sync

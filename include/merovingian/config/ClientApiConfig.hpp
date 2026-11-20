@@ -22,7 +22,7 @@ struct ClientApiConfig final
     std::uint32_t max_search_page_size{100U};
     std::uint32_t max_search_context_events{100U};
     std::uint32_t sliding_sync_max_timeline_limit{100U};
-    std::uint32_t sliding_sync_max_room_subscriptions{256U};
+    std::uint32_t sliding_sync_max_room_subscriptions{100U};
     std::uint32_t sliding_sync_max_required_state_entries{256U};
     std::uint32_t sliding_sync_connections_per_device{16U};
     std::uint32_t max_registration_validation_sessions{1024U};

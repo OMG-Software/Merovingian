@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/sync/RequiredStateElement.hpp"
 #include "merovingian/sync/SlidingSync.hpp"
 #include "merovingian/sync/SlidingSyncParser.hpp"
 #include "merovingian/sync/SlidingSyncPos.hpp"
@@ -215,6 +216,79 @@ SCENARIO("Sliding sync parser extracts required_state wildcard pairs", "[sync][s
                 REQUIRE(rs[0].second == "*");
                 REQUIRE(rs[1].first == "m.room.name");
                 REQUIRE(rs[1].second == "");
+            }
+        }
+    }
+}
+
+// MSC4186 "RequiredStateRequest" (ADR-0865): `required_state` as an object of `include`, `exclude` and `lazy_members`.
+// An element's omitted `type` or `state_key` matches every value ("*"); an element that is not an object, or whose
+// field is not a string, matches nothing and is dropped; an omitted list is empty.
+SCENARIO("Sliding sync parser reads the MSC4186 required_state object", "[sync][sliding-sync]")
+{
+    GIVEN("a list whose required_state is an object, and a subscription whose object omits include")
+    {
+        auto const body = R"({
+            "lists": {
+                "x": {
+                    "ranges": [[0, 9]],
+                    "required_state": {
+                        "include": [{"type": "m.room.name"}, {"state_key": "@a:example.org"}, {}, 7,
+                                    {"type": 3}],
+                        "exclude": [{"type": "m.room.topic", "state_key": ""}, {"state_key": "*"}],
+                        "lazy_members": true
+                    }
+                }
+            },
+            "room_subscriptions": {
+                "!r:example.org": {"required_state": {"exclude": [{}]}}
+            }
+        })";
+
+        WHEN("parsed")
+        {
+            auto const result = parse_sliding_sync_request(body);
+
+            THEN("the list keeps one config with each element's omitted field absent and a literal \"*\" as given")
+            {
+                // Reached through a guarded expression: clang-tidy does not take a REQUIRE as a check.
+                auto const* const request = result.has_value() ? &*result : nullptr;
+                REQUIRE(request != nullptr);
+                auto const it = request->lists.find("x");
+                REQUIRE(it != request->lists.end());
+                // The object form fills `required_state_configs` only; the MSC3575 pairs stay empty.
+                REQUIRE(it->second.required_state.empty());
+                REQUIRE(it->second.required_state_configs.size() == 1U);
+                auto const& config = it->second.required_state_configs.front();
+                using Elements = std::vector<merovingian::sync::RequiredStateElement>;
+                using Field = std::optional<std::string>;
+                REQUIRE(config.include == Elements{
+                                              {Field{"m.room.name"}, std::nullopt           },
+                                              {std::nullopt,         Field{"@a:example.org"}},
+                                              {std::nullopt,         std::nullopt           }
+                });
+                // MSC4186's object form has no wildcard string: "*" is the state key "*", not "any".
+                REQUIRE(config.exclude == Elements{
+                                              {Field{"m.room.topic"}, Field{""} },
+                                              {std::nullopt,          Field{"*"}}
+                });
+                // `lazy_members: true` is kept as given.
+                REQUIRE(config.lazy_members);
+            }
+
+            THEN("the subscription's config includes nothing and does not load members lazily")
+            {
+                // Reached through a guarded expression: clang-tidy does not take a REQUIRE as a check.
+                auto const* const request = result.has_value() ? &*result : nullptr;
+                REQUIRE(request != nullptr);
+                auto const it = request->room_subscriptions.find("!r:example.org");
+                REQUIRE(it != request->room_subscriptions.end());
+                REQUIRE(it->second.required_state_configs.size() == 1U);
+                auto const& config = it->second.required_state_configs.front();
+                // An omitted `include` returns nothing, and an omitted `lazy_members` is false.
+                REQUIRE(config.include.empty());
+                REQUIRE(config.exclude.size() == 1U);
+                REQUIRE_FALSE(config.lazy_members);
             }
         }
     }

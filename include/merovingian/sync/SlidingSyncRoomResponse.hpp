@@ -18,6 +18,21 @@ struct SlidingSyncRoomResponse final
 {
     std::optional<std::string> name{};
     std::optional<std::string> avatar{};
+    // MSC4186 `name` / `avatar` `null`: an incremental response for a room whose name or avatar was removed.
+    bool name_removed{false};
+    bool avatar_removed{false};
+    // The stream orderings of the room's current `m.room.name` and `m.room.avatar` events, none without one. Not sent:
+    // the handler keeps them per connection, so a room whose name or avatar changed is sent again even when nothing
+    // else of it changed (a `timeline_limit` of 0 and no matching `required_state`), and a removal reaches the client.
+    std::optional<std::uint64_t> name_event_ordering{};
+    std::optional<std::uint64_t> avatar_event_ordering{};
+    // MSC4186 `bump_stamp`: the stream ordering of the room's last "proper" activity, or for a room the user is not
+    // joined to the ordering of their membership; omitted when unchanged since the room was last sent (ADR-0865).
+    std::optional<std::uint64_t> bump_stamp{};
+    // MSC4186 `membership`: the user's current membership in the room.
+    std::optional<std::string> membership{};
+    // MSC4186 `lists`: the names of the lists whose window holds the room; empty for a subscription only.
+    std::vector<std::string> lists{};
     // True the first time this room appears in a response for this connection.
     bool initial{false};
     bool is_dm{false};
@@ -44,8 +59,9 @@ struct SlidingSyncRoomResponse final
     std::vector<std::string> required_state_json{};
     // Pre-serialised timeline event JSON objects (chronological order).
     std::vector<std::string> timeline_json{};
-    // Set for invited rooms in place of timeline/state: a pre-serialised JSON array of the
-    // invite's stripped state events, emitted as `invite_state`.
+    // Set for a room the user has not joined (invite, knock, rejected invite) in place of every joined-room field: a
+    // pre-serialised JSON array of stripped state events, emitted as MSC4186's `stripped_state` and, for clients of the
+    // earlier drafts, `invite_state` (ADR-0865).
     std::optional<std::string> invite_state_json{};
     // User IDs whose m.room.member event was included in required_state_json
     // because required_state named ["m.room.member","$LAZY"] and that user is

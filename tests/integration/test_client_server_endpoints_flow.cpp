@@ -43,6 +43,7 @@
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/SlidingSyncPosBinding.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
@@ -58,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <span>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -3221,12 +3223,11 @@ SCENARIO("Invite and knock recipients receive only stripped room summaries",
                 auto const* stripped = object_member_as_array(*room, "invite_state");
                 REQUIRE(stripped != nullptr);
                 require_summary(*stripped, "invite");
-                auto const* required_state = object_member_as_array(*room, "required_state");
-                auto const* timeline = object_member_as_array(*room, "timeline");
-                REQUIRE(required_state != nullptr);
-                REQUIRE(timeline != nullptr);
-                REQUIRE(required_state->empty());
-                REQUIRE(timeline->empty());
+                // MSC4186 "Invite/knock/rejections": an invited room is sent its stripped state and none of the joined
+                // room fields, so no `required_state` or `timeline` at all.
+                REQUIRE(object_member(*room, "required_state") == nullptr);
+                REQUIRE(object_member(*room, "timeline") == nullptr);
+                REQUIRE(object_member_as_array(*room, "stripped_state") != nullptr);
             }
         }
 
@@ -10399,11 +10400,21 @@ SCENARIO("Sliding sync rejects a position ahead of the server's stream with M_UN
 
         WHEN("the client requests Sliding Sync from the future position")
         {
-            // The server's own epoch (ADR-0592), so the position alone is what makes the pos unknown.
-            auto const future_pos = merovingian::sync::encode_stream_token(
-                {0x2710U, 0x2710U, 0x2710U, runtime.homeserver.database.persistent_store.stream_token_epoch});
+            // The server's own epoch (ADR-0592), bound to alice's device as an issued pos is (ADR-0866), so the
+            // position alone is what makes the pos unknown.
+            auto const& key = runtime.homeserver.database.mutual_rooms_token_key;
+            REQUIRE(key.has_value());
+            auto const future_pos = merovingian::homeserver::bind_sliding_sync_pos(
+                merovingian::sync::encode_stream_token(
+                    {0x2710U, 0x2710U, 0x2710U, runtime.homeserver.database.persistent_store.stream_token_epoch}),
+                string_field(registration.response.body, "user_id"),
+                string_field(registration.response.body, "device_id"),
+                key.has_value() ? key->bytes() : std::span<std::uint8_t const>{});
+            REQUIRE(future_pos.has_value());
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + future_pos + "&timeout=0",
+                runtime, {"POST",
+                          "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + future_pos.value_or(std::string{}) +
+                              "&timeout=0",
                           token, request_body});
 
             THEN("the request is rejected with 400 M_UNKNOWN_POS")

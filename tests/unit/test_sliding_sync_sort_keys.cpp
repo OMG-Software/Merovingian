@@ -183,3 +183,46 @@ SCENARIO("A room whose bump types are not found within the budget falls back to 
         }
     }
 }
+
+// ADR-0655: a reader that parses sender-sized events per room takes a byte budget, or a room of large events costs
+// megabytes of parsing per request under the runtime lock however few rows it reads.
+SCENARIO("A room whose bump types lie behind large events falls back to its newest event within the byte budget",
+         "[sync][sliding-sync][c07][unit]")
+{
+    GIVEN("a room whose only reaction is older than ten messages of 32 KiB each")
+    {
+        auto store = db::PersistentStore{};
+        std::ignore = add_event(store, mine, "m.reaction", 1U);
+        auto const large_body = R"({"body":")" + std::string(std::size_t{32U} * 1024U, 'x') + R"("})";
+        for (auto ordering = std::uint64_t{2U}; ordering <= 11U; ++ordering)
+        {
+            std::ignore = add_event(store, mine, "m.room.message", ordering, large_body);
+        }
+        auto const held = finish(std::move(store));
+
+        WHEN("the reaction is asked for as the bump type")
+        {
+            auto lookups = sync::SlidingSyncRequestLookups{held, alice};
+            auto const key = lookups.recency(mine, {"m.reaction"});
+
+            THEN("the walk stops within the byte budget, before the reaction, and the newest event stands in")
+            {
+                REQUIRE(lookups.recency_bytes_parsed() <= sync::max_recency_bytes_parsed);
+                REQUIRE(lookups.recency_rows_visited() < 10U);
+                REQUIRE(key == 11U);
+            }
+        }
+
+        WHEN("a message is asked for as the bump type")
+        {
+            auto lookups = sync::SlidingSyncRequestLookups{held, alice};
+            auto const key = lookups.recency(mine, {"m.room.message"});
+
+            THEN("the newest row matches at once, within the budget")
+            {
+                REQUIRE(key == 11U);
+                REQUIRE(lookups.recency_rows_visited() == 1U);
+            }
+        }
+    }
+}

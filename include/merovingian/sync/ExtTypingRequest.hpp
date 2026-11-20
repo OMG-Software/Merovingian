@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/ExtensionNames.hpp"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,6 +20,7 @@ struct ExtTypingRequest final
     // form). A room named in `rooms` without a subscription is not in scope.
     std::optional<std::vector<std::string>> lists{};
     std::optional<std::vector<std::string>> rooms{};
+    ExtensionNames names{};
 };
 
 } // namespace merovingian::sync

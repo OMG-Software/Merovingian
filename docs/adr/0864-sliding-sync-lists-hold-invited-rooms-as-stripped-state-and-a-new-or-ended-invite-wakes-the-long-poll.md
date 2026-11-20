@@ -1,6 +1,6 @@
 # Sliding sync lists hold invited rooms as stripped state, and a new or ended invite wakes the long poll
 
-* Status: accepted
+* Status: accepted; amended by [ADR-0867](0867-sliding-sync-lists-hold-knocked-left-kicked-and-banned-rooms.md): a rejected or withdrawn invite stays in the list as `leave`
 * Date: 2026-11-19
 
 ## Context and Problem Statement

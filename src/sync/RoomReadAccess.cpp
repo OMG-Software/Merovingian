@@ -4,14 +4,16 @@
 #include "merovingian/sync/RoomReadAccess.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -127,6 +129,49 @@ namespace
         return std::nullopt;
     }
 
+    // The access a user's membership projection row grants: `row_membership` is that row's, or absent when the user
+    // has no row in the room.
+    [[nodiscard]] auto access_from_membership(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view user_id, std::optional<std::string_view> row_membership)
+        -> RoomReadAccess
+    {
+        auto const found_row = row_membership.has_value();
+        auto const membership = row_membership.value_or(std::string_view{});
+        auto const member_event_id = current_member_event_id(store, room_id, user_id);
+        if (!found_row)
+        {
+            // The projection row is gone: `/forget` deletes it, and some tests clear it. Only a
+            // current join in the room's state still counts; a forgotten room grants nothing.
+            if (!member_event_id.has_value())
+            {
+                return {};
+            }
+            auto const event = store.events.find(*member_event_id);
+            if (event != store.events.end() && !event_is_withheld(*event) &&
+                membership_of_json(event->json) == std::optional<std::string>{"join"})
+            {
+                return {RoomReadKind::current, {}, 0U};
+            }
+            return {};
+        }
+
+        if (membership == "join")
+        {
+            return {RoomReadKind::current, {}, 0U};
+        }
+        if ((membership != "leave" && membership != "ban") || !member_event_id.has_value())
+        {
+            return {};
+        }
+        auto const boundary = find_join_ending_event(store, room_id, user_id, *member_event_id);
+        if (!boundary.has_value() || boundary->boundary == nullptr)
+        {
+            return {};
+        }
+        return {RoomReadKind::as_of, boundary->boundary->event_id, boundary->boundary->stream_ordering,
+                boundary->join_ordering};
+    }
+
 } // namespace
 
 auto room_read_access_for(database::PersistentStore const& store, std::string_view room_id, std::string_view user_id)
@@ -148,40 +193,14 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
             membership = std::string_view{row.membership};
         }
     });
+    return access_from_membership(store, room_id, user_id,
+                                  found_row ? std::optional<std::string_view>{membership} : std::nullopt);
+}
 
-    auto const member_event_id = current_member_event_id(store, room_id, user_id);
-    if (!found_row)
-    {
-        // The projection row is gone: `/forget` deletes it, and some tests clear it. Only a
-        // current join in the room's state still counts; a forgotten room grants nothing.
-        if (!member_event_id.has_value())
-        {
-            return {};
-        }
-        auto const event = store.events.find(*member_event_id);
-        if (event != store.events.end() && !event_is_withheld(*event) &&
-            membership_of_json(event->json) == std::optional<std::string>{"join"})
-        {
-            return {RoomReadKind::current, {}, 0U};
-        }
-        return {};
-    }
-
-    if (membership == "join")
-    {
-        return {RoomReadKind::current, {}, 0U};
-    }
-    if ((membership != "leave" && membership != "ban") || !member_event_id.has_value())
-    {
-        return {};
-    }
-    auto const boundary = find_join_ending_event(store, room_id, user_id, *member_event_id);
-    if (!boundary.has_value() || boundary->boundary == nullptr)
-    {
-        return {};
-    }
-    return {RoomReadKind::as_of, boundary->boundary->event_id, boundary->boundary->stream_ordering,
-            boundary->join_ordering};
+auto room_read_access_for(database::PersistentStore const& store, database::PersistentMembership const& own_row)
+    -> RoomReadAccess
+{
+    return access_from_membership(store, own_row.room_id, own_row.user_id, std::string_view{own_row.membership});
 }
 
 auto state_anchor_event(database::PersistentStore const& store, std::string_view room_id, RoomReadAccess const& access,
@@ -240,6 +259,37 @@ auto room_state_event_ids(database::PersistentStore const& store, std::string_vi
         return std::vector<std::string>{}; // before the room's first event there is no state
     }
     return state_event_ids_after(store, *newest);
+}
+
+auto room_state_event_id(database::PersistentStore const& store, std::string_view room_id, RoomReadAccess const& access,
+                         std::string_view event_type, std::string_view state_key) -> std::optional<std::string>
+{
+    if (access.kind == RoomReadKind::none)
+    {
+        return std::nullopt;
+    }
+    if (access.kind == RoomReadKind::current)
+    {
+        return database::find_current_state_event_id(store, room_id, event_type, state_key);
+    }
+    // The anchor `room_state_event_ids` reads, and one key of its recorded group, by the group's own index.
+    auto const* const anchor = state_anchor_event(store, room_id, access, std::nullopt);
+    if (anchor == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const group_id = database::find_event_state_group(store, anchor->event_id);
+    if (!group_id.has_value())
+    {
+        return std::nullopt;
+    }
+    // nullopt is a broken chain and an empty view a sound one without the key: both are "no such event" here.
+    auto const found = database::find_state_group_state_event_id(store, *group_id, event_type, state_key);
+    if (!found.has_value() || found->empty())
+    {
+        return std::nullopt;
+    }
+    return std::string{*found};
 }
 
 auto state_event_ids_after(database::PersistentStore const& store, database::PersistentEvent const& event)

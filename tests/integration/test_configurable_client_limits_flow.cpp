@@ -47,7 +47,7 @@ namespace
     server.client_api.max_public_rooms_page_size = 600U;
     server.client_api.max_hierarchy_rooms = 700U;
     server.client_api.sliding_sync_max_timeline_limit = 250U;
-    server.client_api.sliding_sync_max_room_subscriptions = 700U;
+    server.client_api.sliding_sync_max_room_subscriptions = 70U;
     server.client_api.sliding_sync_max_required_state_entries = 800U;
     server.client_api.sliding_sync_connections_per_device = 12U;
     return {std::move(server),
@@ -91,9 +91,33 @@ SCENARIO("client API runtime limits are copied from the server configuration", "
                 REQUIRE(started.runtime.limits.max_public_rooms_page_size == 600U);
                 REQUIRE(started.runtime.limits.max_hierarchy_rooms == 700U);
                 REQUIRE(started.runtime.limits.sliding_sync.timeline_limit == 250U);
-                REQUIRE(started.runtime.limits.sliding_sync.room_subscriptions == 700U);
+                REQUIRE(started.runtime.limits.sliding_sync.room_subscriptions == 70U);
                 REQUIRE(started.runtime.limits.sliding_sync.required_state_entries == 800U);
                 REQUIRE(started.runtime.limits.sliding_sync_connections_per_device == 12U);
+            }
+        }
+    }
+}
+
+// MSC4186 "Max subscriptions: 100" is a ceiling the configuration may lower but not raise (ADR-0865).
+SCENARIO("a sliding sync subscription limit above MSC4186's ceiling acts as the ceiling",
+         "[homeserver][limits][sliding-sync]")
+{
+    GIVEN("an operator configuration allowing 700 sliding sync room subscriptions")
+    {
+        auto config = make_client_api_config();
+        config.server().client_api.sliding_sync_max_room_subscriptions = 700U;
+
+        WHEN("the client server runtime starts")
+        {
+            auto const started = merovingian::homeserver::start_client_server(config);
+
+            THEN("the runtime allows 100, the MSC4186 maximum, and keeps the other sliding sync limits")
+            {
+                REQUIRE(started.started);
+                REQUIRE(started.runtime.limits.sliding_sync.room_subscriptions == 100U);
+                REQUIRE(started.runtime.limits.sliding_sync.timeline_limit == 250U);
+                REQUIRE(started.runtime.limits.sliding_sync.required_state_entries == 800U);
             }
         }
     }
