@@ -259,7 +259,7 @@ QUALIFIED_LOG_CALL = re.compile(
 )
 LEVEL_LOG_CALL = re.compile(
     r'(?:\.|->)\s*(?:trace|debug|info|notice|warning|error|critical)\s*\(\s*'
-    r'(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
+    r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
 )
 # The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
 DATABASE_AUDIT_CALL = re.compile(r'\blog_diagnostic_audit\s*\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*"([A-Za-z0-9_]+)"')
@@ -333,6 +333,25 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertIn('"https://example.org/*not-a-comment"', stripped)
         self.assertIn('R"json({"a": "//", "b": "*/"})json"', stripped)
         self.assertEqual(stripped.count("\n"), source.count("\n"))
+
+    def test_a_module_literal_with_a_string_suffix_is_read_in_every_call_form(self) -> None:
+        # GIVEN each call form the scan reads, with its module written as a `sv` or `s` literal.
+        calls = {
+            QUALIFIED_LOG_CALL: 'observability::log_diagnostic("qualified"sv, "x", fields, severity);',
+            LEVEL_LOG_CALL: 'SingleLog::instance().info("level"sv, "x");\nlog.warning("level_s"s, "x");',
+            DATABASE_AUDIT_CALL: 'log_diagnostic_audit(runtime.database, "audit"sv, "x", fields);',
+        }
+
+        # WHEN each is read.
+        found = {
+            regex.pattern: {match if isinstance(match, str) else match[0] for match in regex.findall(source)}
+            for regex, source in calls.items()
+        }
+
+        # THEN the module is found, so a suffixed literal never drops a module from the expected set.
+        self.assertEqual(found[QUALIFIED_LOG_CALL.pattern], {"qualified"})
+        self.assertEqual(found[LEVEL_LOG_CALL.pattern], {"level", "level_s"})
+        self.assertEqual(found[DATABASE_AUDIT_CALL.pattern], {"audit"})
 
     def test_each_example_lists_exactly_the_modules_the_server_logs_under(self) -> None:
         # GIVEN every logger module the server's sources name.
