@@ -661,8 +661,10 @@ cannot read and never repairs it (ADR-0824).
 `user_id`: `turn.credentials_issued` (info, with `credential` (`static` or `shared_secret`), `ttl_seconds` and
 `uri_count`), `turn.credentials_unavailable` (error, with `reason`: the shared secret file is unreadable or empty, and
 the request is answered 500) and `turn.not_configured` (debug: no TURN URI is configured and the answer is `{}`). The
-username, the password and the shared secret are never logged: the username names an expiry and the user, and is half
-of a working credential.
+username, the password and the shared secret are never logged. The password is the secret; the username is withheld
+because static credentials are one configured pair shared by every user, and so that no line ever holds credential
+text. With a shared secret the username can be rebuilt from `user_id`, `ttl_seconds` and the line's timestamp, which is
+accepted: without the password it grants nothing (ADR-0871).
 
 ## Registration token file diagnostics
 

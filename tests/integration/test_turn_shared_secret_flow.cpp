@@ -149,6 +149,21 @@ private:
     return std::nullopt;
 }
 
+// The value of the ` key=value` field in a diagnostic line, up to the next space; nullopt when the line has no such
+// field. Matching the whole value keeps `uri_count=1` from passing for `uri_count=10`.
+[[nodiscard]] auto field_value(std::string const& line, std::string_view key) -> std::optional<std::string>
+{
+    auto const marker = " " + std::string{key} + "=";
+    auto const start = line.find(marker);
+    if (start == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    auto const value_start = start + marker.size();
+    auto const value_end = line.find(' ', value_start);
+    return line.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
+}
+
 // Asks for TURN credentials as the user `token` belongs to, through the client-server dispatcher, and returns the
 // HTTP response.
 [[nodiscard]] auto turn_server(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
@@ -293,14 +308,15 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
             auto const response = turn_server(runtime, alice);
             auto const text = capture.text();
 
-            THEN("an info line under turn names the event, alice, the kind of credential and the ttl")
+            THEN("an info line under turn names the event, alice, the kind of credential, the ttl and the one URI")
             {
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
                 REQUIRE(line.has_value());
-                CHECK(line->find("@alice:example.org") != std::string::npos);
-                CHECK(line->find("credential=shared_secret") != std::string::npos);
-                CHECK(line->find("ttl_seconds=3600") != std::string::npos);
+                CHECK(field_value(*line, "user_id") == "@alice:example.org");
+                CHECK(field_value(*line, "credential") == "shared_secret");
+                CHECK(field_value(*line, "ttl_seconds") == "3600");
+                CHECK(field_value(*line, "uri_count") == "1");
             }
 
             THEN("the log holds neither the username, the password nor the shared secret")
@@ -327,6 +343,37 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
             {
                 REQUIRE(response.status == 200U);
                 CHECK(text.find("turn.credentials_issued") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a server with two server.turn.uris entries and a shared secret file, and alice")
+    {
+        auto const secret = SecretFile{"north-turn-secret\n"};
+        auto config = secret_turn_config(secret.path(), 3600U);
+        config.server().turn.server.clear();
+        config.server().turn.uris = {"turn:turn.example.org:3478?transport=udp", "turns:turn.example.org:5349"};
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice is issued credentials with the log captured")
+        {
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("the info line counts the two URIs the answer lists")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                auto const* uris = object_member_as_array(body, "uris");
+                REQUIRE(uris != nullptr);
+                REQUIRE(uris->size() == 2U);
+                auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
+                REQUIRE(line.has_value());
+                CHECK(field_value(*line, "uri_count") == "2");
             }
         }
     }

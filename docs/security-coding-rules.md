@@ -179,12 +179,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **`GET /voip/turnServer` never logs the TURN username, the password or the shared secret,
   at any level.** It logs through `log_turn_diagnostic` under the `turn` module, with
   `user_id`, the kind of credential, the ttl and the URI count only.
-  Why: the username is half of a working credential, not an identifier. With a shared
-  secret it is `<expiry>:<user_id>`, the exact text the password's HMAC-SHA1 covers, so the
-  pair relays traffic through the TURN server as that user until the expiry, and with
-  static credentials the username and password are the same for every user of the server.
-  Leaking the username leaves only the password between a log reader and a credential
-  (CWE-532), and the shared secret would let them mint credentials for any user.
+  Why: the password is the secret, and the shared secret would let a log reader mint
+  credentials for any user (CWE-532). The username is withheld too because with static
+  credentials it is a configured value nothing else reveals, shared by every user, and one
+  of the two halves of a credential the whole server relays with. One rule for both kinds
+  keeps every line free of credential text, so a log is safe to paste into an issue. With
+  a shared secret the username (`<expiry>:<user_id>`) can be rebuilt from `user_id`,
+  `ttl_seconds` and the line's timestamp, and is useless without the password; that is
+  accepted, and is no reason to log it.
   Source: `src/homeserver/AGENTS.md`;
   [ADR-0871](adr/0871-turn-credential-requests-log-under-their-own-turn-module.md),
   [ADR-0480](adr/0480-turn-credentials-come-from-a-coturn-shared-secret-file-through-an-openssl-hmac-sha1.md).

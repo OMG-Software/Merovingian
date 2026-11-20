@@ -51,8 +51,16 @@ of its own and would have moved forty lines of unrelated JSON building with it.
 ## Rules for future code
 
 * A new diagnostic of `GET /voip/turnServer` goes through `log_turn_diagnostic`, never the `client_server` wrapper.
-* Never add the username or the password as a field, even at debug or trace level: the username is half of a working
-  credential and, with a shared secret, names the user and the expiry the MAC covers.
+* Never add the username or the password as a field, even at debug or trace level. The password is the secret that
+  matters. The username is withheld for two reasons that hold whatever else the line carries:
+  * With static credentials (`server.turn.username`) it is a configured value that nothing else in a log reveals, the
+    same for every user, and one of the two halves of a credential every user of the server may relay with.
+  * One rule for both kinds keeps every line free of credential text, so a log can be pasted into an issue or a
+    support thread without first working out which parts of it are safe.
+* With a shared secret, withholding the username hides little: it is `<expiry>:<user_id>`, and the expiry can be
+  rebuilt to the second from the line's timestamp and `ttl_seconds`. That is accepted, because the username without the
+  password, which needs the shared secret, grants nothing. Do not read it as a reason to start logging the username:
+  the static case still forbids it.
 
 ## Links
 

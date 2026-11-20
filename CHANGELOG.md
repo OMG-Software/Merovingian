@@ -53,7 +53,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * `GET /voip/turnServer` logs under its own `turn` module, set with `log_modules.turn`: credentials issued (info),
   unavailable (error) and no TURN configured (debug), with the user ID and never a credential (ADR-0871).
 * Tests set a log module's level through one shared helper, `tests/support/ModuleLogLevel.hpp`, instead of a copy per
-  file; the security coding rules state the TURN logging rule and why the username counts as a credential.
+  file; the security coding rules state the TURN logging rule and why the username is withheld.
 
 ## Security Fixes
 
