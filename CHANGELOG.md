@@ -137,8 +137,6 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
 * A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
   state has none, rather than at the oldest sticky event (ADR-0862).
-* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
-  sent as a new joined room (ADR-0864).
 * A rejected or withdrawn invite wakes the invitee's sliding sync long poll and stays in the list as `leave`, as MSC4186
   says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
 * Any other change of a user's own membership answers their sliding sync long poll, so an invite withdrawn outside
@@ -158,6 +156,20 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A knock on a room this server holds is filtered on its encryption, type and name, which read empty before.
 * A departed room's sliding sync timeline holds at most `timeline_limit` events, its `prev_batch` from the oldest kept.
 * An invite into a sliding sync list filtered on `spaces` answers a long poll; the space read as not joined before.
+* A sliding sync knock or departure stored while an earlier commit was in flight is sent once; every later poll
+  sent the room again, and woke for it, until that commit ended (ADR-0867).
+* A sliding sync `required_state` object reads `"*"` as a literal type or state key, as MSC4186 says; it matched
+  every value, so `exclude: [{"state_key": "*"}]` withheld every state event (ADR-0865).
+* A room a sliding sync connection held in its receipts scope before is not sent its initial receipts again when it
+  comes back with a floor equal to `since`; only a room never held there is (ADR-0869).
+* A departed room is filtered by `is_encrypted` as it was when the stay ended; an encryption event sent after the
+  user left counted, so a later ban moved the room into the encrypted list (ADR-0867).
+* A kicked or banned room built with lazy members holds the kicker's member event, and one sent with
+  `timeline_limit` 0 carries a `prev_batch` with its `limited` (ADR-0867).
+* Deciding a departed room's place in a sliding sync list reads the user's own membership row, not every row of the
+  room, and its `by_recency` key parses at most 128 KiB of event JSON per room (ADR-0867, ADR-0655).
+* A list the previous sliding sync request had and this one dropped no longer puts its window in an extension's
+  scope or its long-poll check, so typing or receipts there no longer answer the poll with nothing (ADR-0861).
 
 ## Release notes
 

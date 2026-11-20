@@ -20,7 +20,7 @@ Spec authority:
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `SlidingSyncPos.cpp` | `encode_sliding_sync_pos` / `decode_sliding_sync_pos`: a sliding sync `pos`, a stream token and an optional `.<page>` read strictly (ADR-0862); `decode_sync_position_token`, a stream token or a bound `pos` as a pagination token (ADR-0866) |
-| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined, invited, knocked and departed rooms (own membership rows; `include_departed_rooms` decides which departed ones a list holds, ADR-0867), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
+| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined, invited, knocked and departed rooms (own membership rows; `include_departed_rooms` decides which departed ones a list holds, ADR-0867), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666; `recency` reads at most 1000 rows and 128 KiB of their JSON, ADR-0655), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
@@ -34,7 +34,7 @@ Spec authority:
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
 | `ResolvedState.cpp` | `resolved_state_at`, `resolved_state_changes`, `resolved_state_event_at`: a room's resolved state as of a sync position, the exact delta between two, and one key's value, rebuilt from the current state and `PersistentStore::state_change_log` (ADR-0827) |
-| `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
+| `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none); the overload taking the user's own `PersistentMembership` row never walks the room's rows, and `room_state_event_id()` reads one key of that state by index |
 | `SlidingSync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
 | `DeviceListDelta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
@@ -152,10 +152,11 @@ answer every poll with nothing in it.
 
 Lists also hold knocked, kicked and banned rooms, and left rooms the connection was sent before (MSC4186 "Lists",
 ADR-0867). Their sort keys come from the membership row (`recency`), their name key is empty, a departed room counts as
-encrypted only if the encryption event predates the departure, and they are never passed to `build_room_response`: a
+encrypted only if the encryption event predates the departure (`room_state_event_id` over the access from the user's own row, never a walk of the room's rows), and they are never passed to `build_room_response`: a
 knock is sent its stripped state, a departure `build_departed_room_response` (state as of the departure, the user's own
 membership events, never anything later, its timeline the newest `timeline_limit` of them), each once per membership
-change under `membership:<room_id>`. A knock's filters and name key read the stripped state it is sent: the invite record
+change under `membership:<room_id>`, recorded at the membership row's own stream ordering as an invite's is; the response
+and the long-poll wake check both ask `sliding_membership_already_sent`. A knock's filters and name key read the stripped state it is sent: the invite record
 when it has one, else, for a room this server holds, the room's current state (`stripped_summary_event`). `rooms_seen`
 also holds `dm:<room_id>` for a joined room last sent as a DM (ADR-0865), and `name:<room_id>` / `avatar:<room_id>`, the
 stream ordering of the `m.room.name` / `m.room.avatar` event the room was last sent with: a room whose event differs is
@@ -201,7 +202,7 @@ response sets `sent_on_scope_entry` and takes a `pos` page (ADR-0869).
 The receipts extension (MSC4551) sends a room entering its scope for the first time its initial receipts: the user's
 own and every user's on the events of its timeline in this response (`ExtensionScopeSource::timeline_event_ids`), and
 nothing older; a room whose entry is `initial` or `expanded_timeline` (`fresh_timeline_rooms`) also gets the receipts on
-its timeline. First entry is `enters_receipts_scope`, shared with the long-poll check, which wakes for the user's own
+its timeline. First entry is `enters_receipts_scope` (the connection never held the room there: no receipt room, no floor), shared with the long-poll check, which wakes for the user's own
 receipt in such a room (ADR-0869). Every extension ORs into `SlidingSyncExtensionResponses::sent_on_scope_entry`, never
 assigns it. Typing and receipts keep their `{type, content}` wrapper (ADR-0868). Every extension answers under each
 name its request used, bare or MSC-prefixed (`ExtensionNames`, `name_sliding_extensions`).

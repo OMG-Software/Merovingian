@@ -4,6 +4,7 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/ReadMarkers.hpp"
+#include "merovingian/sync/RoomReadAccess.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,11 @@ namespace merovingian::sync
 // The rows of one room `SlidingSyncRequestLookups::recency` reads, newest first, before it falls back to the room's
 // newest event (ADR-0666).
 inline constexpr std::size_t max_recency_rows_examined{1000U};
+
+// The bytes of event JSON `recency` parses for one room before it falls back to the room's newest event, as at the row
+// bound (ADR-0655: a reader that parses sender-sized events per room takes a byte budget). Two events of the largest
+// size the server accepts.
+inline constexpr std::size_t max_recency_bytes_parsed{128U * 1024U};
 
 // What one sliding sync request needs to know about the caller's rooms, each learned once per request and then
 // answered from memory (ADR-0665): the rooms the user is joined to and invited to (from the user's own membership
@@ -99,7 +105,8 @@ public:
 
     // The stream ordering of the room's newest event whose type is in `bump_types` (any event when empty), 0 when it
     // has none: the `by_recency` key. Read from the room's own rows, newest first, at most
-    // `max_recency_rows_examined` of them per room; past that the room's newest event stands in (ADR-0666). Memoised
+    // `max_recency_rows_examined` of them and `max_recency_bytes_parsed` of their JSON per room; past either the
+    // room's newest event stands in (ADR-0666, ADR-0655). Memoised
     // per room and set of bump types, so lists that share them share the work. For an invited room it is the
     // invite row's stream ordering, whatever the bump types: the user may not see the room's events (ADR-0864).
     [[nodiscard]] auto recency(std::string_view room_id, std::vector<std::string> const& bump_types) -> std::uint64_t;
@@ -111,6 +118,9 @@ public:
     // Event rows `recency` has parsed or compared, in total: a test proves the cost by count.
     [[nodiscard]] auto recency_rows_visited() const noexcept -> std::uint64_t;
 
+    // Bytes of event JSON `recency` has parsed, in total: a test proves the byte budget by count.
+    [[nodiscard]] auto recency_bytes_parsed() const noexcept -> std::uint64_t;
+
     // Rows of the user's memberships looked at: a test proves the pass happens once per request by count, not by time.
     [[nodiscard]] auto membership_rows_visited() const noexcept -> std::uint64_t;
 
@@ -121,6 +131,9 @@ public:
 private:
     auto load_memberships() -> void;
     auto load_direct() -> void;
+    // A departed room's read access, from the user's own row (never a walk of the room's rows), once per request.
+    [[nodiscard]] auto departure_access(std::string const& room_id, std::pair<std::uint64_t, std::string> const& row)
+        -> RoomReadAccess const&;
 
     database::PersistentStore const* m_store;
     std::string m_user;
@@ -136,6 +149,7 @@ private:
     // Each `leave` or `ban` row, room to (stream ordering, membership), and those `include_departed_rooms` kept.
     std::unordered_map<std::string, std::pair<std::uint64_t, std::string>> m_departure_rows{};
     std::unordered_map<std::string, std::pair<std::uint64_t, std::string>> m_departed{};
+    std::unordered_map<std::string, RoomReadAccess> m_departure_access{};
     bool m_direct_loaded{false};
     std::unordered_set<std::string> m_direct{};
     std::unordered_map<std::string, std::unordered_set<std::string>> m_tags{};
@@ -145,6 +159,7 @@ private:
     std::uint64_t m_membership_rows_visited{0U};
     std::uint64_t m_room_rows_visited{0U};
     std::uint64_t m_recency_rows_visited{0U};
+    std::uint64_t m_recency_bytes_parsed{0U};
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> m_recency{};
     std::unordered_map<std::string, std::string> m_names{};
 };

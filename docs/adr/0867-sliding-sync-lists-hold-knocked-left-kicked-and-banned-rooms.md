@@ -49,12 +49,15 @@ Chosen option: the third.
   `build_departed_room_response`: name, avatar and `required_state` from the state as of the departure, and a timeline
   of the user's own membership events from the departure on, `limited`, with a `prev_batch` for `/messages`. No counts,
   heroes or unread counts.
-* **Once per change.** `rooms_seen` records `membership:<room_id>` at the response's position; the room is sent again
-  only when its membership row moves past it. Reporting it drops the room's joined-room bookkeeping, so a rejoin is sent
-  with its full snapshot. The entry stays while the membership does, which keeps a left room "previously sent"; a join
-  or a forgotten room ends it.
-* **Waking.** A membership row that is not a join wakes the poll if the connection holds an entry for the room, or if
-  the request has lists (any such row may add a room to them).
+* **Once per change.** `rooms_seen` records `membership:<room_id>` at the membership row's own stream ordering, never
+  the response's visible position: a commit in flight holds that position below rows already stored, and an entry
+  recorded there would send the room again on every poll until the commit ends. The room is sent again only when its
+  membership row moves past the entry (`sliding_membership_already_sent`). Reporting it drops the room's joined-room
+  bookkeeping, so a rejoin is sent with its full snapshot. The entry stays while the membership does, which keeps a
+  left room "previously sent"; a join or a forgotten room ends it.
+* **Waking.** A membership row that is not an invite wakes the poll (any such row may change a list), unless the
+  connection was already sent that row as a knock or a departure, by the response's own test
+  (`sliding_membership_already_sent`, ADR-0869).
 
 ### Positive Consequences
 

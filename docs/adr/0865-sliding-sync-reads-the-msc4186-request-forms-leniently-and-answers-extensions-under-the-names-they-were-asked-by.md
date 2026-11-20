@@ -28,11 +28,12 @@ this server's own tests if read strictly, and several things the text leaves to 
 Chosen option: the second.
 
 * **Forms.** `required_state` is read as the MSC4186 object (`include`, `exclude`, `lazy_members`; `RequiredStateConfig`)
-  or the MSC3575 pair list (with `$LAZY`, `$ME`, `*`). `range` and `ranges` are both read; with neither, the whole
+  or the MSC3575 pair list (with `$LAZY`, `$ME`, `*`). In the object form an omitted `type` or `state_key` matches any
+  value and `"*"` is a literal, as MSC4186 says; only the pair list reads `*` as any (`RequiredStateElement`). `range` and `ranges` are both read; with neither, the whole
   filtered list is in range. The filters `is_invited` (and the older `is_invite`), `spaces`, `tags`, `not_tags` and a
   `null` entry in `room_types` / `not_room_types` are read. A list key must match the opaque identifier grammar.
 * **Missing `timeline_limit` or `required_state` is not refused** (a deviation: MSC4186 marks both required). The list
-  or subscription takes the defaults (`timeline_limit` 20 for a subscription, 0 folded into a list; no state). Refusing
+  or subscription takes the defaults (`timeline_limit` 20 for a list and a subscription; no state). Refusing
   breaks every client that omits one, and about sixty request bodies in the tests. The only request refused as
   malformed is a to_device `limit` that is not a positive integer (400 `M_BAD_JSON`).
 * **Caps.** At most 100 lists and 100 room subscriptions (`SlidingSyncLimits`), as MSC4186 says. More is

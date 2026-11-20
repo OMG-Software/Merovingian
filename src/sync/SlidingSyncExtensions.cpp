@@ -469,7 +469,7 @@ namespace
                 {
                     selection.floors.emplace(room_id, floor);
                 }
-                else if (enters_receipts_scope(*history, room_id, since_sync_stream_id))
+                else if (enters_receipts_scope(*history, room_id))
                 {
                     selection.first_entry.insert(room_id);
                 }

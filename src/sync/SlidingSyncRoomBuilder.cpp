@@ -13,6 +13,7 @@
 #include "merovingian/database/StickyEventView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
+#include "merovingian/sync/RequiredStateElement.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
@@ -220,20 +221,28 @@ namespace
                                             std::string_view state_key) noexcept -> bool
     {
         auto const is_member = event_type == "m.room.member";
-        auto const included = std::ranges::any_of(config.include, [&](auto const& p) {
-            if (is_member && config.lazy_members && p.first != "m.room.member")
+        auto const included = std::ranges::any_of(config.include, [&](RequiredStateElement const& e) {
+            if (is_member && config.lazy_members && (!e.type.has_value() || *e.type != "m.room.member"))
             {
                 return false;
             }
-            return matches_required_state_pair(p.first, p.second, event_type, state_key);
+            return e.matches(event_type, state_key);
         });
-        return included && !state_event_matches_any(config.exclude, event_type, state_key);
+        return included && std::ranges::none_of(config.exclude, [&](RequiredStateElement const& e) {
+                   return e.matches(event_type, state_key);
+               });
     }
 
-    // Whether a pair names every member event: type `m.room.member` or any, and any state key.
+    // Whether a legacy pair names every member event: type `m.room.member` or "*", and state key "*".
     [[nodiscard]] auto pair_names_every_member(std::pair<std::string, std::string> const& p) noexcept -> bool
     {
         return (p.first == "*" || p.first == "m.room.member") && p.second == "*";
+    }
+
+    // Whether a config element names every member event: type `m.room.member` or omitted, and no state key.
+    [[nodiscard]] auto element_names_every_member(RequiredStateElement const& e) noexcept -> bool
+    {
+        return e.may_name_members() && !e.state_key.has_value();
     }
 
     // MSC4186 "Combining room configs": members are lazily loaded only if no config "return[s] all membership events
@@ -244,10 +253,10 @@ namespace
         {
             return false;
         }
-        auto const excludes_a_member = std::ranges::any_of(config.exclude, [](auto const& p) {
-            return p.first == "*" || p.first == "m.room.member";
+        auto const excludes_a_member = std::ranges::any_of(config.exclude, [](RequiredStateElement const& e) {
+            return e.may_name_members();
         });
-        return !excludes_a_member && std::ranges::any_of(config.include, pair_names_every_member);
+        return !excludes_a_member && std::ranges::any_of(config.include, element_names_every_member);
     }
 
     // Whether the combined room config lazily loads members through an MSC4186 config.
@@ -1140,12 +1149,15 @@ namespace
     }
 
     // Whether the combined room config asks for a state entry of a departed room: a pair, a config, or a lazily loaded
-    // member, which for a departed room is only the user's own (the timeline holds no one else).
+    // member. MSC4186 "Lazy loaded memberships": the senders of the timeline's events and the targets of its membership
+    // events, so `lazy_members` holds the user (every event in it is their own membership) and whoever sent each kept
+    // event: the kicker or banner, whose member event is read from the departure's state like the rest.
     [[nodiscard]] auto departed_state_requested(SlidingSyncRoomSubscription const& sub, std::string_view user,
+                                                std::unordered_set<std::string> const& lazy_members,
                                                 std::string_view event_type, std::string_view state_key) -> bool
     {
-        auto const own = std::unordered_set<std::string>{std::string{user}};
-        auto const pairs = resolve_required_state(sub.required_state, user, own, /*scope_lazy_to_timeline=*/true);
+        auto const pairs = resolve_required_state(sub.required_state, user, lazy_members,
+                                                  /*scope_lazy_to_timeline=*/true);
         if (state_event_matches_any(pairs, event_type, state_key))
         {
             return true;
@@ -1156,7 +1168,8 @@ namespace
         {
             return true;
         }
-        return configs_load_members_lazily(sub) && event_type == "m.room.member" && state_key == user;
+        return configs_load_members_lazily(sub) && event_type == "m.room.member" &&
+               lazy_members.contains(std::string{state_key});
     }
 
     // What a departed room's state event says of itself: its type, state key and, for the room's name or avatar,
@@ -1230,29 +1243,6 @@ auto build_departed_room_response(database::PersistentStore const& store, std::s
         return resp;
     }
     auto viewer = ViewerEventUnsigned{store, visibility, user, device_id};
-    // The state as of the departure, never later (RoomReadAccess, ADR-0084).
-    for (auto const& event_id :
-         room_state_event_ids(store, room_id, access, std::nullopt).value_or(std::vector<std::string>{}))
-    {
-        auto const found = store.events.find(event_id);
-        auto const entry = found == store.events.end() ? std::nullopt : departed_state_entry(found->json);
-        if (!entry.has_value())
-        {
-            continue;
-        }
-        if (entry->name_or_avatar.has_value())
-        {
-            (entry->type == "m.room.name" ? resp.name : resp.avatar) = entry->name_or_avatar;
-        }
-        if (!departed_state_requested(sub, user, entry->type, entry->state_key))
-        {
-            continue;
-        }
-        if (auto json = client_event_json(store, *found, viewer); !json.empty())
-        {
-            resp.required_state_json.push_back(std::move(json));
-        }
-    }
     // The timeline: the event that ended the stay and, when a later one (a ban after leaving) is current, that one.
     auto timeline = std::vector<database::PersistentEvent const*>{};
     if (auto const boundary = store.events.find(access.boundary_event_id); boundary != store.events.end())
@@ -1269,7 +1259,38 @@ auto build_departed_room_response(database::PersistentStore const& store, std::s
     });
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     auto const kept_from = timeline.size() > limit ? timeline.size() - limit : std::size_t{0U};
-    for (auto const* const ev : std::span{timeline}.subspan(kept_from))
+    auto const kept = std::span{timeline}.subspan(kept_from);
+    // MSC4186 "Lazy loaded memberships": the kept events' senders and the targets of their membership events (the
+    // user, whose own membership each of them is).
+    auto lazy_members = std::unordered_set<std::string>{std::string{user}};
+    for (auto const* const ev : kept)
+    {
+        lazy_members.insert(ev->sender_user_id);
+    }
+    // The state as of the departure, never later (RoomReadAccess, ADR-0084): a lazily loaded kicker's member event too.
+    for (auto const& event_id :
+         room_state_event_ids(store, room_id, access, std::nullopt).value_or(std::vector<std::string>{}))
+    {
+        auto const found = store.events.find(event_id);
+        auto const entry = found == store.events.end() ? std::nullopt : departed_state_entry(found->json);
+        if (!entry.has_value())
+        {
+            continue;
+        }
+        if (entry->name_or_avatar.has_value())
+        {
+            (entry->type == "m.room.name" ? resp.name : resp.avatar) = entry->name_or_avatar;
+        }
+        if (!departed_state_requested(sub, user, lazy_members, entry->type, entry->state_key))
+        {
+            continue;
+        }
+        if (auto json = client_event_json(store, *found, viewer); !json.empty())
+        {
+            resp.required_state_json.push_back(std::move(json));
+        }
+    }
+    for (auto const* const ev : kept)
     {
         if (auto json = client_event_json(store, *ev, viewer); !json.empty())
         {
@@ -1279,6 +1300,12 @@ auto build_departed_room_response(database::PersistentStore const& store, std::s
                 resp.prev_batch = std::to_string(ev->stream_ordering);
             }
         }
+    }
+    if (!resp.prev_batch.has_value() && !timeline.empty())
+    {
+        // Nothing kept (`timeline_limit` 0): page back from one past the newest event withheld, as a joined room's
+        // empty timeline does, so `/messages?dir=b` returns it and everything before. Never `limited` without it.
+        resp.prev_batch = std::to_string(timeline.back()->stream_ordering + 1U);
     }
     // Earlier events the user could see are not in it; `/messages` from `prev_batch` reaches them.
     resp.limited = true;

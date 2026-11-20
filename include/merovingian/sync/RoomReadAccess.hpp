@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
 
@@ -45,6 +46,12 @@ struct RoomReadAccess final
 [[nodiscard]] auto room_read_access_for(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view user_id) -> RoomReadAccess;
 
+// The same answer for a caller that already holds the user's membership projection row of the room (`own_row`, found
+// through the per-user index), so the room's own rows are never walked: a request that judges many rooms pays for the
+// user's rows and member-event chain only, never for the size of each room.
+[[nodiscard]] auto room_read_access_for(database::PersistentStore const& store,
+                                        database::PersistentMembership const& own_row) -> RoomReadAccess;
+
 // The event whose recorded state `room_state_event_ids` returns for `access` and `at`: the newest
 // accepted event of the room whose stream ordering is at or before `at`, and for `as_of` never later
 // than the boundary event. Null when `access` is `none` or the room has no such event (the position is
@@ -71,5 +78,12 @@ struct RoomReadAccess final
 [[nodiscard]] auto room_state_event_ids(database::PersistentStore const& store, std::string_view room_id,
                                         RoomReadAccess const& access,
                                         std::optional<std::uint64_t> at) -> std::optional<std::vector<std::string>>;
+
+// One key of the state `room_state_event_ids` returns for `access` with no `at`: the current state's by its index for
+// `current`, the departure anchor's recorded group's for `as_of`, nullopt for `none`, when the key is unset, or when
+// the group cannot be read (fail closed). Never later than the boundary, and never the whole state.
+[[nodiscard]] auto room_state_event_id(database::PersistentStore const& store, std::string_view room_id,
+                                       RoomReadAccess const& access, std::string_view event_type,
+                                       std::string_view state_key) -> std::optional<std::string>;
 
 } // namespace merovingian::sync

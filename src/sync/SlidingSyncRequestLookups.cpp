@@ -254,7 +254,7 @@ auto SlidingSyncRequestLookups::include_departed_rooms(std::unordered_set<std::s
         // "Rooms the user has been banned from, but never joined, should not be part of the list", nor a kick of a
         // room never joined or sent that an ignored user sent. Only these few ask the room's membership rows.
         auto const ignored_kick = by_another && !sent_before && ignored_senders.contains(sender);
-        if ((banned || ignored_kick) && room_read_access_for(*m_store, room_id, m_user).kind == RoomReadKind::none)
+        if ((banned || ignored_kick) && departure_access(room_id, row).kind == RoomReadKind::none)
         {
             continue;
         }
@@ -345,19 +345,27 @@ auto SlidingSyncRequestLookups::is_encrypted(std::string_view room_id) -> bool
     {
         return stripped_summary_event(*m_store, room_id, m_user, "m.room.encryption", is_knocked(room_id)) != nullptr;
     }
-    // The room's current state by its index (ADR-0344): no scan of the state table.
-    auto const encryption = database::find_current_state_event_id(*m_store, room_id, "m.room.encryption", "");
     if (auto const departed = m_departed.find(std::string{room_id}); departed != m_departed.end())
     {
-        // Nothing after the departure is the user's to learn (ADR-0867).
-        if (!encryption.has_value())
-        {
-            return false;
-        }
-        auto const event = m_store->events.find(*encryption);
-        return event != m_store->events.end() && event->stream_ordering <= departed->second.first;
+        // Nothing after the departure is the user's to learn (ADR-0867): the state as of the event that ended the
+        // join, as `build_departed_room_response` serves it, never the current state compared with a later ban.
+        auto const& access = departure_access(departed->first, departed->second);
+        return room_state_event_id(*m_store, room_id, access, "m.room.encryption", "").has_value();
     }
-    return encryption.has_value();
+    // The room's current state by its index (ADR-0344): no scan of the state table.
+    return database::find_current_state_event_id(*m_store, room_id, "m.room.encryption", "").has_value();
+}
+
+auto SlidingSyncRequestLookups::departure_access(std::string const& room_id,
+                                                 std::pair<std::uint64_t, std::string> const& row)
+    -> RoomReadAccess const&
+{
+    if (auto const found = m_departure_access.find(room_id); found != m_departure_access.end())
+    {
+        return found->second;
+    }
+    auto const own_row = database::PersistentMembership{room_id, m_user, row.second, row.first};
+    return m_departure_access.emplace(room_id, room_read_access_for(*m_store, own_row)).first->second;
 }
 
 auto SlidingSyncRequestLookups::load_direct() -> void
@@ -551,17 +559,20 @@ auto SlidingSyncRequestLookups::recency(std::string_view room_id, std::vector<st
         else
         {
             auto examined = std::size_t{0U};
+            auto bytes = std::size_t{0U};
             for (auto row = rows.end(); row != rows.begin();)
             {
                 --row;
-                if (examined == max_recency_rows_examined)
+                if (examined == max_recency_rows_examined || (*row).json.size() > max_recency_bytes_parsed - bytes)
                 {
                     // Budget spent: the room's newest event stands in, as the unfiltered key would (ADR-0666).
                     result = newest;
                     break;
                 }
                 ++examined;
+                bytes += (*row).json.size();
                 ++m_recency_rows_visited;
+                m_recency_bytes_parsed += (*row).json.size();
                 if (event_type_is_one_of((*row).json, bump_types))
                 {
                     result = (*row).stream_ordering;
@@ -610,6 +621,11 @@ auto SlidingSyncRequestLookups::room_name(std::string_view room_id) -> std::stri
 auto SlidingSyncRequestLookups::recency_rows_visited() const noexcept -> std::uint64_t
 {
     return m_recency_rows_visited;
+}
+
+auto SlidingSyncRequestLookups::recency_bytes_parsed() const noexcept -> std::uint64_t
+{
+    return m_recency_bytes_parsed;
 }
 
 auto SlidingSyncRequestLookups::membership_rows_visited() const noexcept -> std::uint64_t

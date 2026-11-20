@@ -685,6 +685,23 @@ SCENARIO("MSC4186 required_state objects return what include names, less what ex
             }
         }
 
+        WHEN("a list includes every state event and excludes the state key \"*\"")
+        {
+            auto const result = sliding(rt, alice, list(R"({"include":[{}],"exclude":[{"state_key":"*"}]})") + "}");
+            REQUIRE(result.response.status == 200U);
+            auto const keys = required_state_keys(room_entry(result.response.body, room_id));
+
+            THEN("no state event is held back, for none has the state key \"*\"")
+            {
+                // Spec MUST: a present `state_key` matches that state key; "*" is no wildcard in the object form.
+                REQUIRE(holds_type(keys, "m.room.create"));
+                // Spec MUST: a present `state_key` matches that state key; "*" is no wildcard in the object form.
+                REQUIRE(holds_type(keys, "m.room.name"));
+                // Spec MUST: a present `state_key` matches that state key; "*" is no wildcard in the object form.
+                REQUIRE(holds_type(keys, "m.room.member"));
+            }
+        }
+
         WHEN("a list includes only events of one state key, with the type omitted")
         {
             auto const result = sliding(rt, alice, list(R"({"include":[{"state_key":"@alice:example.org"}]})") + "}");

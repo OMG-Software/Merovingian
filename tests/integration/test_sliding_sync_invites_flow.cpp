@@ -5,12 +5,15 @@
 // Spec: MSC4186 "Lists" (`filters.is_invite`; an unfiltered list holds the rooms the user is invited to) and the room
 // response's `invite_state` (stripped state only: no `timeline`, no `required_state`); C-S API v1.19, "Room history
 // visibility": a user who has not joined a room may not view its events. The invites are made by /createRoom's
-// `invite` and by POST /invite, the two paths a local invite takes.
+// `invite` and by POST /invite, the two paths a local invite takes. Also the rooms a list holds after the user left,
+// was kicked or was banned (MSC4186 "Lists", ADR-0867): judged and built as of the departure, never later.
 
 #include "../support/E2eeCapsSupport.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
@@ -742,6 +745,259 @@ SCENARIO("A sliding sync long-poll does not wake again for an invite it was sent
         {
             auto const lock = std::lock_guard{rt.homeserver.mutex};
             pending.reset();
+        }
+    }
+}
+
+// ADR-0867: a departure is reported once per membership change, as an invite is. While a commit is in flight the
+// visible position stays below the departure's own row, so its `membership:` entry records the row's stream ordering,
+// and the wake check skips a departure the connection was sent by the response's own test; otherwise every poll would
+// send the room again, and be answered at once, until that commit ends.
+SCENARIO("A sliding sync long-poll does not resend or wake again for a kick it was sent while a commit is in flight",
+         "[homeserver][sliding-sync][invites][integration]")
+{
+    GIVEN("benandez's connection, an ordering held open, and james's kick of him stored above it")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        auto pending = std::optional<hs::PendingStreamOrdering>{};
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            pending.emplace(rt.homeserver.database, hs::allocate_stream_ordering(rt.homeserver.database));
+        }
+        expect_ok(rt, fixture.james, "POST", "/_matrix/client/v3/rooms/" + fixture.shared_room + "/kick",
+                  R"({"user_id":")" + std::string{benandez} + R"("})");
+        auto const reported = poll(rt, fixture.benandez_token, persephone_body, fixture.pos, 0U);
+        auto const kicked = room_entry(reported.response.body, fixture.shared_room);
+        REQUIRE(kicked.present);
+        auto const* const membership = string_member(kicked.value, "membership");
+        REQUIRE(membership != nullptr);
+        REQUIRE(*membership == "leave");
+        auto const next_pos = pos_of(reported);
+
+        WHEN("he syncs again from the pos that reported the kick, with the commit still in flight")
+        {
+            auto const again = poll(rt, fixture.benandez_token, persephone_body, next_pos, 0U);
+
+            THEN("the room is not sent again")
+            {
+                REQUIRE(again.status == hs::DispatchResult::Status::complete);
+                REQUIRE_FALSE(room_entry(again.response.body, fixture.shared_room).present);
+            }
+        }
+
+        WHEN("he long-polls from that pos, with the commit still in flight")
+        {
+            auto const waiting = poll(rt, fixture.benandez_token, persephone_body, next_pos, 5000U);
+
+            THEN("the poll parks rather than answering with the kick it already sent")
+            {
+                REQUIRE(waiting.status == hs::DispatchResult::Status::needs_wait);
+            }
+        }
+
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            pending.reset();
+        }
+    }
+}
+
+namespace
+{
+
+constexpr auto james_id = std::string_view{"@james:example.org"};
+
+// Two lists, one holding only encrypted rooms and one only unencrypted ones; no extensions.
+constexpr auto encryption_lists_body = std::string_view{
+    R"({"lists":{"encrypted":{"ranges":[[0,9]],"filters":{"is_encrypted":true},"required_state":[],"timeline_limit":0},)"
+    R"("plain":{"ranges":[[0,9]],"filters":{"is_encrypted":false},"required_state":[],"timeline_limit":0}}})"};
+
+[[nodiscard]] auto lazy_members_body(std::uint64_t timeline_limit) -> std::string
+{
+    return R"({"lists":{"rooms":{"ranges":[[0,9]],"required_state":{"include":[],"lazy_members":true},)"
+           R"("timeline_limit":)" +
+           std::to_string(timeline_limit) + "}}}";
+}
+
+// True when the room's `required_state` holds the m.room.member event of `user_id`.
+[[nodiscard]] auto holds_member_state(json::Object const& room, std::string_view user_id) -> bool
+{
+    auto const* required_state = object_member_as_array(room, "required_state");
+    if (required_state == nullptr)
+    {
+        return false;
+    }
+    return std::ranges::any_of(*required_state, [user_id](json::Value const& event) {
+        auto const& object = std::get<json::Object>(event.storage());
+        auto const* type = string_member(object, "type");
+        auto const* state_key = string_member(object, "state_key");
+        return type != nullptr && state_key != nullptr && *type == "m.room.member" && *state_key == user_id;
+    });
+}
+
+auto ban(hs::ClientServerRuntime& rt, std::string const& token, std::string const& room_id, std::string_view user_id)
+    -> void
+{
+    expect_ok(rt, token, "POST", "/_matrix/client/v3/rooms/" + room_id + "/ban",
+              R"({"user_id":")" + std::string{user_id} + R"("})");
+}
+
+} // namespace
+
+SCENARIO("A room encrypted after the user left is filtered as unencrypted, as it was when they left",
+         "[homeserver][sliding-sync][departed][integration]")
+{
+    GIVEN("benandez left james's public room, james then turned on encryption and banned him")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const james = register_user(rt, "james");
+        auto const benandez_token = register_user(rt, "benandez");
+        // A public room starts unencrypted; a private one is encrypted from creation by default.
+        auto const room = make_room(rt, james, R"({"preset":"public_chat"})");
+        auto const room_path = "/_matrix/client/v3/rooms/" + room;
+        expect_ok(rt, benandez_token, "POST", room_path + "/join", "{}");
+        expect_ok(rt, benandez_token, "POST", room_path + "/leave", "{}");
+        expect_ok(rt, james, "PUT", room_path + "/state/m.room.encryption/", R"({"algorithm":"m.megolm.v1.aes-sha2"})");
+        ban(rt, james, room, benandez);
+
+        WHEN("he syncs lists filtered on is_encrypted")
+        {
+            auto const synced = poll(rt, benandez_token, encryption_lists_body, {}, 0U);
+
+            THEN("the banned room is in the unencrypted list only: the encryption came after his stay ended")
+            {
+                REQUIRE(synced.response.status == 200U);
+                REQUIRE(list_count(synced.response.body, "encrypted") == 0);
+                REQUIRE(list_count(synced.response.body, "plain") == 1);
+                REQUIRE(contains(list_rooms(synced.response.body, "plain"), room));
+            }
+        }
+    }
+}
+
+SCENARIO("Deciding a departed room's place in a list costs the user's own rows, not the room's",
+         "[homeserver][sliding-sync][departed][cost][integration]")
+{
+    GIVEN("benandez banned from a room of james's that holds 24 other members, and his connection already sent it")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const james = register_user(rt, "james");
+        auto const benandez_token = register_user(rt, "benandez");
+        auto const room = make_room(rt, james, R"({"preset":"public_chat"})");
+        expect_ok(rt, benandez_token, "POST", "/_matrix/client/v3/rooms/" + room + "/join", "{}");
+        ban(rt, james, room, benandez);
+        // The room's other members as membership rows only: registering two dozen users meets the register rate
+        // limit, and the walk this measures reads the room's rows, not their events.
+        constexpr auto others = std::size_t{24U};
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            auto& store = rt.homeserver.database.persistent_store;
+            for (auto number = std::size_t{0U}; number < others; ++number)
+            {
+                store.memberships.push_back(merovingian::database::PersistentMembership{
+                    room, "@member" + std::to_string(number) + ":example.org", "join", 1U});
+            }
+            merovingian::database::rebuild_membership_index(store);
+        }
+        auto const first = poll(rt, benandez_token, persephone_body, {}, 0U);
+        REQUIRE(room_entry(first.response.body, room).present);
+        auto const pos = pos_of(first);
+
+        WHEN("he syncs again with nothing new")
+        {
+            auto const& store = rt.homeserver.database.persistent_store;
+            auto const before = store.membership_rows_examined.value();
+            auto const again = poll(rt, benandez_token, persephone_body, pos, 0U);
+            auto const examined = store.membership_rows_examined.value() - before;
+
+            THEN("fewer membership rows are read than the room holds")
+            {
+                REQUIRE(again.status == hs::DispatchResult::Status::complete);
+                REQUIRE(again.response.status == 200U);
+                REQUIRE(examined < others);
+            }
+        }
+    }
+}
+
+SCENARIO("A kicked room's lazily loaded members hold the kicker, and an empty timeline still pages back",
+         "[homeserver][sliding-sync][departed][integration]")
+{
+    GIVEN("james kicked benandez from their room")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        expect_ok(rt, fixture.james, "POST", "/_matrix/client/v3/rooms/" + fixture.shared_room + "/kick",
+                  R"({"user_id":")" + std::string{benandez} + R"("})");
+
+        WHEN("he syncs a list with lazily loaded members and a timeline")
+        {
+            auto const synced = poll(rt, fixture.benandez_token, lazy_members_body(5U), {}, 0U);
+            auto const kicked = room_entry(synced.response.body, fixture.shared_room);
+
+            THEN("the kick's sender is a timeline sender, so james's member event is in required_state")
+            {
+                REQUIRE(kicked.present);
+                REQUIRE(holds_member_state(kicked.value, james_id));
+                REQUIRE(holds_member_state(kicked.value, benandez));
+            }
+        }
+
+        WHEN("he syncs a list with lazily loaded members and timeline_limit 0")
+        {
+            auto const synced = poll(rt, fixture.benandez_token, lazy_members_body(0U), {}, 0U);
+            auto const kicked = room_entry(synced.response.body, fixture.shared_room);
+
+            THEN("the room is limited and carries a prev_batch to page back from, and no sender is loaded")
+            {
+                REQUIRE(kicked.present);
+                auto const* const limited = object_member(kicked.value, "limited");
+                REQUIRE(limited != nullptr);
+                REQUIRE(std::get<bool>(limited->storage()));
+                REQUIRE(string_member(kicked.value, "prev_batch") != nullptr);
+                REQUIRE_FALSE(holds_member_state(kicked.value, james_id));
+            }
+        }
+    }
+}
+
+SCENARIO("A list the previous request had and this one dropped puts nothing in an extension's scope",
+         "[homeserver][sliding-sync][extensions][integration]")
+{
+    GIVEN("benandez's connection, last sent one list holding the shared room, now asking for typing and no lists")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        auto const with_list =
+            std::string_view{R"({"conn_id":"scope","lists":{"rooms":{"ranges":[[0,9]],"required_state":[],)"
+                             R"("timeline_limit":1}}})"};
+        auto const typing_only = std::string_view{R"({"conn_id":"scope","extensions":{"typing":{"enabled":true}}})"};
+        auto const listed = poll(rt, fixture.benandez_token, with_list, {}, 0U);
+        REQUIRE(contains(list_rooms(listed.response.body, "rooms"), fixture.shared_room));
+        auto const pos = pos_of(listed);
+
+        WHEN("james starts typing in the shared room and benandez long-polls")
+        {
+            auto const typing_path =
+                "/_matrix/client/v3/rooms/" + fixture.shared_room + "/typing/" + std::string{james_id};
+            expect_ok(rt, fixture.james, "PUT", typing_path, R"({"typing":true,"timeout":30000})");
+            auto const waiting = poll(rt, fixture.benandez_token, typing_only, pos, 5000U);
+
+            THEN("the poll parks: the dropped list's window is no longer in the typing scope")
+            {
+                REQUIRE(waiting.status == hs::DispatchResult::Status::needs_wait);
+            }
         }
     }
 }

@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/sync/RequiredStateElement.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -142,12 +143,23 @@ namespace
         return total;
     }
 
+    [[nodiscard]] auto elements_cost(std::vector<RequiredStateElement> const& elements) noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& element : elements)
+        {
+            total += sizeof(RequiredStateElement) + (element.type.has_value() ? element.type->size() : 0U) +
+                     (element.state_key.has_value() ? element.state_key->size() : 0U);
+        }
+        return total;
+    }
+
     [[nodiscard]] auto configs_cost(std::vector<RequiredStateConfig> const& configs) noexcept -> std::uint64_t
     {
         auto total = std::uint64_t{0U};
         for (auto const& config : configs)
         {
-            total += sizeof(RequiredStateConfig) + pairs_cost(config.include) + pairs_cost(config.exclude);
+            total += sizeof(RequiredStateConfig) + elements_cost(config.include) + elements_cost(config.exclude);
         }
         return total;
     }
@@ -244,17 +256,18 @@ namespace
         return out;
     }
 
-    // One MSC4186 `RequiredStateElement`, as a [type, state_key] pair in which "*" stands for an omitted field. An
-    // element that is not an object, or names a field that is not a string, matches nothing and is skipped.
+    // One MSC4186 `RequiredStateElement`: an omitted field matches anything, a present one only its own value ("*" is
+    // not a wildcard here). An element that is not an object, or names a field that is not a string, matches nothing
+    // and is skipped.
     [[nodiscard]] auto parse_required_state_element(canonicaljson::Value const& v)
-        -> std::optional<std::pair<std::string, std::string>>
+        -> std::optional<RequiredStateElement>
     {
         auto const* obj = as_object(v);
         if (obj == nullptr)
         {
             return std::nullopt;
         }
-        auto element = std::pair<std::string, std::string>{"*", "*"};
+        auto element = RequiredStateElement{};
         if (auto const* type = find_member(*obj, "type"); type != nullptr)
         {
             auto const* s = as_string(*type);
@@ -262,7 +275,7 @@ namespace
             {
                 return std::nullopt;
             }
-            element.first = *s;
+            element.type = *s;
         }
         if (auto const* state_key = find_member(*obj, "state_key"); state_key != nullptr)
         {
@@ -271,15 +284,15 @@ namespace
             {
                 return std::nullopt;
             }
-            element.second = *s;
+            element.state_key = *s;
         }
         return element;
     }
 
     [[nodiscard]] auto parse_required_state_elements(canonicaljson::Object const& request, std::string_view key)
-        -> std::vector<std::pair<std::string, std::string>>
+        -> std::vector<RequiredStateElement>
     {
-        auto out = std::vector<std::pair<std::string, std::string>>{};
+        auto out = std::vector<RequiredStateElement>{};
         auto const* v = find_member(request, key);
         auto const* arr = v != nullptr ? as_array(*v) : nullptr;
         if (arr == nullptr)

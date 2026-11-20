@@ -8526,6 +8526,17 @@ namespace
         return invite_record == nullptr || invite_record->stream_ordering <= seen->second;
     }
 
+    // ADR-0867: likewise for a knock or a departure. `membership_ordering` is the user's membership row's own stream
+    // ordering, which the entry records: never the response's visible position, which a commit in flight can hold
+    // below the row, or every later poll would send the room again and wake for it.
+    [[nodiscard]] auto sliding_membership_already_sent(std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                                       std::string_view room_id, std::uint64_t membership_ordering)
+        -> bool
+    {
+        auto const seen = rooms_seen.find(sliding_membership_seen_key(room_id));
+        return seen != rooms_seen.end() && membership_ordering <= seen->second;
+    }
+
     // ADR-0864: whether sliding sync may show the user's stored invite to `room_id` now. Withheld: an invite from a
     // user they ignore ("Servers must not send room invites from ignored users to clients"), and an invite to a room
     // whose state this server holds while that state does not yet have it (ADR-0301, the test /sync makes through
@@ -8587,13 +8598,14 @@ namespace
     // ADR-0864: whether the user's own membership rows newer than a waiting request's `since` answer it. Any row that
     // is not an invite answers it: a join, a leave, a kick, a ban or the end of an invite can each change a list's
     // `count` and window, whether or not the connection was ever sent the room (an invite outside every window ends
-    // too; lists hold knocked and departed rooms, ADR-0867). A new invite answers it only when it is deliverable and a
-    // subscription or a list whose filters it passes could hold it; an invite the user may not be shown, or that no
-    // list would hold, leaves the poll parked, as does every event in a room the user is neither joined nor invited to
-    // (ADR-0609), and so does an invite the connection was already sent (`sliding_invite_already_sent`, the response's
-    // own test): its row stays above `since` until a commit in flight ends, and must not answer every poll meanwhile.
-    // `newer_rows` point into the store, which does not change while the caller holds runtime.mutex. The lookups are
-    // built only for a new invite.
+    // too; lists hold knocked and departed rooms, ADR-0867), unless the connection was already sent that row as a knock
+    // or a departure (`sliding_membership_already_sent`, the response's own test). A new invite answers it only when it
+    // is deliverable and a subscription or a list whose filters it passes could hold it; an invite the user may not be
+    // shown, or that no list would hold, leaves the poll parked, as does every event in a room the user is neither
+    // joined nor invited to (ADR-0609), and so does an invite the connection was already sent
+    // (`sliding_invite_already_sent`, the response's own test): its row stays above `since` until a commit in flight
+    // ends, and must not answer every poll meanwhile. `newer_rows` point into the store, which does not change while
+    // the caller holds runtime.mutex. The lookups are built only for a new invite.
     [[nodiscard]] auto membership_rows_wake_sliding_poll(
         database::PersistentStore const& store, std::string_view user, sync::SlidingSyncRequest const& ssreq,
         std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
@@ -8606,6 +8618,10 @@ namespace
         {
             if (row->membership != "invite")
             {
+                if (sliding_membership_already_sent(rooms_seen, row->room_id, row->stream_ordering))
+                {
+                    continue;
+                }
                 return true;
             }
             if (sliding_invite_already_sent(store, rooms_seen, row->room_id, user))
@@ -8815,16 +8831,29 @@ namespace
             auto const seen = conn.list_configs.find(entry.first);
             return seen == conn.list_configs.end() || seen->second != entry.second;
         });
-        auto current_windows = std::map<std::string, std::vector<std::string>>{};
-        if (list_config_changed)
-        {
-            build_list_windows();
-            for (auto const& [list_name, result] : list_results)
+        // The windows of this request's lists only: lists are not sticky (MSC4186), so a list the previous request
+        // had and this one dropped scopes nothing, neither an expansion nor an extension's `lists`, here or in the
+        // long-poll check.
+        auto const expansion_windows = [&]() {
+            auto windows = std::map<std::string, std::vector<std::string>>{};
+            if (list_config_changed)
             {
-                current_windows[list_name] = result.windowed_room_ids;
+                build_list_windows();
+                for (auto const& [list_name, result] : list_results)
+                {
+                    windows[list_name] = result.windowed_room_ids;
+                }
+                return windows;
             }
-        }
-        auto const& expansion_windows = list_config_changed ? current_windows : conn.list_prev_windows;
+            for (auto const& entry : ssreq.lists)
+            {
+                if (auto const prev = conn.list_prev_windows.find(entry.first); prev != conn.list_prev_windows.end())
+                {
+                    windows.emplace(entry.first, prev->second);
+                }
+            }
+            return windows;
+        }();
         auto expansions_to_answer = requested_timeline_expansions(conn, ssreq, expansion_windows, store, user);
         std::erase_if(expansions_to_answer, [&](auto const& entry) {
             auto const answered = answered_for_this_pos.find(entry.first);
@@ -8977,8 +9006,7 @@ namespace
                     has_relevant_receipts =
                         std::ranges::any_of(joined_in_scope(receipts.lists, receipts.rooms), [&](auto const& room_id) {
                             auto const floor = sync::receipt_floor_for(scope_history, room_id, since_sync_stream_id);
-                            auto const first_entry =
-                                sync::enters_receipts_scope(scope_history, room_id, since_sync_stream_id);
+                            auto const first_entry = sync::enters_receipts_scope(scope_history, room_id);
                             return std::ranges::any_of(
                                 database::receipts_in_room(rt.homeserver.database.persistent_store, room_id),
                                 [&](database::PersistentReceipt const* r) {
@@ -9322,12 +9350,12 @@ namespace
         // Each is reported once per membership change, as an invite is, under `membership:<room_id>`; reporting one
         // drops the room's joined-room bookkeeping, so a later join is sent with its full snapshot. A knock carries
         // the resident's stripped state; a departure carries nothing from after it (`build_departed_room_response`).
-        auto memberships_reported = std::vector<std::string>{};
+        auto memberships_reported = std::vector<std::pair<std::string, std::uint64_t>>{};
         for (auto const& room_id : membership_room_ids)
         {
+            // A knocked or departed room's recency is its membership row's own stream ordering.
             auto const ordering = request_lookups->recency(room_id, {});
-            auto const seen_it = conn.rooms_seen.find(sliding_membership_seen_key(room_id));
-            if (seen_it != conn.rooms_seen.end() && ordering <= seen_it->second)
+            if (sliding_membership_already_sent(conn.rooms_seen, room_id, ordering))
             {
                 continue;
             }
@@ -9357,7 +9385,7 @@ namespace
                 room_id, knocked ? std::string{"knock"} : std::string{request_lookups->departed_membership(room_id)},
                 room);
             invite_rooms.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
-            memberships_reported.push_back(room_id);
+            memberships_reported.emplace_back(room_id, ordering);
         }
 
         // ── Extensions ──────────────────────────────────────────────────────
@@ -9692,12 +9720,12 @@ namespace
             return key.starts_with(sliding_membership_seen_prefix) &&
                    !request_lookups->is_unjoined(std::string_view{key}.substr(sliding_membership_seen_prefix.size()));
         });
-        for (auto const& room_id : memberships_reported)
+        for (auto const& [room_id, seen_at] : memberships_reported)
         {
             next_state.rooms_seen.erase(room_id);
             next_state.lazy_members_sent.erase(room_id);
             next_state.room_timeline_limits.erase(room_id);
-            next_state.rooms_seen[sliding_membership_seen_key(room_id)] = cur_event;
+            next_state.rooms_seen[sliding_membership_seen_key(room_id)] = seen_at;
         }
         for (auto const& [room_id, included] : lazy_members_included_by_room)
         {
