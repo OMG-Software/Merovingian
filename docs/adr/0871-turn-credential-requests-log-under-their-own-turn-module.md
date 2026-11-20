@@ -34,13 +34,18 @@ of its own and would have moved forty lines of unrelated JSON building with it.
 
 ### Positive Consequences
 
-* `log_modules.turn=debug` shows every TURN request; `log_modules.turn=warning` hides the per-request info line.
+* `log_modules.turn` sets the level of every line the TURN handler writes; `log_modules.turn=warning` hides the
+  per-request info line. Only requests that reach the handler are logged there: a missing, expired or unknown access
+  token is refused with 401 before it, and logged as `request.auth.rejected` (debug) under `client_server`, so look
+  there for authentication failures. `turn.not_configured` is a debug line, which reaches the console only when the
+  server also runs with `--debug`.
 * The logging tests run with `client_server` silenced, so a line moved back under `client_server` fails them.
 
 ### Negative Consequences
 
-* An issued credential is one info line per request at the default level. Clients ask again before the ttl ends, so
-  this is one line per client per ttl, not per call; an operator who finds it loud sets `log_modules.turn=warning`.
+* An issued credential is one info line per successful request at the default level. The ttl does not bound that:
+  a client may ask again before its credential expires (for example at the start of each call), and every request
+  writes a line. An operator who finds it loud sets `log_modules.turn=warning`.
 * Changing the module of `turn.credentials_unavailable` means a filter on `client_server` no longer sees it.
 
 ## Rules for future code

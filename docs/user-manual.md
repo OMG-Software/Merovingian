@@ -804,7 +804,10 @@ VoIP clients request TURN relay credentials through
 endpoint returns an empty JSON object so clients gracefully disable relay
 support. Each request is logged under the `turn` module (`log_modules.turn`): an
 issued credential at info, an unreadable shared secret file at error, and a
-request answered `{}` at debug, naming the user and never a credential. See
+request answered `{}` at debug, naming the user and never a credential. The debug
+line needs `--debug` as well as `log_modules.turn=debug`. A request refused for a
+missing or expired access token never reaches the handler: it is logged under
+`client_server` as `request.auth.rejected`. See
 [log filtering](log-filtering.md#module-names).
 
 | Key | Default | When to change |

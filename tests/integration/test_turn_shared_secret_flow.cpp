@@ -8,6 +8,7 @@
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/ModuleLogLevel.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -26,7 +27,6 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/TurnCredentials.hpp"
 #include "merovingian/observability/LogLevel.hpp"
-#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -42,7 +42,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -150,29 +149,8 @@ private:
     return std::nullopt;
 }
 
-// Sets one module's log level for the scope, and restores what it was (an absent override stays absent).
-class ModuleLogLevel final
-{
-public:
-    ModuleLogLevel(std::string module, merovingian::observability::LogLevel level)
-        : m_module{std::move(module)}
-        , m_previous{merovingian::observability::SingleLog::instance().exchange_module_log_level(m_module, level)}
-    {
-    }
-    ~ModuleLogLevel() noexcept
-    {
-        std::ignore = merovingian::observability::SingleLog::instance().exchange_module_log_level(m_module, m_previous);
-    }
-    ModuleLogLevel(ModuleLogLevel const&) = delete;
-    auto operator=(ModuleLogLevel const&) -> ModuleLogLevel& = delete;
-    ModuleLogLevel(ModuleLogLevel&&) = delete;
-    auto operator=(ModuleLogLevel&&) -> ModuleLogLevel& = delete;
-
-private:
-    std::string m_module;
-    std::optional<merovingian::observability::LogLevel> m_previous;
-};
-
+// Asks for TURN credentials as the user `token` belongs to, through the client-server dispatcher, and returns the
+// HTTP response.
 [[nodiscard]] auto turn_server(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
     -> merovingian::homeserver::LocalHttpResponse
 {

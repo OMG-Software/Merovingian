@@ -176,6 +176,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`, `src/observability/AGENTS.md`,
   `security/coding-rules.md`.
 
+- **`GET /voip/turnServer` never logs the TURN username, the password or the shared secret,
+  at any level.** It logs through `log_turn_diagnostic` under the `turn` module, with
+  `user_id`, the kind of credential, the ttl and the URI count only.
+  Why: the username is half of a working credential, not an identifier. With a shared
+  secret it is `<expiry>:<user_id>`, the exact text the password's HMAC-SHA1 covers, so the
+  pair relays traffic through the TURN server as that user until the expiry, and with
+  static credentials the username and password are the same for every user of the server.
+  Leaking the username leaves only the password between a log reader and a credential
+  (CWE-532), and the shared secret would let them mint credentials for any user.
+  Source: `src/homeserver/AGENTS.md`;
+  [ADR-0871](adr/0871-turn-credential-requests-log-under-their-own-turn-module.md),
+  [ADR-0480](adr/0480-turn-credentials-come-from-a-coturn-shared-secret-file-through-an-openssl-hmac-sha1.md).
+
 - **Write log records only through `SingleLog`, and never remove the control-character
   escaping in `SingleLog::make_log_line`.** Every line is passed through
   `escape_log_controls`, so `\n`, `\r`, other C0 controls, DEL and UTF-8 C1 controls in a
@@ -2067,7 +2080,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
 | `src/oauth/AGENTS.md` | OAuth 2.0 API |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync; Delayed events |
+| `src/homeserver/AGENTS.md` | Secrets and logging; Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync; Delayed events |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | OAuth 2.0 API; Database; Delayed events |
 | `migrations/AGENTS.md` | Database |
