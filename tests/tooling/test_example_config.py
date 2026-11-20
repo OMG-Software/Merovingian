@@ -251,5 +251,78 @@ class BsdExampleConfigTests(unittest.TestCase):
         self.assertIn("security.registration.token_file=/usr/local/etc/merovingian/registration-token", filled)
 
 
+# The logger module is the first argument of the qualified free functions, or of a
+# SingleLog level method. File-local wrappers (`log_diagnostic(event, fields, ...)`)
+# take the event first, so only the qualified calls are read.
+QUALIFIED_LOG_CALL = re.compile(
+    r'observability::log_diagnostic(?:_audit)?\s*\(\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))'
+)
+LEVEL_LOG_CALL = re.compile(
+    r'(?:\.|->)\s*(?:trace|debug|info|notice|warning|error|critical)\s*\(\s*'
+    r'(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
+)
+# The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
+DATABASE_AUDIT_CALL = re.compile(r'\blog_diagnostic_audit\s*\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*"([A-Za-z0-9_]+)"')
+# A module named once in a constant: `auto log_module = std::string_view{"livekit"};` or `name{"livekit"};`.
+MODULE_CONSTANT = re.compile(
+    r'\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:std::string_view\s*\{\s*|std::string\s*\{\s*)?"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}?\s*;'
+)
+MODULE_CONSTANT_INIT = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([A-Za-z0-9_]+)"(?:sv)?\s*\}\s*;')
+# Identifiers that forward a caller's module rather than name one.
+FORWARDED_MODULE_PARAMETERS = {"__func__", "mod", "logger", "module"}
+EXAMPLE_LOG_MODULE_LINE = re.compile(r"^# log_modules\.([A-Za-z0-9_]+)=", re.MULTILINE)
+
+
+def source_log_modules() -> tuple[set[str], set[str]]:
+    """Every logger module the server's sources name, and any first argument the scan cannot resolve."""
+    modules: set[str] = set()
+    unresolved: set[str] = set()
+    sources = [path for path in (REPO_ROOT / "src").rglob("*") if path.suffix in {".cpp", ".hpp"}]
+    sources += list((REPO_ROOT / "include").rglob("*.hpp"))
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        constants = dict(MODULE_CONSTANT.findall(text))
+        constants.update(MODULE_CONSTANT_INIT.findall(text))
+        modules.update(DATABASE_AUDIT_CALL.findall(text))
+        for regex in (QUALIFIED_LOG_CALL, LEVEL_LOG_CALL):
+            for literal, identifier in regex.findall(text):
+                short = identifier.split("::")[-1]
+                if literal:
+                    modules.add(literal)
+                elif short in constants:
+                    modules.add(constants[short])
+                elif short not in FORWARDED_MODULE_PARAMETERS:
+                    unresolved.add(f"{path.relative_to(REPO_ROOT).as_posix()}: {identifier}")
+    return modules, unresolved
+
+
+class ExampleLogModuleListTests(unittest.TestCase):
+    def test_each_example_lists_exactly_the_modules_the_server_logs_under(self) -> None:
+        # GIVEN every logger module the server's sources name.
+        modules, unresolved = source_log_modules()
+        self.assertEqual(
+            unresolved,
+            set(),
+            "a logger call names its module through an identifier this scan cannot resolve: "
+            "name it with a literal or a string constant in the same file",
+        )
+        self.assertIn("turn", modules, "the scan no longer finds the modules it is meant to find")
+
+        for path in (EXAMPLE_CONFIG, BSD_EXAMPLE_CONFIG):
+            with self.subTest(path=path.name):
+                # WHEN the example's commented `log_modules.<name>=` lines are read.
+                listed = EXAMPLE_LOG_MODULE_LINE.findall(path.read_text(encoding="utf-8"))
+
+                # THEN it lists each module once, and exactly the modules the server logs
+                # under: a new module must be added to both examples, a removed one dropped.
+                self.assertEqual(len(listed), len(set(listed)), f"{path.name} lists a module twice")
+                self.assertEqual(
+                    set(listed),
+                    modules,
+                    f"{path.name} log_modules list differs from the modules the sources log under "
+                    f"(missing: {sorted(modules - set(listed))}, not logged: {sorted(set(listed) - modules)})",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

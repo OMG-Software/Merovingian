@@ -28,8 +28,8 @@ relay?") had nothing to filter on. LiveKit already has its own `livekit` module 
 
 Chosen option: "a `turn` module through `log_turn_diagnostic`". The route logs `turn.credentials_issued` (info),
 `turn.credentials_unavailable` (error) and `turn.not_configured` (debug), each with `user_id`; the issued line adds
-`credential` (`static` or `shared_secret`), `ttl_seconds` and `uri_count`. The username, the password and the shared
-secret are never fields of any line. Moving the route out of `ClientServerRuntime.cpp` was not needed to get a module
+`credential` (`static` or `shared_secret`), `ttl_seconds` and `uri_count`, and the unavailable line a fixed `reason`.
+No field carries credential text: the username, the password and the shared secret are never fields of any line. Moving the route out of `ClientServerRuntime.cpp` was not needed to get a module
 of its own and would have moved forty lines of unrelated JSON building with it.
 
 ### Positive Consequences

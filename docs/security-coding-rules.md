@@ -177,8 +177,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `security/coding-rules.md`.
 
 - **`GET /voip/turnServer` never logs the TURN username, the password or the shared secret,
-  at any level.** It logs through `log_turn_diagnostic` under the `turn` module, with
-  `user_id`, the kind of credential, the ttl and the URI count only.
+  at any level.** No field of its lines carries credential text. It logs through
+  `log_turn_diagnostic` under the `turn` module: `user_id` on every line, `credential`,
+  `ttl_seconds` and `uri_count` on `turn.credentials_issued`, and a fixed `reason` on
+  `turn.credentials_unavailable`.
   Why: the password is the secret, and the shared secret would let a log reader mint
   credentials for any user (CWE-532). The username is withheld too because with static
   credentials it is a configured value nothing else reveals, shared by every user, and one
