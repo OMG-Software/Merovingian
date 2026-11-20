@@ -53,6 +53,8 @@
 #include <variant>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 using namespace merovingian::tests;
 
 namespace
@@ -267,7 +269,7 @@ SCENARIO("A membership event composed here reaches the room's other servers and 
             THEN("bob's server is sent carol's join")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, "@carol:" + own_server);
-                REQUIRE(std::ranges::find(sent, "join") != sent.end());
+                REQUIRE(std::ranges::find(sent, "join"sv) != sent.end());
             }
         }
 
@@ -280,7 +282,7 @@ SCENARIO("A membership event composed here reaches the room's other servers and 
             THEN("bob's server is sent alice's leave")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, "@alice:" + own_server);
-                REQUIRE(std::ranges::find(sent, "leave") != sent.end());
+                REQUIRE(std::ranges::find(sent, "leave"sv) != sent.end());
             }
         }
 
@@ -293,7 +295,7 @@ SCENARIO("A membership event composed here reaches the room's other servers and 
             THEN("bob's server is sent the ban, though bob is no longer among the room's members")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, bob);
-                REQUIRE(std::ranges::find(sent, "ban") != sent.end());
+                REQUIRE(std::ranges::find(sent, "ban"sv) != sent.end());
             }
         }
     }
@@ -468,7 +470,7 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
                 REQUIRE_FALSE(joined.signed_event_json.empty());
                 REQUIRE(std::ranges::find(sent, canonical_form(joined.signed_event_json)) != sent.end());
                 auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
-                REQUIRE(std::ranges::find(memberships, "join") != memberships.end());
+                REQUIRE(std::ranges::find(memberships, "join"sv) != memberships.end());
                 REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
             }
         }
@@ -490,7 +492,7 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
                 auto const sent = queued_pdus_for(runtime, bystander_server);
                 REQUIRE(std::ranges::find(sent, canonical_form(left.signed_event_json)) != sent.end());
                 auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
-                REQUIRE(std::ranges::find(memberships, "leave") != memberships.end());
+                REQUIRE(std::ranges::find(memberships, "leave"sv) != memberships.end());
                 REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
             }
         }
@@ -521,7 +523,7 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
                 auto const sent = queued_pdus_for(runtime, bystander_server);
                 REQUIRE(std::ranges::find(sent, canonical_form(knocked.signed_event_json)) != sent.end());
                 auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
-                REQUIRE(std::ranges::find(memberships, "knock") != memberships.end());
+                REQUIRE(std::ranges::find(memberships, "knock"sv) != memberships.end());
                 REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
             }
         }

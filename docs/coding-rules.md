@@ -188,6 +188,14 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   code or tests: the NetBSD libc++ does not ship it. Build strings with `std::to_string`,
   `std::to_chars` and concatenation. See
   [ADR-0755](adr/0755-no-std-format-the-netbsd-libc-has-no-format-header.md).
+- Pass a typed value, never a bare string literal, to a `std::ranges` algorithm that
+  compares elements with a value (`find`, `find_last`, `count`, `contains`, `remove`):
+  write `"text"sv` (with `using namespace std::string_view_literals;`, scoped to the
+  function in production code), `"text"s` or `std::string_view{"text"}`. A literal is
+  a `char` array, C++26 removed array comparison, and GCC 16 then refuses the call
+  although clang and older GCC accept it. `scripts/reject-unsafe.sh` rejects the bare
+  form. See
+  [ADR-0870](adr/0870-a-ranges-algorithm-takes-a-typed-value-never-a-bare-string-literal.md).
 - Use `core::PortableSemaphore`, not `std::counting_semaphore`. Use
   `core::run_bounded_parallel` for work that completes within the call. For work
   that outlives the call, take a `core::SemaphorePermit` immediately after
@@ -259,11 +267,11 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 
 | Check | What it checks |
 |---|---|
-| `scripts/reject-unsafe.sh` | Selected allocation patterns, void-cast discards, required review markers on `std::shared_ptr` and manual lock release, and the libsodium boundary |
+| `scripts/reject-unsafe.sh` | Selected allocation patterns, void-cast discards, a bare string literal as a `std::ranges` algorithm's value (ADR-0870), required review markers on `std::shared_ptr` and manual lock release, and the libsodium boundary |
 | `scripts/check-catch2-bdd-tests.sh` | Required BDD macro patterns in unit test files |
 | `scripts/check-unit-test-registration.sh` | Unit test source registration |
 | `scripts/check-unit-test-isolation.sh` | No file under `tests/unit/` names a function that builds a runtime or drives the client-server stack (ADR-0593); meson test `unit-test-isolation`, covered by `unit-test-isolation-tooling` |
-| `scripts/check-integration-shards.sh` | The integration Meson tests (the shards, `integration-tests-postgresql`, `integration-tests-serial`) together select every scenario of the binary exactly once; meson test `integration-shard-coverage`, covered by `tests/tooling/test_integration_shards.py` |
+| `scripts/check-integration-shards.sh` | The integration Meson tests (the shards, `integration-tests-postgresql`, `integration-tests-serial`) together select every scenario of the binary exactly once; meson test `integration-shard-coverage`, covered by `tests/tooling/test_integration_shards.py`. Needs `cmp` and `diff` (diffutils), which the AlmaLinux and openSUSE images lack, so every dnf and zypper CI suite installs it |
 | `scripts/rewrite_merovingian_includes.py --check` | Project include quoting |
 | `include-order-tooling` (`tests/tooling/test_include_order.py`) | Include grouping and ordering. Nothing else checks formatting, and no tool enforces `.clang-format` |
 | `scripts/check-conformance-gate.sh` | Runs `meson test conformance-tests` in a given build directory (CI, per build). It does not detect a removed conformance test |

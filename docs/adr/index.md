@@ -743,3 +743,4 @@
 * [0867 - Sliding sync lists hold knocked, left, kicked and banned rooms](0867-sliding-sync-lists-hold-knocked-left-kicked-and-banned-rooms.md)
 * [0868 - The typing and receipts extensions keep their event wrapper](0868-the-typing-and-receipts-extensions-keep-their-event-wrapper.md)
 * [0869 - A sliding sync long poll wakes only for what its response sends, and a room is sent again when its summary changes](0869-a-sliding-sync-long-poll-wakes-only-for-what-its-response-sends.md)
+* [0870 - A ranges algorithm takes a typed value, never a bare string literal](0870-a-ranges-algorithm-takes-a-typed-value-never-a-bare-string-literal.md)

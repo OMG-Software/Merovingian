@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -555,10 +557,11 @@ SCENARIO("m.fully_read is delivered as room account data and never under m.recei
             THEN("alice sees her m.read and m.read.private receipts but no m.fully_read receipt")
             {
                 auto const alice_view = sync_receipts(started.runtime, fixture.alice, fixture.room_id, "m.read");
-                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read") != alice_view.receipt_types.end());
-                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read.private") !=
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read"sv) != alice_view.receipt_types.end());
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read.private"sv) !=
                         alice_view.receipt_types.end());
-                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.fully_read") == alice_view.receipt_types.end());
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.fully_read"sv) ==
+                        alice_view.receipt_types.end());
             }
         }
     }

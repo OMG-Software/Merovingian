@@ -8193,8 +8193,10 @@ namespace
     [[nodiscard]] auto lists_sort_by_notification_count(std::map<std::string, sync::SlidingSyncList> const& lists)
         -> bool
     {
+        // A typed value, not the bare literal: GCC 16 refuses a char array here under C++26 (ADR-0870).
+        using namespace std::string_view_literals;
         return std::ranges::any_of(lists, [](auto const& entry) {
-            return std::ranges::find(entry.second.sort, "by_notification_count") != entry.second.sort.end();
+            return std::ranges::find(entry.second.sort, "by_notification_count"sv) != entry.second.sort.end();
         });
     }
 

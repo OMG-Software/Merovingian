@@ -154,10 +154,10 @@ package_list_for() {
             printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 perl bison flex m4 libssl-dev libsodium-dev libpq-dev libcurl4-openssl-dev libpng-dev libturbojpeg0-dev catch2 clang-format clang-tidy cppcheck"
             ;;
         dnf)
-            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 perl bison flex m4 openssl-devel libsodium-devel libpq-devel libcurl-devel libpng-devel turbojpeg-devel catch-devel clang-tools-extra cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 perl bison flex m4 openssl-devel libsodium-devel libpq-devel libcurl-devel libpng-devel turbojpeg-devel catch-devel clang-tools-extra cppcheck diffutils"
             ;;
         zypper)
-            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 perl bison flex m4 libopenssl-devel libsodium-devel postgresql-devel libcurl-devel libpng16-devel libjpeg-turbo catch2-devel clang-tools cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 perl bison flex m4 libopenssl-devel libsodium-devel postgresql-devel libcurl-devel libpng16-devel libjpeg-turbo catch2-devel clang-tools cppcheck diffutils"
             ;;
         pacman)
             printf '%s\n' "base-devel clang lld meson ninja pkgconf git python perl bison flex m4 openssl libsodium postgresql-libs curl libpng libjpeg-turbo catch2 clang-tools-extra cppcheck"

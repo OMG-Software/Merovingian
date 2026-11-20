@@ -77,6 +77,8 @@
 #include <variant>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 using namespace merovingian::tests;
 
 namespace
@@ -330,7 +332,7 @@ SCENARIO("An invite for a local user is sent to the room's other servers",
             THEN("bob's server is sent the invite")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, "@charlie:" + own_server);
-                REQUIRE(std::ranges::find(sent, "invite") != sent.end());
+                REQUIRE(std::ranges::find(sent, "invite"sv) != sent.end());
             }
         }
     }
@@ -366,7 +368,7 @@ SCENARIO("Rescinding an invite to a remote user sends the kick to the invitee's 
             THEN("the invitee's server is sent the leave, though it never joined")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, bob);
-                REQUIRE(std::ranges::find(sent, "leave") != sent.end());
+                REQUIRE(std::ranges::find(sent, "leave"sv) != sent.end());
             }
         }
     }
@@ -1169,8 +1171,8 @@ SCENARIO("After a remote user joins through send_join, a local user's invite and
             THEN("bob's server is sent the invite and then the leave")
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, charlie_id);
-                REQUIRE(std::ranges::find(sent, "invite") != sent.end());
-                REQUIRE(std::ranges::find(sent, "leave") != sent.end());
+                REQUIRE(std::ranges::find(sent, "invite"sv) != sent.end());
+                REQUIRE(std::ranges::find(sent, "leave"sv) != sent.end());
             }
         }
     }
@@ -1470,7 +1472,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
                 REQUIRE(invitee.captured[0].find("/_matrix/federation/v2/invite/") != std::string::npos);
                 REQUIRE(membership_row(runtime, room_id, bob) == "invite");
                 auto const sent = queued_memberships_for(runtime, remote_server, bob);
-                REQUIRE(std::ranges::find(sent, "invite") != sent.end());
+                REQUIRE(std::ranges::find(sent, "invite"sv) != sent.end());
                 // Nothing is left for the queue to retry: the server has been told.
                 REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
             }

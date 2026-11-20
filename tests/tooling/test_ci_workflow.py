@@ -599,5 +599,34 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "${attempt}" = 3 ]; then', install)
         self.assertIn("exit 1", install)
 
+    def test_every_dnf_and_zypper_suite_installs_diffutils(self) -> None:
+        # GIVEN scripts/check-integration-shards.sh, which the integration-shard-coverage and
+        # integration-shards-tooling meson tests run, compares with cmp and diff, and the
+        # AlmaLinux and openSUSE images ship neither: both suites failed on main with
+        # "cmp: command not found" once the script landed (PR #600).
+        script = (REPO_ROOT / "scripts" / "check-integration-shards.sh").read_text(encoding="utf-8")
+        self.assertRegex(script, r"(?m)^\s*if ! cmp -s ")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        section = workflow.split("\njobs:\n", 1)[1]
+        headers = list(re.finditer(r"^  ([A-Za-z0-9_-]+):\n", section, re.MULTILINE))
+        checked = []
+        for index, header in enumerate(headers):
+            job = section[header.end() : headers[index + 1].start() if index + 1 < len(headers) else len(section)]
+            installs = re.findall(r"(?:dnf|zypper)[^\n]*\binstall -y((?:[^\n]*\\\n)*[^\n]*)", job)
+            installs = [packages for packages in installs if "meson" in packages]
+            if not installs:
+                continue
+            checked.append(header.group(1))
+            with self.subTest(job=header.group(1)):
+                # WHEN the packages its build dependency step installs are read
+                # THEN diffutils is among them, so the shard check runs instead of
+                # failing on a missing command.
+                self.assertTrue(
+                    any(re.search(r"(^|\s)diffutils(\s|$)", packages) for packages in installs),
+                    f"{header.group(1)} installs its build dependencies without diffutils",
+                )
+        # AND the Fedora, AlmaLinux and openSUSE suites were all found and checked.
+        self.assertEqual(sorted(checked), ["fedora-suite", "opensuse-suite", "rhel-build-and-test"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,51 @@ if [ -n "$VOID_CAST_HITS" ]; then
   exit 1
 fi
 
+# A bare string literal as the value of a constrained algorithm that compares
+# elements with it (ADR-0870). std::ranges::find and its kin require
+# std::equality_comparable_with<element, value>, which in turn needs the value type
+# to compare with itself; for "literal" that type is a char array, and C++26 removed
+# array == array (P2865). GCC 16 in -std=c++26 therefore refuses
+#   std::ranges::find(names, "x")
+# while clang and older GCC accept it, so the call built on every pull request job
+# and broke only the Fedora RPM package build on main. Pass a typed value instead:
+# "x"sv, "x"s or std::string_view{"x"}.
+#
+# The literal may sit on the line after the range (the formatter wraps long calls),
+# so each file is read whole (-z) and only its name is printed. The file is read a
+# token at a time from its start: a // or /* */ comment, a '...' character literal
+# and a "..." or R"tag(...)tag" string literal (any u8/u/U/L prefix) are each
+# stepped over whole, so a call written inside one is not code; any other character
+# is stepped over one at a time unless a banned call starts there. Every token is
+# atomic and the walk possessive, so the engine never backtracks into a literal to
+# find a call inside it. The value is the second argument (range overload) or the
+# third (iterator and sentinel overload), and is read as the whole run of adjacent
+# literals the compiler joins, so "long" "name"sv is one suffixed, accepted value.
+# A ' that starts no character literal (a digit separator) is an ordinary character.
+# The walk runs once over each file: GNU grep checked a 5.5 MB file (four times the
+# largest source, ClientServerRuntime.cpp) and hit PCRE's backtracking limit near
+# 11 MB, which exits 2 and fails the gate below rather than passing it.
+RL_PLAIN='(?:u8|[uUL])?"(?:[^"\\\n]|\\.)*"'
+RL_RAW='(?:u8|[uUL])?R"([^()\\\s"]{0,16})\((?s:.*?)\)\g{-1}"'
+RL_LITERAL="(?:${RL_RAW}|${RL_PLAIN})"
+RL_ARGUMENT="(?:[^(),\"]|${RL_LITERAL}|\\((?:[^()\"]|${RL_LITERAL}|\\((?:[^()\"]|${RL_LITERAL})*\\))*\\))+"
+RL_CALL="std::ranges::(?:find_last|find|count|contains|remove)\\s*\\(\\s*${RL_ARGUMENT}(?:,\\s*${RL_ARGUMENT})?,\\s*${RL_LITERAL}(?:\\s*+${RL_LITERAL})*+(?![A-Za-z_])"
+RL_TOKEN="(?>${RL_LITERAL}|\\x27(?:[^\\x27\\\\\\n]|\\\\.)+\\x27|//[^\\n]*|/\\*(?s:.*?)\\*/|(?!${RL_CALL})(?s:.))"
+set +e
+RANGES_LITERAL_HITS=$("$PCRE_GREP" -RlzP "${CPP_INCLUDES[@]}" "\\A${RL_TOKEN}*+${RL_CALL}" "${ROOTS[@]}")
+RANGES_LITERAL_STATUS=$?
+set -e
+if [ "$RANGES_LITERAL_STATUS" -gt 1 ]; then
+  # 2 is an error, such as a PCRE resource limit on a large file: fail closed.
+  echo "reject-unsafe.sh could not check std::ranges values (grep exit $RANGES_LITERAL_STATUS). Refusing to pass without checking." >&2
+  exit 2
+fi
+if [ -n "$RANGES_LITERAL_HITS" ]; then
+  printf '%s\n' "$RANGES_LITERAL_HITS"
+  echo "Rejected pattern detected: string literal as a std::ranges algorithm's value (GCC 16 refuses it under C++26; write \"x\"sv or std::string_view{\"x\"}, per ADR-0870)"
+  exit 1
+fi
+
 # std::shared_ptr is allowed only with an explicit per-line annotation.
 # Add "// SHARED_PTR: reviewed — <reason>" on the same line to exempt.
 SHARED_PTR_HITS=$("$PCRE_GREP" -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \

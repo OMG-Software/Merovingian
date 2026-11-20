@@ -49,8 +49,11 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+using namespace std::string_view_literals;
 
 namespace
 {
@@ -429,7 +432,7 @@ SCENARIO("A demotion still reverts the demoted sender's concurrent state past th
                 REQUIRE(demotion_status == PduIngestionStatus::accepted);
                 REQUIRE(room.current("m.room.power_levels", "") == std::optional<std::string>{"$demotion"});
                 auto const tips = room.tips();
-                REQUIRE(std::ranges::find(tips, "$demotion") != tips.end());
+                REQUIRE(std::ranges::find(tips, "$demotion"sv) != tips.end());
             }
 
             THEN("the topic the demoted moderator set is reverted to the admin's")

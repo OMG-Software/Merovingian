@@ -48,7 +48,10 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
+
+using namespace std::string_view_literals;
 
 namespace
 {
@@ -545,7 +548,7 @@ SCENARIO("Ban evasion: a banned user's PDU referencing pre-ban history is soft-f
             {
                 auto const extremities =
                     merovingian::database::find_forward_extremities(started.runtime.database.persistent_store, room_id);
-                REQUIRE(std::ranges::find(extremities, "$evading:local.example.org") == extremities.end());
+                REQUIRE(std::ranges::find(extremities, "$evading:local.example.org"sv) == extremities.end());
                 REQUIRE(extremities == std::vector<std::string>{ban_id});
             }
 

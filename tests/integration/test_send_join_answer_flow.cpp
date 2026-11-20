@@ -63,6 +63,8 @@
 #include <variant>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -829,8 +831,11 @@ SCENARIO("A make_join template is built from the room's own state and tips",
             THEN("the template's auth_events also names the user's own membership event")
             {
                 REQUIRE(tmpl.has_value());
-                REQUIRE(std::ranges::find(tmpl->auth_events, "$bobinvite:local.example.org") !=
-                        tmpl->auth_events.end());
+                if (tmpl.has_value())
+                {
+                    REQUIRE(std::ranges::find(tmpl->auth_events, "$bobinvite:local.example.org"sv) !=
+                            tmpl->auth_events.end());
+                }
             }
         }
 
@@ -939,7 +944,8 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
             {
                 REQUIRE(second.accepted);
                 REQUIRE(second.members_omitted);
-                REQUIRE(std::ranges::find(first.servers_in_room, "remote.example.org") == first.servers_in_room.end());
+                REQUIRE(std::ranges::find(first.servers_in_room, "remote.example.org"sv) ==
+                        first.servers_in_room.end());
                 REQUIRE(second.servers_in_room == first.servers_in_room);
             }
         }
@@ -1284,7 +1290,7 @@ SCENARIO("A plan from the cached room plan is the plan made from scratch",
             THEN("the room is planned again and the chain holds it")
             {
                 REQUIRE(runtime.send_join_plan_cache->builds() == builds_before + 1U);
-                REQUIRE(std::ranges::find(cached.auth_chain_event_ids, "$late:local.example.org") !=
+                REQUIRE(std::ranges::find(cached.auth_chain_event_ids, "$late:local.example.org"sv) !=
                         cached.auth_chain_event_ids.end());
             }
         }

@@ -64,6 +64,8 @@
 #include <utility>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -15342,8 +15344,8 @@ SCENARIO("POST /user_directory/search does not return deactivated accounts",
 
             THEN("only the active account is returned")
             {
-                REQUIRE(std::ranges::find(result.user_ids, "@bob:example.org") == result.user_ids.end());
-                REQUIRE(std::ranges::find(result.user_ids, "@bobby:example.org") != result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@bob:example.org"sv) == result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@bobby:example.org"sv) != result.user_ids.end());
             }
         }
     }
@@ -15465,8 +15467,8 @@ SCENARIO("POST /user_directory/search offers only the users visible to the reque
             THEN("she finds herself (public room) and Bob (shared room), and not Eve")
             {
                 REQUIRE(result.user_ids.size() == 2U);
-                REQUIRE(std::ranges::find(result.user_ids, "@dirone:example.org") != result.user_ids.end());
-                REQUIRE(std::ranges::find(result.user_ids, "@dirtwo:example.org") != result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@dirone:example.org"sv) != result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@dirtwo:example.org"sv) != result.user_ids.end());
             }
         }
 
@@ -18185,7 +18187,7 @@ SCENARIO("GET /rooms/{roomId}/messages honours lazy_load_members in the filter",
                 //
                 // Bob is a joined member of the room but sent nothing in the
                 // chunk, so lazy loading must omit his membership event.
-                REQUIRE(std::ranges::find(member_state_keys, "@bob:example.org") == member_state_keys.end());
+                REQUIRE(std::ranges::find(member_state_keys, "@bob:example.org"sv) == member_state_keys.end());
             }
         }
     }
@@ -18266,8 +18268,8 @@ SCENARIO("GET /rooms/{roomId}/messages with lazy_load_members returns only the c
                 {
                     REQUIRE(entry.starts_with("m.room.member|"));
                 }
-                REQUIRE(std::ranges::find(state, "m.room.member|@alice:example.org") != state.end());
-                REQUIRE(std::ranges::find(state, "m.room.member|@bob:example.org") != state.end());
+                REQUIRE(std::ranges::find(state, "m.room.member|@alice:example.org"sv) != state.end());
+                REQUIRE(std::ranges::find(state, "m.room.member|@bob:example.org"sv) != state.end());
             }
         }
     }

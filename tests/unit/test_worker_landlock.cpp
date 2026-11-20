@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -39,6 +40,8 @@
 #endif
 
 #include "../support/TempDirectory.hpp"
+
+using namespace std::string_view_literals;
 
 namespace
 {
@@ -971,7 +974,7 @@ SCENARIO("A LiveKit API secret file the worker could read is detected",
 
             THEN("the file is a secret and the exposure names it, so the worker refuses to start")
             {
-                REQUIRE(std::ranges::count(secrets, "/etc/ssl/certs/livekit-secret") == 1);
+                REQUIRE(std::ranges::count(secrets, "/etc/ssl/certs/livekit-secret"sv) == 1);
                 REQUIRE(exposure.has_value());
                 REQUIRE(exposure->rule_path == "/etc/ssl/certs");
                 REQUIRE(exposure->secret_path == "/etc/ssl/certs/livekit-secret");
@@ -991,7 +994,7 @@ SCENARIO("A LiveKit API secret file the worker could read is detected",
 
             THEN("the file is listed and no rule covers it")
             {
-                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/livekit-api-secret") == 1);
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/livekit-api-secret"sv) == 1);
                 REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
             }
         }
@@ -1096,8 +1099,8 @@ SCENARIO("A Landlock rule on a directory holding an appservice registration file
 
             THEN("both files are secrets and the exposure names the one under the granted directory")
             {
-                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/other.yaml") == 1);
-                REQUIRE(std::ranges::count(secrets, "/srv/merovingian/bridge.yaml") == 1);
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/other.yaml"sv) == 1);
+                REQUIRE(std::ranges::count(secrets, "/srv/merovingian/bridge.yaml"sv) == 1);
                 REQUIRE(exposure.has_value());
                 REQUIRE(exposure->rule_path == "/srv/merovingian");
                 REQUIRE(exposure->secret_path == "/srv/merovingian/bridge.yaml");
@@ -1119,7 +1122,7 @@ SCENARIO("A Landlock rule on a directory holding an appservice registration file
 
             THEN("the file is listed as a secret and no rule covers it")
             {
-                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/bridge.yaml") == 1);
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/bridge.yaml"sv) == 1);
                 REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
             }
         }

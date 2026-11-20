@@ -28,6 +28,11 @@ local development, WSL, BSD, and CI jobs.
   `-O2 -flto` stopped the package build. Compare a lookup with `end()` even where
   an invariant says it must succeed; a local clang build does not prove the
   packages compile.
+- GCC 16 also implements C++26's removal of array comparison (P2865), so
+  `std::ranges::find(strings, "literal")` fails its `equality_comparable_with`
+  check there and nowhere else. Pass `"literal"sv`; `scripts/reject-unsafe.sh`
+  rejects the bare form
+  ([ADR-0870](adr/0870-a-ranges-algorithm-takes-a-typed-value-never-a-bare-string-literal.md)).
 - Compiler/linker hardening option enabled by default where supported.
 - Reusable Linux and BSD build wrappers.
 - Windows-to-WSL launchers (`build-wsl.cmd` and `scripts/build-wsl.ps1`) that
