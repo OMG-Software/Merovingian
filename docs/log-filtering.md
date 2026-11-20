@@ -102,7 +102,9 @@ A malformed `category=` value returns 400 with
 
 The `log_modules.<name>` keys accept any string — the bootstrap
 forwards the name to `SingleLog::set_module_log_level(name, level)`
-without a registry. This is a non-exhaustive list of common module names
+without a registry. The example configurations (`config/merovingian.conf.example` and
+`config/merovingian.conf.bsd.example`) list every module the server logs under; keep both in step when a module is
+added or removed. This is a non-exhaustive list of common module names
 used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`
 (`rate_limit` is used only with `log_diagnostic_audit`):
 
