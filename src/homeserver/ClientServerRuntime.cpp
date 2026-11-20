@@ -259,6 +259,15 @@ namespace
         observability::log_diagnostic("client_server", event, fields, severity);
     }
 
+    // `GET /voip/turnServer` logs under its own module, so `log_modules.turn` sets its level apart from every other
+    // client-server line (ADR-0871). Pass the user ID, the kind of credential and the ttl only: never the username,
+    // the password or the shared secret.
+    auto log_turn_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                             observability::LogEventSeverity severity) -> void
+    {
+        observability::log_diagnostic("turn", event, fields, severity);
+    }
+
     [[nodiscard]] auto starts_with(std::string_view v, std::string_view p) noexcept -> bool
     {
         return v.size() >= p.size() && v.substr(0U, p.size()) == p;
@@ -21492,6 +21501,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& turn = rt.homeserver.config.server().turn;
         if (turn.server.empty() && turn.uris.empty())
         {
+            log_turn_diagnostic("turn.not_configured",
+                                {
+                                    {"user_id", *user, false}
+            },
+                                observability::LogEventSeverity::debug);
             return dispatch_resp(req, rt, 200U, "{}");
         }
         auto username = turn.username;
@@ -21511,11 +21525,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
             if (!credentials.has_value())
             {
-                log_diagnostic("turn.credentials_unavailable",
-                               {
-                                   {"reason", "shared secret file unreadable or empty", false}
+                log_turn_diagnostic(
+                    "turn.credentials_unavailable",
+                    {
+                        {"user_id", *user,                                    false},
+                        {"reason",  "shared secret file unreadable or empty", false}
                 },
-                               observability::LogEventSeverity::error);
+                    observability::LogEventSeverity::error);
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "TURN credentials are unavailable");
             }
             username = std::move(credentials->username);
@@ -21535,12 +21551,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uris.push_back(json_str(uri));
             }
         }
+        auto const uri_count = uris.size();
         auto const body = json_serialize(json_obj({
             json_member("username", json_str(username)),
             json_member("password", json_str(password)),
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
+        log_turn_diagnostic("turn.credentials_issued",
+                            {
+                                {"user_id",     *user,                                                        false},
+                                {"credential",  turn.shared_secret_file.empty() ? "static" : "shared_secret", false},
+                                {"ttl_seconds", std::to_string(turn.ttl_seconds),                             false},
+                                {"uri_count",   std::to_string(uri_count),                                    false},
+        },
+                            observability::LogEventSeverity::info);
         return dispatch_resp(req, rt, 200U, body);
     }
 

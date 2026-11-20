@@ -1,0 +1,54 @@
+# TURN credential requests log under their own `turn` module, and never log a credential
+
+* Status: accepted
+* Date: 2026-11-20
+
+## Context and Problem Statement
+
+`GET /_matrix/client/v3/voip/turnServer` is handled inline in `ClientServerRuntime.cpp`, whose file-local
+`log_diagnostic` wrapper files every line under the `client_server` module. Its one diagnostic,
+`turn.credentials_unavailable`, could therefore be raised or silenced only together with every other client-server
+line, and an issued credential was not logged at all. An operator debugging calls ("why does this client get no
+relay?") had nothing to filter on. LiveKit already has its own `livekit` module (`log_modules.livekit`).
+
+## Decision Drivers
+
+* An operator must be able to turn TURN logging up or down without touching `client_server`.
+* The answer holds a working credential: the username (`<expiry>:<user_id>` with a shared secret, or the static one)
+  and the password. Neither may reach a log, and the shared secret never leaves the request's `SecretBuffer`
+  (ADR-0480).
+
+## Considered Options
+
+* Keep the lines under `client_server` and add an issued line there.
+* Log the route under a `turn` module through its own wrapper, `log_turn_diagnostic`.
+* Move the whole route out of `ClientServerRuntime.cpp` into a TURN service file with its own module constant.
+
+## Decision Outcome
+
+Chosen option: "a `turn` module through `log_turn_diagnostic`". The route logs `turn.credentials_issued` (info),
+`turn.credentials_unavailable` (error) and `turn.not_configured` (debug), each with `user_id`; the issued line adds
+`credential` (`static` or `shared_secret`), `ttl_seconds` and `uri_count`. The username, the password and the shared
+secret are never fields of any line. Moving the route out of `ClientServerRuntime.cpp` was not needed to get a module
+of its own and would have moved forty lines of unrelated JSON building with it.
+
+### Positive Consequences
+
+* `log_modules.turn=debug` shows every TURN request; `log_modules.turn=warning` hides the per-request info line.
+* The logging tests run with `client_server` silenced, so a line moved back under `client_server` fails them.
+
+### Negative Consequences
+
+* An issued credential is one info line per request at the default level. Clients ask again before the ttl ends, so
+  this is one line per client per ttl, not per call; an operator who finds it loud sets `log_modules.turn=warning`.
+* Changing the module of `turn.credentials_unavailable` means a filter on `client_server` no longer sees it.
+
+## Rules for future code
+
+* A new diagnostic of `GET /voip/turnServer` goes through `log_turn_diagnostic`, never the `client_server` wrapper.
+* Never add the username or the password as a field, even at debug or trace level: the username is half of a working
+  credential and, with a shared secret, names the user and the expiry the MAC covers.
+
+## Links
+
+* Refines [ADR-0480](0480-turn-credentials-come-from-a-coturn-shared-secret-file-through-an-openssl-hmac-sha1.md)

@@ -50,6 +50,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   which `/versions` lists (ADR-0865).
 * The account_data extension follows its `lists` and `rooms` scope, whatever the user's membership; receipts send a
   room's initial receipts on entering scope and those on a new timeline (MSC4548, MSC4551, ADR-0865).
+* `GET /voip/turnServer` logs under its own `turn` module, set with `log_modules.turn`: credentials issued (info),
+  unavailable (error) and no TURN configured (debug), with the user ID and never a credential (ADR-0871).
 
 ## Security Fixes
 
