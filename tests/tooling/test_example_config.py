@@ -267,7 +267,12 @@ LEVEL_LOG_CALL = re.compile(
     r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
 )
 # The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
-DATABASE_AUDIT_CALL = re.compile(r'\blog_diagnostic_audit\s*\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*"([A-Za-z0-9_]+)"')
+# Its first argument is the `LocalDatabase` (`runtime.database`, `rt.homeserver.database`), which
+# tells it apart from a file-local wrapper whose first two arguments are the event and its fields.
+DATABASE_AUDIT_CALL = re.compile(
+    r'\blog_diagnostic_audit\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:\.|->)\s*)*database\s*,\s*'
+    r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))'
+)
 # A module named once in a constant: `auto log_module = std::string_view{"livekit"};` or `name{"livekit"};`.
 MODULE_CONSTANT = re.compile(
     r'\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:std::string_view\s*\{\s*|std::string\s*\{\s*)?"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}?\s*;'
@@ -295,26 +300,44 @@ def without_comments(source: str) -> str:
     )
 
 
+def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
+    """The logger modules one C++ source names, and each module argument it cannot resolve, prefixed with `label`."""
+    modules: set[str] = set()
+    unresolved: set[str] = set()
+    text = without_comments(source)
+    # Every value each name is given in the file: the scan does not know scopes, so a name
+    # given two values (say, a `log_module` in each of two functions) is ambiguous, never
+    # silently resolved to whichever definition came last.
+    constants: dict[str, set[str]] = {}
+    for regex in (MODULE_CONSTANT, MODULE_CONSTANT_INIT):
+        for name, value in regex.findall(text):
+            constants.setdefault(name, set()).add(value)
+    for regex in (QUALIFIED_LOG_CALL, LEVEL_LOG_CALL, DATABASE_AUDIT_CALL):
+        for literal, identifier in regex.findall(text):
+            short = identifier.split("::")[-1]
+            if literal:
+                modules.add(literal)
+            elif short in FORWARDED_MODULE_PARAMETERS:
+                continue
+            elif len(constants.get(short, ())) == 1:
+                modules.update(constants[short])
+            elif short in constants:
+                unresolved.add(f"{label}: {identifier} (given {sorted(constants[short])} in this file)")
+            else:
+                unresolved.add(f"{label}: {identifier}")
+    return modules, unresolved
+
+
 def source_log_modules() -> tuple[set[str], set[str]]:
-    """Every logger module the server's sources name, and any first argument the scan cannot resolve."""
+    """Every logger module the server's sources name, and any module argument the scan cannot resolve."""
     modules: set[str] = set()
     unresolved: set[str] = set()
     sources = [path for path in (REPO_ROOT / "src").rglob("*") if path.suffix in {".cpp", ".hpp"}]
     sources += list((REPO_ROOT / "include").rglob("*.hpp"))
     for path in sources:
-        text = without_comments(path.read_text(encoding="utf-8"))
-        constants = dict(MODULE_CONSTANT.findall(text))
-        constants.update(MODULE_CONSTANT_INIT.findall(text))
-        modules.update(DATABASE_AUDIT_CALL.findall(text))
-        for regex in (QUALIFIED_LOG_CALL, LEVEL_LOG_CALL):
-            for literal, identifier in regex.findall(text):
-                short = identifier.split("::")[-1]
-                if literal:
-                    modules.add(literal)
-                elif short in constants:
-                    modules.add(constants[short])
-                elif short not in FORWARDED_MODULE_PARAMETERS:
-                    unresolved.add(f"{path.relative_to(REPO_ROOT).as_posix()}: {identifier}")
+        found, missed = scan_log_modules(path.read_text(encoding="utf-8"), path.relative_to(REPO_ROOT).as_posix())
+        modules |= found
+        unresolved |= missed
     return modules, unresolved
 
 
@@ -357,6 +380,42 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertEqual(found[QUALIFIED_LOG_CALL.pattern], {"qualified"})
         self.assertEqual(found[LEVEL_LOG_CALL.pattern], {"level", "level_s"})
         self.assertEqual(found[DATABASE_AUDIT_CALL.pattern], {"audit"})
+
+    def test_a_database_audit_call_resolves_its_module_like_the_other_call_forms(self) -> None:
+        # GIVEN database audit calls that name their module through a constant, an unknown
+        # identifier and a forwarding parameter, beside a wrapper whose first argument is no database.
+        source = (
+            'constexpr auto audit_module = std::string_view{"audited"};\n'
+            'log_diagnostic_audit(runtime.database, audit_module, "x", fields);\n'
+            'log_diagnostic_audit(rt.homeserver.database, unknown_module, "x", fields);\n'
+            'log_diagnostic_audit(database, logger, "x", fields);\n'
+            'log_diagnostic_audit(event_name, field_list, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN the constant resolves, the unknown identifier is reported, and neither the forwarding
+        # parameter nor the wrapper's arguments are taken for a module.
+        self.assertEqual(modules, {"audited"})
+        self.assertEqual(unresolved, {"f.cpp: unknown_module"})
+
+    def test_a_constant_given_two_values_in_one_file_is_reported_not_guessed(self) -> None:
+        # GIVEN two functions in one file, each with its own `log_module`.
+        source = (
+            'void a() { constexpr auto log_module = std::string_view{"first"};\n'
+            '  observability::log_diagnostic(log_module, "x", fields, severity); }\n'
+            'void b() { constexpr auto log_module = std::string_view{"second"};\n'
+            '  observability::log_diagnostic(log_module, "x", fields, severity); }\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN neither value is guessed: the call is reported with both values, so the test fails
+        # until each function names its module with a literal or a name of its own.
+        self.assertEqual(modules, set())
+        self.assertEqual(unresolved, {"f.cpp: log_module (given ['first', 'second'] in this file)"})
 
     def test_a_level_named_method_of_another_type_names_no_module(self) -> None:
         # GIVEN level calls on the logger beside level-named methods of other types.
