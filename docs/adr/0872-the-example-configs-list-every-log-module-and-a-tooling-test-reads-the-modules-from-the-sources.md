@@ -43,11 +43,20 @@ to it, for a list that exists to be documented.
 
 * The scan is text, not a C++ parser: it knows the call forms above, and a new form must be taught to it.
 * A module constant shared from another file (a header) is not resolved and fails the test.
+* Level calls are recognised by their receiver, so one through a receiver the rule does not name is missed rather than
+  failed. Reading every `.info(...)` instead would take other types' methods for modules and demand example lines for
+  modules that do not exist; the receiver rule is the price of not doing that.
 
 ## Rules for future code
 
 * Name a logger call's module with a string literal, or with a string constant defined in the same file. A parameter
-  that only forwards a caller's module is named `logger`, `mod` or `module` (or is `__func__`), which the scan skips.
+  that only forwards a caller's module is named `logger`, `mod` or `module`, which the scan skips. So is `__func__`:
+  the legacy `LOG_*` macros log under the calling function's name, which is no module and is not listed in the
+  examples. These four identifiers are the only first arguments the scan skips; say so wherever the test is described.
+* Call a level method (`info`, `warning`, ...) directly only on `SingleLog::instance()` or on a reference named `log`
+  or `logger`. The scan reads level calls on those receivers only, so a method of another type that happens to be named
+  `warning` never becomes a module. A level call through any other receiver breaks this rule, and the scan does not
+  see it.
 * To share a module constant across files, or to log through a new call form, extend `source_log_modules` in the test
   in the same change. Never relax or delete the assertion to get past it.
 * The examples list every module the server logs under, not a selection of common ones. Do not trim the list.

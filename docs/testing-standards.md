@@ -43,9 +43,11 @@ service function: starting a runtime wires config, the store, the signing key an
 A list that documents something in the code (the example configurations' `log_modules` lines, for one) is checked by a
 tooling test that reads the code, never against a second list kept by hand in the test. Such a test fails on anything it
 cannot read rather than skipping it, so a new form in the code is taught to the test instead of dropping out of the
-check, and it ignores comments. `ExampleLogModuleListTests` in `tests/tooling/test_example_config.py` is the model:
-a logger call names its module with a literal or a string constant in the same file, and a new call form or a shared
-constant is added to the scan in the same change (ADR-0872).
+check, and it ignores comments. What it skips on purpose it names, in the test and in the documents that describe it.
+`ExampleLogModuleListTests` in `tests/tooling/test_example_config.py` is the model: a logger call names its module with
+a literal or a string constant in the same file; the only identifiers it skips are the forwarding parameters `module`,
+`mod` and `logger`, and `__func__`; a level method is read only on `SingleLog::instance()` or a reference named `log`
+or `logger`; and a new call form or a shared constant is added to the scan in the same change (ADR-0872).
 
 ## Concurrency and locking tests
 

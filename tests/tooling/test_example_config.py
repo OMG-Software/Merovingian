@@ -253,12 +253,15 @@ class BsdExampleConfigTests(unittest.TestCase):
 
 # The logger module is the first argument of the qualified free functions, or of a
 # SingleLog level method. File-local wrappers (`log_diagnostic(event, fields, ...)`)
-# take the event first, so only the qualified calls are read.
+# take the event first, so only the qualified calls are read. A level method is read only
+# on `SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872), so another
+# type's `.warning("text", ...)` is not taken for a module.
 QUALIFIED_LOG_CALL = re.compile(
     r'observability::log_diagnostic(?:_audit)?\s*\(\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))'
 )
 LEVEL_LOG_CALL = re.compile(
-    r'(?:\.|->)\s*(?:trace|debug|info|notice|warning|error|critical)\s*\(\s*'
+    r'(?:\bSingleLog::instance\(\)|(?<![A-Za-z0-9_:.>])(?:log|logger))\s*(?:\.|->)\s*'
+    r'(?:trace|debug|info|notice|warning|error|critical)\s*\(\s*'
     r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
 )
 # The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
@@ -352,6 +355,23 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertEqual(found[QUALIFIED_LOG_CALL.pattern], {"qualified"})
         self.assertEqual(found[LEVEL_LOG_CALL.pattern], {"level", "level_s"})
         self.assertEqual(found[DATABASE_AUDIT_CALL.pattern], {"audit"})
+
+    def test_a_level_named_method_of_another_type_names_no_module(self) -> None:
+        # GIVEN level calls on the logger beside level-named methods of other types.
+        source = (
+            '::merovingian::observability::SingleLog::instance().info("on_instance", "x");\n'
+            'log.warning("on_log", "x");\n'
+            'logger->error("on_logger", "x");\n'
+            'result.warning("deprecated", detail);\n'
+            'status->error("phantom", detail);\n'
+            'catalog.info("catalog", detail);\n'
+        )
+
+        # WHEN the level calls are read.
+        modules = {literal for literal, _ in LEVEL_LOG_CALL.findall(source)}
+
+        # THEN only the logger's calls name a module, so another type's method adds no phantom module.
+        self.assertEqual(modules, {"on_instance", "on_log", "on_logger"})
 
     def test_each_example_lists_exactly_the_modules_the_server_logs_under(self) -> None:
         # GIVEN every logger module the server's sources name.
