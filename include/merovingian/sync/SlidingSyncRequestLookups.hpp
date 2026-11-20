@@ -35,11 +35,19 @@ public:
     // The rooms the user is joined to that the store holds a room record for, in no particular order.
     [[nodiscard]] auto joined_rooms() -> std::vector<std::string> const&;
 
-    // True when the user has an invite membership in `room_id`.
+    // The rooms the user has an invite membership in, less those `withhold_invite` named, in no particular order.
+    [[nodiscard]] auto invited_rooms() -> std::vector<std::string>;
+
+    // True when the user has an invite membership in `room_id` that `withhold_invite` did not name.
     [[nodiscard]] auto is_invited(std::string_view room_id) -> bool;
 
-    // True when `room_id` has a current m.room.encryption state event.
-    [[nodiscard]] auto is_encrypted(std::string_view room_id) const -> bool;
+    // Leaves `room_id` out of `invited_rooms` and `is_invited` for the rest of the request: the caller may not show
+    // this invite now (an ignored inviter, blocked invites, held room state that does not have it yet; ADR-0864).
+    auto withhold_invite(std::string_view room_id) -> void;
+
+    // True when `room_id` is encrypted: its current m.room.encryption state event, or for an invited room the
+    // invite's stripped state, since a user only invited may not read the room's state (ADR-0864).
+    [[nodiscard]] auto is_encrypted(std::string_view room_id) -> bool;
 
     // True when `room_id` is in the user's m.direct.
     [[nodiscard]] auto is_dm(std::string_view room_id) -> bool;
@@ -47,7 +55,7 @@ public:
     // True when `room_id` is tagged m.favourite for the user.
     [[nodiscard]] auto is_favourite(std::string_view room_id) -> bool;
 
-    // content.type of the room's m.room.create event, or empty.
+    // content.type of the room's m.room.create event (the invite's stripped copy for an invited room), or empty.
     [[nodiscard]] auto room_type(std::string_view room_id) -> std::string const&;
 
     // Where the user has read up to in `room_id` (see read_markers_for), read once per room and request.
@@ -56,10 +64,12 @@ public:
     // The stream ordering of the room's newest event whose type is in `bump_types` (any event when empty), 0 when it
     // has none: the `by_recency` key. Read from the room's own rows, newest first, at most
     // `max_recency_rows_examined` of them per room; past that the room's newest event stands in (ADR-0666). Memoised
-    // per room and set of bump types, so lists that share them share the work.
+    // per room and set of bump types, so lists that share them share the work. For an invited room it is the
+    // invite row's stream ordering, whatever the bump types: the user may not see the room's events (ADR-0864).
     [[nodiscard]] auto recency(std::string_view room_id, std::vector<std::string> const& bump_types) -> std::uint64_t;
 
-    // content.name of the room's current m.room.name event, or empty: the `by_name` key.
+    // content.name of the room's current m.room.name event (the invite's stripped copy for an invited room), or
+    // empty: the `by_name` key.
     [[nodiscard]] auto room_name(std::string_view room_id) -> std::string const&;
 
     // Event rows `recency` has parsed or compared, in total: a test proves the cost by count.
@@ -68,6 +78,10 @@ public:
     // Rows of the user's memberships looked at: a test proves the pass happens once per request by count, not by time.
     [[nodiscard]] auto membership_rows_visited() const noexcept -> std::uint64_t;
 
+    // Rows of the store's room table looked at: only `joined_rooms` reads it, so an invite or filter lookup costs the
+    // user's own rows and never the server's rooms.
+    [[nodiscard]] auto room_rows_visited() const noexcept -> std::uint64_t;
+
 private:
     auto load_memberships() -> void;
     auto load_direct() -> void;
@@ -75,14 +89,19 @@ private:
     database::PersistentStore const* m_store;
     std::string m_user;
     bool m_memberships_loaded{false};
+    // The user's join rows, in row order, until `joined_rooms` keeps those whose room the store holds.
+    std::vector<std::string> m_join_rows{};
+    bool m_joined_resolved{false};
     std::vector<std::string> m_joined{};
-    std::unordered_set<std::string> m_invited{};
+    // Each invited room with its invite membership row's stream ordering.
+    std::unordered_map<std::string, std::uint64_t> m_invited{};
     bool m_direct_loaded{false};
     std::unordered_set<std::string> m_direct{};
     std::unordered_map<std::string, bool> m_favourites{};
     std::unordered_map<std::string, std::string> m_room_types{};
     std::unordered_map<std::string, ReadMarkers> m_markers{};
     std::uint64_t m_membership_rows_visited{0U};
+    std::uint64_t m_room_rows_visited{0U};
     std::uint64_t m_recency_rows_visited{0U};
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> m_recency{};
     std::unordered_map<std::string, std::string> m_names{};

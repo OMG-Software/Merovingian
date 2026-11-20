@@ -997,6 +997,7 @@ shell = find_program('sh')
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sliding_sync_connection_size_flow.cpp',
       'integration/test_sliding_sync_hidden_rows_flow.cpp',
+      'integration/test_sliding_sync_invites_flow.cpp',
       'integration/test_sliding_sync_list_filters_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_sync_restore_flow.cpp',

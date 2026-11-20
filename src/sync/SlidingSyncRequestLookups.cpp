@@ -6,11 +6,14 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -82,8 +85,8 @@ namespace
         return type != nullptr && std::ranges::find(types, *type) != types.end();
     }
 
-    // content.name of an m.room.name event, or empty when it has none.
-    [[nodiscard]] auto room_name_from_event(std::string_view event_json) -> std::string
+    // content.<member> of an event, when it is a string; empty otherwise.
+    [[nodiscard]] auto content_string(std::string_view event_json, std::string_view member) -> std::string
     {
         auto const parsed = canonicaljson::parse_lossless(event_json);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -93,9 +96,42 @@ namespace
         auto const* root = as_object(parsed.value);
         auto const* content_val = root == nullptr ? nullptr : find_member(*root, "content");
         auto const* content = content_val == nullptr ? nullptr : as_object(*content_val);
-        auto const* name_val = content == nullptr ? nullptr : find_member(*content, "name");
-        auto const* name = name_val == nullptr ? nullptr : as_string(*name_val);
-        return name != nullptr ? *name : std::string{};
+        auto const* value_val = content == nullptr ? nullptr : find_member(*content, member);
+        auto const* value = value_val == nullptr ? nullptr : as_string(*value_val);
+        return value != nullptr ? *value : std::string{};
+    }
+
+    // content.name of an m.room.name event, or empty when it has none.
+    [[nodiscard]] auto room_name_from_event(std::string_view event_json) -> std::string
+    {
+        return content_string(event_json, "name");
+    }
+
+    // The JSON of the state event of `type` with an empty state_key in the user's invite record of `room_id`, or
+    // nullptr: what the invite's stripped state says about the room, which is all a user only invited may be told
+    // (ADR-0864). The record is bounded in bytes per user (ADR-0619, ADR-0708) and read by reference.
+    [[nodiscard]] auto invite_state_event(database::PersistentStore const& store, std::string_view room_id,
+                                          std::string_view user, std::string_view type) -> std::string const*
+    {
+        auto const* invite = database::find_invite_row(store, room_id, user);
+        if (invite == nullptr)
+        {
+            return nullptr;
+        }
+        for (auto const& event_json : invite->invite_state_events_json)
+        {
+            auto const parsed = canonicaljson::parse_lossless(event_json);
+            auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+            auto const* type_val = root == nullptr ? nullptr : find_member(*root, "type");
+            auto const* key_val = root == nullptr ? nullptr : find_member(*root, "state_key");
+            auto const* event_type = type_val == nullptr ? nullptr : as_string(*type_val);
+            auto const* state_key = key_val == nullptr ? nullptr : as_string(*key_val);
+            if (event_type != nullptr && *event_type == type && state_key != nullptr && state_key->empty())
+            {
+                return &event_json;
+            }
+        }
+        return nullptr;
     }
 
     // The bump types as one string that no other list of types shares.
@@ -124,23 +160,17 @@ auto SlidingSyncRequestLookups::load_memberships() -> void
         return;
     }
     m_memberships_loaded = true;
-    // The rooms the store holds a record for, once: a membership row of a room the store lacks is not a joined room.
-    auto known_rooms = std::unordered_set<std::string>{};
-    known_rooms.reserve(m_store->rooms.size());
-    for (auto const& room : m_store->rooms)
-    {
-        known_rooms.insert(room.room_id);
-    }
-    // The user's own rows through the per-user index (ADR-0609), never the table.
+    // The user's own rows through the per-user index (ADR-0609), never the table. Which joined rooms the store holds
+    // is settled by `joined_rooms` alone, so an invite lookup (the long-poll's wake check) never reads the room table.
     database::for_each_user_membership_row(*m_store, m_user, [&](database::PersistentMembership const& row) {
         ++m_membership_rows_visited;
-        if (row.membership == "join" && known_rooms.contains(row.room_id))
+        if (row.membership == "join")
         {
-            m_joined.push_back(row.room_id);
+            m_join_rows.push_back(row.room_id);
         }
         else if (row.membership == "invite")
         {
-            m_invited.insert(row.room_id);
+            m_invited.insert_or_assign(row.room_id, row.stream_ordering);
         }
     });
 }
@@ -148,7 +178,44 @@ auto SlidingSyncRequestLookups::load_memberships() -> void
 auto SlidingSyncRequestLookups::joined_rooms() -> std::vector<std::string> const&
 {
     load_memberships();
+    if (m_joined_resolved)
+    {
+        return m_joined;
+    }
+    m_joined_resolved = true;
+    // A join row of a room the store lacks is not a joined room. One pass over the room table, matched against the
+    // user's own join rows: nothing is copied per room the user is not in.
+    auto const wanted = std::unordered_set<std::string_view>{m_join_rows.begin(), m_join_rows.end()};
+    auto held = std::unordered_set<std::string_view>{};
+    for (auto const& room : m_store->rooms)
+    {
+        ++m_room_rows_visited;
+        if (wanted.contains(room.room_id))
+        {
+            held.insert(room.room_id);
+        }
+    }
+    for (auto& room_id : m_join_rows)
+    {
+        if (held.contains(room_id))
+        {
+            m_joined.push_back(std::move(room_id));
+        }
+    }
+    m_join_rows.clear();
     return m_joined;
+}
+
+auto SlidingSyncRequestLookups::invited_rooms() -> std::vector<std::string>
+{
+    load_memberships();
+    auto rooms = std::vector<std::string>{};
+    rooms.reserve(m_invited.size());
+    for (auto const& entry : m_invited)
+    {
+        rooms.push_back(entry.first);
+    }
+    return rooms;
 }
 
 auto SlidingSyncRequestLookups::is_invited(std::string_view room_id) -> bool
@@ -157,8 +224,18 @@ auto SlidingSyncRequestLookups::is_invited(std::string_view room_id) -> bool
     return m_invited.contains(std::string{room_id});
 }
 
-auto SlidingSyncRequestLookups::is_encrypted(std::string_view room_id) const -> bool
+auto SlidingSyncRequestLookups::withhold_invite(std::string_view room_id) -> void
 {
+    load_memberships();
+    m_invited.erase(std::string{room_id});
+}
+
+auto SlidingSyncRequestLookups::is_encrypted(std::string_view room_id) -> bool
+{
+    if (is_invited(room_id))
+    {
+        return invite_state_event(*m_store, room_id, m_user, "m.room.encryption") != nullptr;
+    }
     // The room's current state by its index (ADR-0344): no scan of the state table.
     return database::find_current_state_event_id(*m_store, room_id, "m.room.encryption", "").has_value();
 }
@@ -236,8 +313,15 @@ auto SlidingSyncRequestLookups::room_type(std::string_view room_id) -> std::stri
         return found->second;
     }
     auto type = std::string{};
-    if (auto const create = database::find_current_state_event_id(*m_store, room_id, "m.room.create", "");
-        create.has_value())
+    if (is_invited(room_id))
+    {
+        if (auto const* create = invite_state_event(*m_store, room_id, m_user, "m.room.create"); create != nullptr)
+        {
+            type = content_string(*create, "type");
+        }
+    }
+    else if (auto const create = database::find_current_state_event_id(*m_store, room_id, "m.room.create", "");
+             create.has_value())
     {
         type = create_event_type(*m_store, *create);
     }
@@ -259,6 +343,12 @@ auto SlidingSyncRequestLookups::read_markers(std::string_view room_id) -> ReadMa
 auto SlidingSyncRequestLookups::recency(std::string_view room_id, std::vector<std::string> const& bump_types)
     -> std::uint64_t
 {
+    load_memberships();
+    // An invited room's bump stamp is the invite's position (ADR-0864): its events are not the user's to rank by.
+    if (auto const invited = m_invited.find(std::string{room_id}); invited != m_invited.end())
+    {
+        return invited->second;
+    }
     auto& per_room = m_recency[bump_key(bump_types)];
     auto const key = std::string{room_id};
     if (auto const found = per_room.find(key); found != per_room.end())
@@ -309,8 +399,15 @@ auto SlidingSyncRequestLookups::room_name(std::string_view room_id) -> std::stri
         return found->second;
     }
     auto name = std::string{};
-    if (auto const event_id = database::find_current_state_event_id(*m_store, room_id, "m.room.name", "");
-        event_id.has_value())
+    if (is_invited(room_id))
+    {
+        if (auto const* event = invite_state_event(*m_store, room_id, m_user, "m.room.name"); event != nullptr)
+        {
+            name = room_name_from_event(*event);
+        }
+    }
+    else if (auto const event_id = database::find_current_state_event_id(*m_store, room_id, "m.room.name", "");
+             event_id.has_value())
     {
         for (auto const& event : m_store->events.with_id(*event_id))
         {
@@ -329,6 +426,11 @@ auto SlidingSyncRequestLookups::recency_rows_visited() const noexcept -> std::ui
 auto SlidingSyncRequestLookups::membership_rows_visited() const noexcept -> std::uint64_t
 {
     return m_membership_rows_visited;
+}
+
+auto SlidingSyncRequestLookups::room_rows_visited() const noexcept -> std::uint64_t
+{
+    return m_room_rows_visited;
 }
 
 } // namespace merovingian::sync

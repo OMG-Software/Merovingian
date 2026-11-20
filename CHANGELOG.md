@@ -37,6 +37,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854, ADR-0857).
 * The Linux packages set up a LiveKit SFU you install beside the server: a `merovingian-livekit` account and disabled
   service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0860).
+* Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
+  list or room subscription could hold ends a waiting long poll at once; one already sent never does (ADR-0864).
 
 ## Security Fixes
 
@@ -122,6 +124,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
 * A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
   state has none, rather than at the oldest sticky event (ADR-0862).
+* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
+  sent as a new joined room (ADR-0864).
+* Any other change of a user's own membership answers their sliding sync long poll, so an invite withdrawn outside
+  every window updates the list's count; a new invite does only if a subscription or a list's filters hold it.
+* A sliding sync response reporting an invite at an unchanged position carries a new page, and the invite is recorded
+  at its own position, so the next request does not receive it again (ADR-0864).
+* A parked sliding sync long poll judges a new invite against its lists' filters from the user's own membership rows,
+  never a pass over every room the server holds (ADR-0665).
 
 ## Release notes
 

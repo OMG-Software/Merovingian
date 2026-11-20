@@ -8278,6 +8278,137 @@ namespace
     // The last page a sliding sync `pos` can carry (ADR-0862); a response past it goes back to page 0.
     constexpr auto max_sliding_sync_pos_page = std::numeric_limits<std::uint64_t>::max();
 
+    // A sliding sync connection records an invite it was sent under this prefix and the room ID in `rooms_seen`, apart
+    // from the room's own entry, so the invite's bookkeeping never reads as the room's joined-room state (ADR-0864).
+    constexpr auto sliding_invite_seen_prefix = std::string_view{"invite:"};
+
+    [[nodiscard]] auto sliding_invite_seen_key(std::string_view room_id) -> std::string
+    {
+        return std::string{sliding_invite_seen_prefix} + std::string{room_id};
+    }
+
+    // ADR-0864: whether the connection was already sent the user's current invite to `room_id`: its sighting is at or
+    // past the invite record's stream ordering, or there is no record to be newer. The response leaves such an invite
+    // out and the long-poll wake check skips it, through this one test, so a poll never wakes for an invite its
+    // response would not send (the sighting can be above the token's position while a commit is in flight).
+    [[nodiscard]] auto sliding_invite_already_sent(database::PersistentStore const& store,
+                                                   std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                                   std::string_view room_id, std::string_view user) -> bool
+    {
+        auto const seen = rooms_seen.find(sliding_invite_seen_key(room_id));
+        if (seen == rooms_seen.end())
+        {
+            return false;
+        }
+        auto const* const invite_record = database::find_invite_row(store, room_id, user);
+        return invite_record == nullptr || invite_record->stream_ordering <= seen->second;
+    }
+
+    // ADR-0864: whether sliding sync may show the user's stored invite to `room_id` now. Withheld: an invite from a
+    // user they ignore ("Servers must not send room invites from ignored users to clients"), and an invite to a room
+    // whose state this server holds while that state does not yet have it (ADR-0301, the test /sync makes through
+    // InviteRoomStateIndex). Reads the invite record and two current-state rows by index, never the state table: a long
+    // poll asks this on every wake. Blocked invites (ADR-0552) are the caller's test, once per request.
+    [[nodiscard]] auto sliding_invite_is_deliverable(database::PersistentStore const& store, std::string_view room_id,
+                                                     std::string_view user,
+                                                     std::unordered_set<std::string> const& ignored_senders) -> bool
+    {
+        auto const* const invite = database::find_invite_row(store, room_id, user);
+        if (invite == nullptr)
+        {
+            // An invite row with no record: nothing to judge it by; it is sent with empty stripped state, as before.
+            return true;
+        }
+        if (trust_safety::is_delivery_suppressed(ignored_senders, invite->sender_user_id, /*is_state_event=*/true,
+                                                 /*is_new_room_invite=*/true))
+        {
+            return false;
+        }
+        if (!database::find_current_state_event_id(store, room_id, "m.room.create", "").has_value())
+        {
+            return true;
+        }
+        auto const member = database::find_current_state_event_id(store, room_id, "m.room.member", user);
+        return member.has_value() && *member == invite->event_id;
+    }
+
+    // Whether a sliding sync request could be sent `room_id` as an invite: a subscription to it, or a list whose every
+    // filter the invite passes, judged from its stripped state as the list judges it (ADR-0864). A list filtered on
+    // `is_encrypted`, `room_types` or the rest that would not hold the invite does not count.
+    [[nodiscard]] auto request_may_show_invite(sync::SlidingSyncRequest const& ssreq,
+                                               sync::SlidingSyncRequestLookups& lookups, std::string_view room_id)
+        -> bool
+    {
+        return ssreq.room_subscriptions.contains(std::string{room_id}) ||
+               std::ranges::any_of(ssreq.lists, [&](auto const& entry) {
+                   auto const& filters = entry.second.filters;
+                   return !filters.has_value() || sync::room_passes_list_filters(lookups, room_id, *filters);
+               });
+    }
+
+    // Leaves out of the request's lookups every invite sliding sync may not show now, before any list reads them, so
+    // the lists, the response and the wake test agree on one set (ADR-0864).
+    auto withhold_undeliverable_invites(sync::SlidingSyncRequestLookups& lookups,
+                                        database::PersistentStore const& store, std::string_view user,
+                                        std::unordered_set<std::string> const& ignored_senders) -> void
+    {
+        auto const blocked = invite_permission_blocks(store, user);
+        for (auto const& room_id : lookups.invited_rooms())
+        {
+            if (blocked || !sliding_invite_is_deliverable(store, room_id, user, ignored_senders))
+            {
+                lookups.withhold_invite(room_id);
+            }
+        }
+    }
+
+    // ADR-0864: whether the user's own membership rows newer than a waiting request's `since` answer it. Any row that
+    // is not an invite answers it: a join, a leave, a kick, a ban or the end of an invite can each change a list's
+    // `count` and window, whether or not the connection was ever sent the room (an invite outside every window ends
+    // too). A new invite answers it only when it is deliverable and a subscription or a list whose filters it passes
+    // could hold it; an invite the user may not be shown, or that no list would hold, leaves the poll parked, as does
+    // every event in a room the user is neither joined nor invited to (ADR-0609), and so does an invite the connection
+    // was already sent (`sliding_invite_already_sent`, the response's own test): its row stays above `since` until a
+    // commit in flight ends, and must not answer every poll meanwhile. `newer_rows` point into the store, which does
+    // not change while the caller holds runtime.mutex. The lookups are built only for a new invite.
+    [[nodiscard]] auto membership_rows_wake_sliding_poll(
+        database::PersistentStore const& store, std::string_view user, sync::SlidingSyncRequest const& ssreq,
+        std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+        std::vector<database::PersistentMembership const*> const& newer_rows,
+        std::unordered_set<std::string> const& ignored_senders) -> bool
+    {
+        auto invites_blocked = std::optional<bool>{};
+        auto lookups = std::optional<sync::SlidingSyncRequestLookups>{};
+        for (auto const* const row : newer_rows)
+        {
+            if (row->membership != "invite")
+            {
+                return true;
+            }
+            if (sliding_invite_already_sent(store, rooms_seen, row->room_id, user))
+            {
+                continue;
+            }
+            if (!invites_blocked.has_value())
+            {
+                invites_blocked = invite_permission_blocks(store, user);
+            }
+            if (*invites_blocked || !sliding_invite_is_deliverable(store, row->room_id, user, ignored_senders))
+            {
+                continue;
+            }
+            if (!lookups.has_value())
+            {
+                lookups.emplace(store, user);
+            }
+            if (request_may_show_invite(ssreq, *lookups, row->room_id))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
                                          std::optional<sync::SlidingSyncPos> const& request_pos,
@@ -8285,8 +8416,7 @@ namespace
     {
         auto& store = rt.homeserver.database.persistent_store;
         // Every stream comparison reads the token; the page only names a response (ADR-0862).
-        auto const pos =
-            request_pos.has_value() ? std::optional<sync::StreamToken>{request_pos->token} : std::nullopt;
+        auto const pos = request_pos.has_value() ? std::optional<sync::StreamToken>{request_pos->token} : std::nullopt;
         // The request's pos as this server writes it, the key a pending response is matched on.
         auto const requested_pos =
             request_pos.has_value() ? sync::encode_sliding_sync_pos(*request_pos) : std::string{};
@@ -8447,6 +8577,7 @@ namespace
         auto const build_list_windows = [&]() {
             unread_classifier.emplace(store, user, rt.limits.max_push_rules_per_user, history_visibility);
             request_lookups.emplace(store, user);
+            withhold_undeliverable_invites(*request_lookups, store, user, ignored_senders);
             for (auto const& [list_name, list] : ssreq.lists)
             {
                 auto const empty_prev = std::vector<std::string>{};
@@ -8510,16 +8641,22 @@ namespace
             // The rooms the user has joined, once for this evaluation, found through the user's own
             // membership rows, so the checks below test membership in O(1) and an account with no
             // room scans nothing (ADR-0609).
+            // The same pass collects, for a request that wants rooms, the rows newer than `since`: an invite there,
+            // or the end of one the connection was sent, answers the poll (ADR-0864).
             auto joined_rooms = std::unordered_set<std::string_view>{};
+            auto newer_membership_rows = std::vector<database::PersistentMembership const*>{};
             if (wants_rooms || wants_receipts || wants_typing || sticky_request != nullptr)
             {
-                database::for_each_user_membership_row(store, user,
-                                                       [&joined_rooms](database::PersistentMembership const& row) {
-                                                           if (row.membership == "join")
-                                                           {
-                                                               joined_rooms.insert(row.room_id);
-                                                           }
-                                                       });
+                database::for_each_user_membership_row(store, user, [&](database::PersistentMembership const& row) {
+                    if (row.membership == "join")
+                    {
+                        joined_rooms.insert(row.room_id);
+                    }
+                    if (wants_rooms && row.stream_ordering > since_event_ordering)
+                    {
+                        newer_membership_rows.push_back(&row);
+                    }
+                });
             }
 
             // A new room event only matters to this connection if it landed in a
@@ -8547,7 +8684,13 @@ namespace
                 }
             }
 
-            if (!has_relevant_event)
+            auto has_relevant_membership = false;
+            if (!has_relevant_event && !newer_membership_rows.empty())
+            {
+                has_relevant_membership = membership_rows_wake_sliding_poll(store, user, ssreq, conn.rooms_seen,
+                                                                            newer_membership_rows, ignored_senders);
+            }
+            if (!has_relevant_event && !has_relevant_membership)
             {
                 // No relevant room events.  Only respond early if the sync_stream_id
                 // advance contains rows relevant to a surface this connection asked
@@ -8664,14 +8807,25 @@ namespace
             build_list_windows();
         }
 
-        // Collect ordered unique room IDs: lists first, then explicit subscriptions.
+        // Collect ordered unique room IDs: lists first, then explicit subscriptions. A windowed room the lookups call
+        // invited is answered with its stripped invite state alone (below) and never reaches `response_room_ids`, which
+        // builds full room responses (ADR-0864).
         auto response_room_ids = std::vector<std::string>{};
         auto seen_rooms = std::unordered_set<std::string>{};
+        auto invited_room_ids = std::vector<std::string>{};
+        auto invited_seen = std::unordered_set<std::string>{};
         for (auto const& [lname, result] : list_results)
         {
             for (auto const& room_id : result.windowed_room_ids)
             {
-                if (seen_rooms.insert(room_id).second)
+                if (request_lookups->is_invited(room_id))
+                {
+                    if (invited_seen.insert(room_id).second)
+                    {
+                        invited_room_ids.push_back(room_id);
+                    }
+                }
+                else if (seen_rooms.insert(room_id).second)
                 {
                     response_room_ids.push_back(room_id);
                 }
@@ -8686,7 +8840,6 @@ namespace
         // The rooms are classified through one index over the caller's memberships rather than
         // a scan of every membership row per subscription (security audit run-1, sp01). The same
         // index is handed to the receipts and typing extensions below.
-        auto invited_subscription_ids = std::vector<std::string>{};
         auto const extensions_need_room_access =
             ssreq.extensions.has_value() &&
             ((ssreq.extensions->receipts.has_value() && ssreq.extensions->receipts->enabled) ||
@@ -8707,7 +8860,10 @@ namespace
                 }
                 break;
             case sync::RoomAccess::invited:
-                invited_subscription_ids.push_back(room_id);
+                if (invited_seen.insert(room_id).second)
+                {
+                    invited_room_ids.push_back(room_id);
+                }
                 break;
             case sync::RoomAccess::none:
                 break;
@@ -8830,50 +8986,41 @@ namespace
             built_rooms.push_back({room_id, std::move(room), has_room_updates});
         }
 
-        // Invited rooms named by a subscription: stripped invite state only (the same
-        // `invite_state` events /sync reports), no timeline, no required_state. The
-        // connection's `rooms_seen` records `invite:<room_id>` so an unchanged invite is
-        // reported once per connection, without disturbing the `initial` bookkeeping of the
-        // room itself should the invite later be accepted. An invite from an ignored user is
-        // withheld entirely ("Servers must not send room invites from ignored users to clients").
-        // An invite this server holds the room state of is withheld until that state has it, as /sync does
-        // (ADR-0301). Every invite is withheld while the user blocks invites (SS7, ADR-0552), and no `invite:`
-        // entry is recorded, so the connection reports it once the block is lifted.
+        // Invited rooms, from a list window or a subscription: stripped invite state only (the same `invite_state`
+        // events /sync reports), no timeline, no required_state (ADR-0864). The connection's `rooms_seen` records
+        // `invite:<room_id>` so an unchanged invite is reported once per connection; reporting it also drops the
+        // room's own joined-room bookkeeping (below), so an accepted invite is sent as a new room. Withheld entirely,
+        // with no `invite:` entry, so the connection reports it once the reason ends: an invite from an ignored user
+        // ("Servers must not send room invites from ignored users to clients"), one whose held room state does not
+        // have it yet (ADR-0301), and every invite while the user blocks invites (SS7, ADR-0552). The lists already
+        // left these out (`withhold_undeliverable_invites`); a subscription is judged here by the same test.
         if (invite_permission_blocks(store, user))
         {
-            invited_subscription_ids.clear();
+            invited_room_ids.clear();
         }
-        auto invites_reported = std::vector<std::string>{};
+        // Each reported invite with the position its sighting is recorded at: the invite row's own stream ordering,
+        // the value the test above compares, never the visible position, which a commit still in flight can leave
+        // below an invite stored meanwhile (it would be sent again on every request until that commit ends).
+        auto invites_reported = std::vector<std::pair<std::string, std::uint64_t>>{};
         auto invite_rooms = canonicaljson::Object{};
-        auto const invite_room_state = invited_subscription_ids.empty()
-                                           ? std::optional<InviteRoomStateIndex>{}
-                                           : std::optional<InviteRoomStateIndex>{std::in_place, store, user};
-        for (auto const& room_id : invited_subscription_ids)
+        for (auto const& room_id : invited_room_ids)
         {
-            auto const invite_record = database::find_invite(store, room_id, user);
-            if (invite_record.has_value() &&
-                trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
-                                                     /*is_state_event=*/true, /*is_new_room_invite=*/true))
+            if (!sliding_invite_is_deliverable(store, room_id, user, ignored_senders))
             {
                 continue;
             }
-            if (invite_record.has_value() && invite_room_state->awaits_room_state(room_id, invite_record->event_id))
+            if (sliding_invite_already_sent(store, conn.rooms_seen, room_id, user))
             {
                 continue;
             }
-            auto const seen_key = "invite:" + room_id;
-            auto const seen_it = conn.rooms_seen.find(seen_key);
-            if (seen_it != conn.rooms_seen.end() &&
-                (!invite_record.has_value() || invite_record->stream_ordering <= seen_it->second))
-            {
-                continue;
-            }
+            auto const* const invite_record = database::find_invite_row(store, room_id, user);
             auto invite_room = sync::SlidingSyncRoomResponse{};
             invite_room.initial = true;
             invite_room.invite_state_json =
                 json_serialize(json_arr(build_invite_state_events_array(store, room_id, user)));
             invite_rooms.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
-            invites_reported.push_back(seen_key);
+            invites_reported.emplace_back(room_id, invite_record != nullptr ? invite_record->stream_ordering
+                                                                            : visible_event_ordering);
         }
 
         // ── Extensions ──────────────────────────────────────────────────────
@@ -8975,10 +9122,12 @@ namespace
         // plus one; a retry of the request carries the old page and is answered from the committed state as before.
         auto const response_token = sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch};
         // The same holds for a response that sent a room entering the typing or receipts scope what it lacked
-        // (ADR-0863).
+        // (ADR-0863), and for one that reported an invite: a list added at an unchanged position can bring an invite
+        // the connection was never sent, and without a new page the next request would replay it for ever (ADR-0864).
         auto response_page = std::uint64_t{0U};
         auto const sent_on_scope_entry = extension_responses.has_value() && extension_responses->sent_on_scope_entry;
-        if (request_pos.has_value() && (sticky_outcome.delivered_any || sent_on_scope_entry))
+        auto const reported_invite = !invites_reported.empty();
+        if (request_pos.has_value() && (sticky_outcome.delivered_any || sent_on_scope_entry || reported_invite))
         {
             auto const same_stream_position =
                 sync::encode_stream_token(request_pos->token) == sync::encode_stream_token(response_token);
@@ -9081,7 +9230,7 @@ namespace
                                {"requested_extensions",  requested_extensions,                                   false},
                                {"rooms_in_response",     std::to_string(rooms_in_response),                      false},
                                {"rooms_skipped",         std::to_string(rooms_skipped),                          false},
-                               {"response_bytes",        std::to_string(body.size()),                            false}
+                               {"response_bytes",        std::to_string(body.size()),                       false}
             });
         }
 
@@ -9142,9 +9291,23 @@ namespace
             // this as the delta floor, not the global request pos.
             next_state.rooms_seen[room_id] = cur_event;
         }
-        for (auto const& seen_key : invites_reported)
+        // ADR-0864: an invite no longer held (rejected, withdrawn, accepted, or withheld now) forgets its entry, so the
+        // next invite to the room is sent; a reported invite records its position and clears the room's joined-room
+        // bookkeeping, which predates the invite, so a join that follows is sent with its full snapshot.
+        std::erase_if(next_state.rooms_seen, [&](auto const& entry) {
+            auto const& key = entry.first;
+            if (!key.starts_with(sliding_invite_seen_prefix))
+            {
+                return false;
+            }
+            return !request_lookups->is_invited(std::string_view{key}.substr(sliding_invite_seen_prefix.size()));
+        });
+        for (auto const& [room_id, seen_at] : invites_reported)
         {
-            next_state.rooms_seen[seen_key] = cur_event;
+            next_state.rooms_seen.erase(room_id);
+            next_state.lazy_members_sent.erase(room_id);
+            next_state.room_timeline_limits.erase(room_id);
+            next_state.rooms_seen[sliding_invite_seen_key(room_id)] = seen_at;
         }
         for (auto const& [room_id, included] : lazy_members_included_by_room)
         {
