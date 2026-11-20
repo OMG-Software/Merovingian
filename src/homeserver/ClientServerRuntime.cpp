@@ -8834,7 +8834,7 @@ namespace
         // The windows of this request's lists only: lists are not sticky (MSC4186), so a list the previous request
         // had and this one dropped scopes nothing, neither an expansion nor an extension's `lists`, here or in the
         // long-poll check.
-        auto const expansion_windows = [&]() {
+        auto const expansion_windows = std::invoke([&] {
             auto windows = std::map<std::string, std::vector<std::string>>{};
             if (list_config_changed)
             {
@@ -8853,7 +8853,7 @@ namespace
                 }
             }
             return windows;
-        }();
+        });
         auto expansions_to_answer = requested_timeline_expansions(conn, ssreq, expansion_windows, store, user);
         std::erase_if(expansions_to_answer, [&](auto const& entry) {
             auto const answered = answered_for_this_pos.find(entry.first);
