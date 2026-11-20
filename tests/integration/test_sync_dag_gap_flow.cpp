@@ -44,6 +44,8 @@
 #include <variant>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -530,7 +532,7 @@ SCENARIO("A limited incremental sync carries the state that changed over the gap
                 REQUIRE(view.limited);
                 REQUIRE(view.bodies == std::vector<std::string>{"m3"});
                 auto const types = state_types_of(response, f.room_id);
-                REQUIRE(std::ranges::find(types, "m.room.topic") != types.end());
+                REQUIRE(std::ranges::find(types, "m.room.topic"sv) != types.end());
             }
         }
     }

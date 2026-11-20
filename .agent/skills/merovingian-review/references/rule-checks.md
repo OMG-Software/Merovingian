@@ -10,7 +10,7 @@ Report these only if the diff edits or bypasses the gate itself.
 
 | Gate | Runs in | Fails on | Misses |
 |---|---|---|---|
-| `scripts/reject-unsafe.sh` | CI (`ci.yml`, `static-analysis.yml`) and pre-commit | naked `new`/`delete`/`malloc`/`calloc`/`realloc`; `(void)` and `static_cast<void>` discards; `shared_ptr` without `// SHARED_PTR: reviewed — <reason>`; `.unlock()` without `// LOCK_RELEASE: reviewed — <reason>`; libsodium outside its directories | whether the "reviewed" reason is **true**; patterns split across lines; files outside its roots |
+| `scripts/reject-unsafe.sh` | CI (`ci.yml`, `static-analysis.yml`) and pre-commit | naked `new`/`delete`/`malloc`/`calloc`/`realloc`; `(void)` and `static_cast<void>` discards; a bare string literal as a `std::ranges` `find`/`find_last`/`count`/`contains`/`remove` value (ADR-0870, read whole-file, so wrapping does not hide it); `shared_ptr` without `// SHARED_PTR: reviewed — <reason>`; `.unlock()` without `// LOCK_RELEASE: reviewed — <reason>`; libsodium outside its directories | whether the "reviewed" reason is **true**; patterns split across lines; files outside its roots |
 | `check-catch2-bdd-tests.sh` | meson test | `TEST_CASE`, missing SCENARIO/GIVEN/WHEN/THEN words in `tests/unit` | per-scenario structure; conformance and integration files |
 | `check-unit-test-registration.sh` | meson test | unit or conformance file not in `tests/meson.build` | integration files |
 | `check-unit-test-isolation.sh` | meson test | unit file naming `start_runtime` and the other runtime builders | a helper that builds a runtime |

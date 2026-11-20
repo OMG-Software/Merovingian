@@ -44,6 +44,8 @@
 #include <utility>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -301,7 +303,7 @@ SCENARIO("An administrator reads an account summary that holds no credential", "
                 // Registration opens a device too: count what the store holds for the user.
                 auto const stored_devices =
                     std::ranges::count(world.runtime().homeserver.database.persistent_store.devices,
-                                       "@alice:example.org", &merovingian::database::PersistentDevice::user_id);
+                                       "@alice:example.org"sv, &merovingian::database::PersistentDevice::user_id);
                 REQUIRE(stored_devices >= 2);
                 REQUIRE(*merovingian::tests::int_member(body, "devices") == stored_devices);
                 REQUIRE(response.body.find(alice_hash) == std::string::npos);

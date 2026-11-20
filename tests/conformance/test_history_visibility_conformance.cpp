@@ -41,6 +41,8 @@
 #include <utility>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -1411,8 +1413,8 @@ SCENARIO("A user always sees their own membership events that start or end their
                         memberships.push_back(*membership);
                     }
                 }
-                REQUIRE(std::ranges::find(memberships, "join") != memberships.end());
-                REQUIRE(std::ranges::find(memberships, "leave") != memberships.end());
+                REQUIRE(std::ranges::find(memberships, "join"sv) != memberships.end());
+                REQUIRE(std::ranges::find(memberships, "leave"sv) != memberships.end());
                 REQUIRE_FALSE(members.empty());
             }
         }

@@ -61,8 +61,11 @@
 #include <iterator>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
+
+using namespace std::string_view_literals;
 
 namespace
 {
@@ -1445,8 +1448,8 @@ SCENARIO("createRoom combines and deduplicates trusted_private_chat creators per
                     seen.push_back(*id);
                 }
                 REQUIRE(seen.size() == 2U); // @bob deduplicated despite appearing twice
-                REQUIRE(std::ranges::find(seen, "@bob:example.org") != seen.end());
-                REQUIRE(std::ranges::find(seen, "@carol:example.org") != seen.end());
+                REQUIRE(std::ranges::find(seen, "@bob:example.org"sv) != seen.end());
+                REQUIRE(std::ranges::find(seen, "@carol:example.org"sv) != seen.end());
             }
 
             AND_THEN("no creator appears in m.room.power_levels users")

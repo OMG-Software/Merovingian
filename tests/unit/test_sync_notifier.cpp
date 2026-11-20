@@ -16,9 +16,12 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+using namespace std::string_view_literals;
 
 SCENARIO("SyncNotifier returns immediately when the sync stream id has already advanced", "[sync][notifier]")
 {
@@ -828,7 +831,7 @@ SCENARIO("A room event's sync audience is its joined and invited members, its se
 
             THEN("the audience still holds them, by falling back to a scan")
             {
-                REQUIRE(std::ranges::find(audience, "@sneaky:example.org") != audience.end());
+                REQUIRE(std::ranges::find(audience, "@sneaky:example.org"sv) != audience.end());
             }
         }
     }

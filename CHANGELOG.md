@@ -174,6 +174,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   client kept the old one (ADR-0869).
 * An invite rejected or withdrawn while a sliding sync request asked for no lists is listed as `leave` when the lists
   come back; the room was dropped as never sent (ADR-0867).
+* The Fedora 44 and 45 RPMs build again: GCC 16 refused `std::ranges::find` with a bare string literal under C++26,
+  and `reject-unsafe.sh` now rejects that form in code and tests (ADR-0870).
+* The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
 
 ## Release notes
 

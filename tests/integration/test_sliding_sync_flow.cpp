@@ -24,6 +24,8 @@
 #include <tuple>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -2556,7 +2558,7 @@ SCENARIO("MSC4186 sliding sync sends m.read.private only to its owner and never 
                 auto const view = inspect_receipts(extension_rooms(bob_result.response.body, "receipts"), room_id,
                                                    "@alice:example.org", "m.read.private");
                 REQUIRE_FALSE(view.any_receipt_from_user);
-                REQUIRE(std::ranges::find(view.receipt_types, "m.read.private") == view.receipt_types.end());
+                REQUIRE(std::ranges::find(view.receipt_types, "m.read.private"sv) == view.receipt_types.end());
                 REQUIRE(bob_result.response.body.find("m.read.private") == std::string::npos);
             }
 
@@ -2584,16 +2586,16 @@ SCENARIO("MSC4186 sliding sync sends m.read.private only to its owner and never 
                     auto const view = inspect_receipts(extension_rooms(*body, "receipts"), room_id,
                                                        "@alice:example.org", "m.fully_read");
                     REQUIRE_FALSE(view.has_type_for_user);
-                    REQUIRE(std::ranges::find(view.receipt_types, "m.fully_read") == view.receipt_types.end());
+                    REQUIRE(std::ranges::find(view.receipt_types, "m.fully_read"sv) == view.receipt_types.end());
                 }
             }
 
             THEN("alice receives m.fully_read as room account data and bob does not")
             {
                 auto const alice_types = account_data_types_for_room(alice_result.response.body, room_id);
-                REQUIRE(std::ranges::find(alice_types, "m.fully_read") != alice_types.end());
+                REQUIRE(std::ranges::find(alice_types, "m.fully_read"sv) != alice_types.end());
                 auto const bob_types = account_data_types_for_room(bob_result.response.body, room_id);
-                REQUIRE(std::ranges::find(bob_types, "m.fully_read") == bob_types.end());
+                REQUIRE(std::ranges::find(bob_types, "m.fully_read"sv) == bob_types.end());
             }
         }
 

@@ -78,6 +78,26 @@ if [ -n "$VOID_CAST_HITS" ]; then
   exit 1
 fi
 
+# A bare string literal as the value of a constrained algorithm that compares
+# elements with it (ADR-0870). std::ranges::find and its kin require
+# std::equality_comparable_with<element, value>, which in turn needs the value type
+# to compare with itself; for "literal" that type is a char array, and C++26 removed
+# array == array (P2865). GCC 16 in -std=c++26 therefore refuses
+#   std::ranges::find(names, "x")
+# while clang and older GCC accept it, so the call built on every pull request job
+# and broke only the Fedora RPM package build on main. Pass a typed value instead:
+# "x"sv, "x"s or std::string_view{"x"}. The literal may sit on the line after the
+# range (the formatter wraps long calls), so each file is read whole (-z) and only
+# its name is printed. A suffixed literal ("x"sv) is not an array and is accepted.
+RANGES_LITERAL_HITS=$("$PCRE_GREP" -RlzP "${CPP_INCLUDES[@]}" \
+  'std::ranges::(?:find_last|find|count|contains|remove)\s*\(\s*(?:[^(),"]|\((?:[^()"]|"(?:[^"\\]|\\.)*"|\((?:[^()"]|"(?:[^"\\]|\\.)*")*\))*\))+,\s*(?:u8|u|U|L)?"(?:[^"\\\n]|\\.)*"(?![A-Za-z_])' \
+  "${ROOTS[@]}" || true)
+if [ -n "$RANGES_LITERAL_HITS" ]; then
+  printf '%s\n' "$RANGES_LITERAL_HITS"
+  echo "Rejected pattern detected: string literal as a std::ranges algorithm's value (GCC 16 refuses it under C++26; write \"x\"sv or std::string_view{\"x\"}, per ADR-0870)"
+  exit 1
+fi
+
 # std::shared_ptr is allowed only with an explicit per-line annotation.
 # Add "// SHARED_PTR: reviewed — <reason>" on the same line to exempt.
 SHARED_PTR_HITS=$("$PCRE_GREP" -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \

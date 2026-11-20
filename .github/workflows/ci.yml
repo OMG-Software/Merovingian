@@ -362,6 +362,7 @@ jobs:
             clang \
             clang-tools-extra \
             cppcheck \
+            diffutils \
             flex \
             gcc-c++ \
             git \
@@ -532,6 +533,7 @@ jobs:
                  ccache \
                  clang \
                  clang-tools-extra \
+                 diffutils \
                  flex \
                  gcc-c++ \
                  git \
@@ -651,6 +653,7 @@ jobs:
                  bison \
                  ccache \
                  clang \
+                 diffutils \
                  findutils \
                  flex \
                  gcc-c++ \

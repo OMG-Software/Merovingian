@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+using namespace std::string_view_literals;
+
 namespace
 {
 
@@ -558,8 +560,8 @@ SCENARIO("Remote media cache evicts the least-recently-used entry when it "
                 REQUIRE(displaced.front().media_id == "mediaB");
                 auto const ids = cached_media_ids(repository);
                 REQUIRE(ids.size() == 2U);
-                REQUIRE(std::ranges::find(ids, "mediaA") != ids.end());
-                REQUIRE(std::ranges::find(ids, "mediaC") != ids.end());
+                REQUIRE(std::ranges::find(ids, "mediaA"sv) != ids.end());
+                REQUIRE(std::ranges::find(ids, "mediaC"sv) != ids.end());
             }
 
             THEN("B's stored copy is forgotten, not left behind")

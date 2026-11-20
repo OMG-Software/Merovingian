@@ -29,13 +29,8 @@ def pcre_grep_available() -> bool:
     return False
 
 
-@unittest.skipUnless(pcre_grep_available(), "no grep with -P on this host; the gate refuses to run here")
-class RejectUnsafeVoidCastTests(unittest.TestCase):
-    """reject-unsafe.sh refuses void-cast discards (AGENTS.md: use std::ignore).
-
-    GCC, unlike clang, does not let a void cast silence warn_unused_result, so a
-    cast that builds on clang fails the GCC coverage job under -Werror.
-    """
+class GateRunner(unittest.TestCase):
+    """Runs reject-unsafe.sh over a scratch tree holding only the given files."""
 
     def run_gate(self, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
         bash = shutil.which("bash")
@@ -57,6 +52,15 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
+
+
+@unittest.skipUnless(pcre_grep_available(), "no grep with -P on this host; the gate refuses to run here")
+class RejectUnsafeVoidCastTests(GateRunner):
+    """reject-unsafe.sh refuses void-cast discards (AGENTS.md: use std::ignore).
+
+    GCC, unlike clang, does not let a void cast silence warn_unused_result, so a
+    cast that builds on clang fails the GCC coverage job under -Werror.
+    """
 
     def assert_rejected(self, files: dict[str, str]) -> None:
         result = self.run_gate(files)
@@ -149,6 +153,72 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
     # The repository's own tree is not scanned here: the pre-commit hook and the
     # CI jobs already run the gate over it, and doing it again on a slow mount
     # costs longer than this suite's timeout.
+
+
+@unittest.skipUnless(pcre_grep_available(), "no grep with -P on this host; the gate refuses to run here")
+class RejectUnsafeRangesStringLiteralTests(GateRunner):
+    """reject-unsafe.sh refuses a bare string literal as a ranges algorithm's value (ADR-0870).
+
+    The constrained algorithms require std::equality_comparable_with<element, value>,
+    which needs the value type to compare with itself. C++26 removed array == array
+    (P2865), so for a "literal" (a char array) GCC 16 rejects the call while older
+    compilers accept it: the Fedora RPM jobs broke on main and nothing else saw it.
+    """
+
+    def assert_rejected(self, files: dict[str, str]) -> None:
+        result = self.run_gate(files)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("string literal as a std::ranges algorithm's value", result.stdout)
+
+    def assert_accepted(self, files: dict[str, str]) -> None:
+        result = self.run_gate(files)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_find_with_a_literal_is_rejected_in_every_root(self) -> None:
+        # GIVEN the call that broke the Fedora RPM build, in src/, include/ or tests/.
+        source = 'bool f() { return std::ranges::find(list.sort, "by_notification_count") != list.sort.end(); }\n'
+        for path in ("src/a.cpp", "include/merovingian/a.hpp", "tests/unit/test_a.cpp"):
+            with self.subTest(path=path):
+                # WHEN the gate runs.
+                # THEN it rejects the file.
+                self.assert_rejected({path: source})
+
+    def test_every_value_taking_algorithm_is_covered(self) -> None:
+        # GIVEN each constrained algorithm that compares elements with a value.
+        for algorithm in ("find", "find_last", "count", "contains", "remove"):
+            with self.subTest(algorithm=algorithm):
+                # WHEN the gate runs over a call that passes it a literal.
+                # THEN it rejects the file.
+                self.assert_rejected({"src/a.cpp": f'auto n = std::ranges::{algorithm}(names, "x");\n'})
+
+    def test_a_literal_on_the_next_line_or_after_a_projection_is_rejected(self) -> None:
+        # GIVEN calls the formatter wraps, and a first argument with nested calls.
+        wrapped = (
+            "auto const n =\n"
+            "    std::ranges::count(world.runtime().store.devices,\n"
+            '                       "@alice:example.org", &Device::user_id);\n'
+        )
+        nested = 'REQUIRE(std::ranges::find(view(a, b).ids, "$event") != end);\n'
+        # WHEN the gate runs.
+        # THEN both are rejected.
+        self.assert_rejected({"tests/integration/test_a_flow.cpp": wrapped})
+        self.assert_rejected({"tests/unit/test_b.cpp": nested})
+
+    def test_a_typed_value_is_accepted(self) -> None:
+        # GIVEN values that are not arrays: a string_view literal, a std::string literal,
+        # an explicit string_view, a braced pair holding literals, and a named variable.
+        source = (
+            "using namespace std::string_view_literals;\n"
+            'auto a = std::ranges::find(names, "x"sv);\n'
+            'auto b = std::ranges::count(names, "x"s);\n'
+            'auto c = std::ranges::contains(names, std::string_view{"x"});\n'
+            'auto d = std::ranges::find(keys, std::pair<std::string, std::string>{"t", "k"});\n'
+            "auto e = std::ranges::find(names, wanted);\n"
+            'auto f = std::find(names.begin(), names.end(), "x");\n'
+        )
+        # WHEN the gate runs.
+        # THEN none of them is rejected.
+        self.assert_accepted({"src/a.cpp": source})
 
 
 class RejectUnsafeNeedsPcreGrepTests(unittest.TestCase):
