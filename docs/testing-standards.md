@@ -38,6 +38,15 @@ service function: starting a runtime wires config, the store, the signing key an
 `tests/unit/` names one of those functions (ADR-0593). The directory guides, `tests/unit/AGENTS.md` and
 `tests/integration/AGENTS.md`, have the rest of the split.
 
+## Tooling tests that read the sources
+
+A list that documents something in the code (the example configurations' `log_modules` lines, for one) is checked by a
+tooling test that reads the code, never against a second list kept by hand in the test. Such a test fails on anything it
+cannot read rather than skipping it, so a new form in the code is taught to the test instead of dropping out of the
+check, and it ignores comments. `ExampleLogModuleListTests` in `tests/tooling/test_example_config.py` is the model:
+a logger call names its module with a literal or a string constant in the same file, and a new call form or a shared
+constant is added to the scan in the same change (ADR-0872).
+
 ## Concurrency and locking tests
 
 Assert on what a thread holding none of the resource can observe, not on what a

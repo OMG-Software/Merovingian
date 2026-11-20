@@ -271,6 +271,23 @@ MODULE_CONSTANT_INIT = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([A-Za-z0
 # Identifiers that forward a caller's module rather than name one.
 FORWARDED_MODULE_PARAMETERS = {"__func__", "mod", "logger", "module"}
 EXAMPLE_LOG_MODULE_LINE = re.compile(r"^# log_modules\.([A-Za-z0-9_]+)=", re.MULTILINE)
+# A C++ comment, or a literal a comment marker may appear inside: raw strings first, since
+# their bodies may hold quotes, then ordinary string and character literals.
+CPP_COMMENT_OR_LITERAL = re.compile(
+    r'R"(?P<delim>[^()\\\s]{0,16})\(.*?\)(?P=delim)"'
+    r'|"(?:\\.|[^"\\\n])*"'
+    r"|'(?:\\.|[^'\\\n])*'"
+    r"|(?P<comment>//[^\n]*|/\*.*?\*/)",
+    re.DOTALL,
+)
+
+
+def without_comments(source: str) -> str:
+    """The C++ source with its comments blanked, so code a comment quotes is not read as a call."""
+    return CPP_COMMENT_OR_LITERAL.sub(
+        lambda match: re.sub(r"[^\n]", " ", match.group(0)) if match.group("comment") else match.group(0),
+        source,
+    )
 
 
 def source_log_modules() -> tuple[set[str], set[str]]:
@@ -280,7 +297,7 @@ def source_log_modules() -> tuple[set[str], set[str]]:
     sources = [path for path in (REPO_ROOT / "src").rglob("*") if path.suffix in {".cpp", ".hpp"}]
     sources += list((REPO_ROOT / "include").rglob("*.hpp"))
     for path in sources:
-        text = path.read_text(encoding="utf-8")
+        text = without_comments(path.read_text(encoding="utf-8"))
         constants = dict(MODULE_CONSTANT.findall(text))
         constants.update(MODULE_CONSTANT_INIT.findall(text))
         modules.update(DATABASE_AUDIT_CALL.findall(text))
@@ -297,6 +314,26 @@ def source_log_modules() -> tuple[set[str], set[str]]:
 
 
 class ExampleLogModuleListTests(unittest.TestCase):
+    def test_a_logger_call_quoted_in_a_comment_names_no_module(self) -> None:
+        # GIVEN source whose comments quote logger calls, beside literals that hold comment markers.
+        source = (
+            '// observability::log_diagnostic("quoted_line", "x", fields, severity);\n'
+            '/* observability::log_diagnostic("quoted_block", "x",\n   fields, severity); */\n'
+            'auto const url = std::string_view{"https://example.org/*not-a-comment"};\n'
+            'auto const raw = R"json({"a": "//", "b": "*/"})json";\n'
+            'observability::log_diagnostic("real", "x", fields, severity); // trailing\n'
+        )
+
+        # WHEN the comments are blanked and the calls read.
+        stripped = without_comments(source)
+        modules = {literal for literal, _ in QUALIFIED_LOG_CALL.findall(stripped)}
+
+        # THEN only the call in code counts, the literals are kept whole, and the lines stay where they were.
+        self.assertEqual(modules, {"real"})
+        self.assertIn('"https://example.org/*not-a-comment"', stripped)
+        self.assertIn('R"json({"a": "//", "b": "*/"})json"', stripped)
+        self.assertEqual(stripped.count("\n"), source.count("\n"))
+
     def test_each_example_lists_exactly_the_modules_the_server_logs_under(self) -> None:
         # GIVEN every logger module the server's sources name.
         modules, unresolved = source_log_modules()

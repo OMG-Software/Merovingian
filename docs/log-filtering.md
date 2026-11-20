@@ -105,7 +105,8 @@ forwards the name to `SingleLog::set_module_log_level(name, level)`
 without a registry. The example configurations (`config/merovingian.conf.example` and
 `config/merovingian.conf.bsd.example`) list every module the server logs under; keep both in step when a module is
 added or removed. `tests/tooling/test_example_config.py` scans `src/` and `include/` for the modules the logger calls
-name and fails when either example lists a different set. This is a non-exhaustive list of common module names
+name and fails when either example lists a different set, or when a call names its module through anything but a
+literal or a string constant in the same file (ADR-0872). This is a non-exhaustive list of common module names
 used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`
 (`rate_limit` is used only with `log_diagnostic_audit`):
 
