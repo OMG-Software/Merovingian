@@ -8446,6 +8446,28 @@ namespace
                room.avatar_event_ordering != recorded(sliding_avatar_seen_key(room_id));
     }
 
+    // MSC4186 `name` / `avatar` `null`: a room the connection was sent with a name or avatar event whose key current
+    // state no longer holds (state resolution removed it) is sent the removal too. The builder sees only current
+    // state, where such a room looks like one that never had a name, so it cannot tell (ADR-0869).
+    auto mark_sliding_summary_removals(std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                       std::string_view room_id, sync::SlidingSyncRoomResponse& room) -> void
+    {
+        if (room.initial)
+        {
+            return;
+        }
+        if (!room.name.has_value() && !room.name_event_ordering.has_value() &&
+            rooms_seen.contains(sliding_name_seen_key(room_id)))
+        {
+            room.name_removed = true;
+        }
+        if (!room.avatar.has_value() && !room.avatar_event_ordering.has_value() &&
+            rooms_seen.contains(sliding_avatar_seen_key(room_id)))
+        {
+            room.avatar_removed = true;
+        }
+    }
+
     // Whether the user's `m.direct` changed since `since_sync_stream_id` and now gives one of `rooms` the connection
     // has sent another `is_dm` than it was sent with (its `dm:` entry). MSC4186: `is_dm` "Must be included in an
     // incremental sync if the DM state changes", so the response sends such a room again (ADR-0865), whatever the lists
@@ -9279,6 +9301,7 @@ namespace
                                                   lazy_already_sent, ignored_senders, history_visibility,
                                                   *unread_classifier, expansion, room_last_ordering,
                                                   visible_event_ordering, device_id, &request_lookups.value());
+            mark_sliding_summary_removals(conn.rooms_seen, room_id, room);
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, changed
             // required_state, a changed `is_dm`, or a changed or removed name or avatar
@@ -9698,13 +9721,20 @@ namespace
         // ADR-0864: an invite no longer held (rejected, withdrawn, accepted, or withheld now) forgets its entry, so the
         // next invite to the room is sent; a reported invite records its position and clears the room's joined-room
         // bookkeeping, which predates the invite, so a join that follows is sent with its full snapshot.
+        auto invites_ended = std::vector<std::string>{};
         std::erase_if(next_state.rooms_seen, [&](auto const& entry) {
             auto const& key = entry.first;
             if (!key.starts_with(sliding_invite_seen_prefix))
             {
                 return false;
             }
-            return !request_lookups->is_invited(std::string_view{key}.substr(sliding_invite_seen_prefix.size()));
+            auto const room_id = std::string_view{key}.substr(sliding_invite_seen_prefix.size());
+            if (request_lookups->is_invited(room_id))
+            {
+                return false;
+            }
+            invites_ended.emplace_back(room_id);
+            return true;
         });
         for (auto const& [room_id, seen_at] : invites_reported)
         {
@@ -9712,6 +9742,16 @@ namespace
             next_state.lazy_members_sent.erase(room_id);
             next_state.room_timeline_limits.erase(room_id);
             next_state.rooms_seen[sliding_invite_seen_key(room_id)] = seen_at;
+        }
+        // An invite this connection was sent and the user declined, or that was withdrawn, keeps the room "previously
+        // sent" (ADR-0867) when no list or subscription reported its departure in this response: a `membership:` entry
+        // at 0, which no membership row is at or below, so the departure is still sent once a list holds the room.
+        for (auto const& room_id : invites_ended)
+        {
+            if (request_lookups->is_unjoined(room_id))
+            {
+                next_state.rooms_seen.try_emplace(sliding_membership_seen_key(room_id), 0U);
+            }
         }
         // ADR-0867: likewise for a knocked or departed room. Its entry stays while the membership does, so a room left
         // of the user's own accord stays "previously sent"; a join, or a forgotten room, ends it.

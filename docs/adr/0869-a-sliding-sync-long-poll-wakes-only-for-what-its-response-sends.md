@@ -46,6 +46,9 @@ Chosen option: 1.
 * A room is sent again when the event its name or avatar comes from differs from the one recorded under `name:` or
   `avatar:` (an absent entry is none). Comparing the event, not its ordering against a floor, also catches state
   resolution moving the name back to an older event. `sliding_previously_sent_rooms` strips both prefixes.
+* A room with a `name:` or `avatar:` entry whose current state holds no such event (state resolution removed the key,
+  and no event emptied it) is sent `null` for it (`mark_sliding_summary_removals`), not left out: an absent field tells
+  the client nothing has changed.
 * A change of `m.direct` wakes a poll only when it changes the `is_dm` of a joined room the response could send (the
   previous windows and the subscriptions) that the connection has sent, read against its `dm:` entry: the room the
   response sends again. `lists_filter_on_account_data` counts `tags` and `not_tags` as it counts `is_favourite`.

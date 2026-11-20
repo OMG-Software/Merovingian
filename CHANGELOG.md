@@ -170,6 +170,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   room, and its `by_recency` key parses at most 128 KiB of event JSON per room (ADR-0867, ADR-0655).
 * A list the previous sliding sync request had and this one dropped no longer puts its window in an extension's
   scope or its long-poll check, so typing or receipts there no longer answer the poll with nothing (ADR-0861).
+* A sliding sync room whose name or avatar state resolution removed is sent `null` for it; it was left out, so the
+  client kept the old one (ADR-0869).
+* An invite rejected or withdrawn while a sliding sync request asked for no lists is listed as `leave` when the lists
+  come back; the room was dropped as never sent (ADR-0867).
 
 ## Release notes
 

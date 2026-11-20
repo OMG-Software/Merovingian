@@ -6,13 +6,15 @@
 // response's `invite_state` (stripped state only: no `timeline`, no `required_state`); C-S API v1.19, "Room history
 // visibility": a user who has not joined a room may not view its events. The invites are made by /createRoom's
 // `invite` and by POST /invite, the two paths a local invite takes. Also the rooms a list holds after the user left,
-// was kicked or was banned (MSC4186 "Lists", ADR-0867): judged and built as of the departure, never later.
+// was kicked or was banned (MSC4186 "Lists", ADR-0867): judged and built as of the departure, never later; and a
+// name removed from current state, sent as `null` (MSC4186 room `name`, ADR-0869).
 
 #include "../support/E2eeCapsSupport.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -22,6 +24,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -997,6 +1000,87 @@ SCENARIO("A list the previous request had and this one dropped puts nothing in a
             THEN("the poll parks: the dropped list's window is no longer in the typing scope")
             {
                 REQUIRE(waiting.status == hs::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}
+
+SCENARIO("An invite declined while no list holds it keeps the room previously sent on the connection",
+         "[homeserver][sliding-sync][departed][integration]")
+{
+    GIVEN("benandez's connection sent his invite to a room of james's, and he declined it while asking for no lists")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        auto const room =
+            make_room(rt, fixture.james, R"({"preset":"private_chat","invite":[")" + std::string{benandez} + R"("]})");
+        auto const invited = poll(rt, fixture.benandez_token, persephone_body, fixture.pos, 0U);
+        REQUIRE(room_entry(invited.response.body, room).present);
+        expect_ok(rt, fixture.benandez_token, "POST", "/_matrix/client/v3/rooms/" + room + "/leave", "{}");
+        auto const no_lists = std::string_view{R"({"extensions":{"typing":{"enabled":true}}})"};
+        auto const declined = poll(rt, fixture.benandez_token, no_lists, pos_of(invited), 0U);
+        auto const pos = pos_of(declined);
+
+        WHEN("he asks for his list again")
+        {
+            auto const listed = poll(rt, fixture.benandez_token, persephone_body, pos, 0U);
+            auto const left = room_entry(listed.response.body, room);
+
+            THEN("the list holds the room he left, and it is sent as `leave`: it was sent before on this connection")
+            {
+                REQUIRE(contains(list_rooms(listed.response.body, "rooms"), room));
+                REQUIRE(left.present);
+                auto const* const membership = string_member(left.value, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("A room name that state resolution removed is sent as null to a connection that was sent it",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("benandez's connection sent a room with its name, and the room's current state then lost the name")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        expect_ok(rt, fixture.james, "PUT", "/_matrix/client/v3/rooms/" + fixture.shared_room + "/state/m.room.name/",
+                  R"({"name":"Alpha"})");
+        auto const named = poll(rt, fixture.benandez_token, persephone_body, fixture.pos, 0U);
+        auto const named_room = room_entry(named.response.body, fixture.shared_room);
+        REQUIRE(named_room.present);
+        auto const* const sent_name = string_member(named_room.value, "name");
+        REQUIRE(sent_name != nullptr);
+        REQUIRE(*sent_name == "Alpha");
+        // A new message, so the room is in the next response, then what a state resolution that drops the key leaves:
+        // no m.room.name row in current state, and no event that empties the name (that case was already `null`). The
+        // row goes after the message, whose own storing writes current state from the state it was built on.
+        send_text(rt, fixture.james, fixture.shared_room, "after-resolution", "hello");
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            auto& store = rt.homeserver.database.persistent_store;
+            std::erase_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                return row.room_id == fixture.shared_room && row.event_type == "m.room.name";
+            });
+            merovingian::database::rebuild_state_index(store);
+        }
+
+        WHEN("he syncs from the pos that sent the name")
+        {
+            auto const synced = poll(rt, fixture.benandez_token, persephone_body, pos_of(named), 0U);
+            auto const room = room_entry(synced.response.body, fixture.shared_room);
+
+            THEN("the room's name is null, so the client drops the name it holds")
+            {
+                REQUIRE(room.present);
+                auto const* const name = object_member(room.value, "name");
+                REQUIRE(name != nullptr);
+                REQUIRE(std::holds_alternative<std::nullptr_t>(name->storage()));
             }
         }
     }

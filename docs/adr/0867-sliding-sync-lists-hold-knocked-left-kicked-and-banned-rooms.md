@@ -54,7 +54,9 @@ Chosen option: the third.
   recorded there would send the room again on every poll until the commit ends. The room is sent again only when its
   membership row moves past the entry (`sliding_membership_already_sent`). Reporting it drops the room's joined-room
   bookkeeping, so a rejoin is sent with its full snapshot. The entry stays while the membership does, which keeps a
-  left room "previously sent"; a join or a forgotten room ends it.
+  left room "previously sent"; a join or a forgotten room ends it. An invite the connection was sent that ends with no
+  list or subscription to report it (the request asked for none) leaves a `membership:` entry at 0, which no row is at
+  or below, so the room stays previously sent and its `leave` is sent once a list holds it again.
 * **Waking.** A membership row that is not an invite wakes the poll (any such row may change a list), unless the
   connection was already sent that row as a knock or a departure, by the response's own test
   (`sliding_membership_already_sent`, ADR-0869).
