@@ -28,7 +28,7 @@ Spec authority:
 | `ReceiptVisibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
-| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). `joined_extension_scope_rooms` keeps the joined ones, over an `ExtensionScopeSource` (the response's list windows and subscriptions); typing, receipts and sticky_events all serve through it (ADR-0861). `enters_typing_scope` and `receipt_floor_for` read the connection's `ExtensionScopeHistory` (ADR-0863) |
+| `ExtensionScope.cpp` | `extension_scope_rooms`: the rooms a sliding sync extension's MSC4508 `lists` and `rooms` keys put in scope (absent all, `[]` none, `"*"` all; `rooms` reaches only the request's subscriptions; ADR-0858). `joined_extension_scope_rooms` keeps the joined ones, over an `ExtensionScopeSource` (the response's list windows and subscriptions); typing, receipts and sticky_events all serve through it (ADR-0861). `enters_typing_scope`, `receipt_floor_for`, `enters_receipts_scope` and `account_data_floor_for` read the connection's `ExtensionScopeHistory`, each shared by the builder and the long-poll check (ADR-0863, ADR-0869) |
 | `StickySelection.cpp` | `sticky_candidates_of_room` (a room's unexpired sticky rows that are accepted events of it and not withheld redactions, through the sticky table's room index) and `select_sticky_for_sync` (pure: bound, position, ignored senders, exclusions, limit; ADR-0855) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
@@ -155,9 +155,13 @@ Lists also hold knocked, kicked and banned rooms, and left rooms the connection 
 ADR-0867). Their sort keys come from the membership row (`recency`), their name key is empty, a departed room counts as
 encrypted only if the encryption event predates the departure, and they are never passed to `build_room_response`: a
 knock is sent its stripped state, a departure `build_departed_room_response` (state as of the departure, the user's own
-membership events, never anything later), each once per membership change under `membership:<room_id>`. `rooms_seen`
-also holds `dm:<room_id>` for a joined room last sent as a DM (ADR-0865); any reader that treats its keys as room IDs
-strips `invite:`, `membership:` and `dm:` (`sliding_previously_sent_rooms`).
+membership events, never anything later, its timeline the newest `timeline_limit` of them), each once per membership
+change under `membership:<room_id>`. A knock's filters and name key read the stripped state it is sent: the invite record
+when it has one, else, for a room this server holds, the room's current state (`stripped_summary_event`). `rooms_seen`
+also holds `dm:<room_id>` for a joined room last sent as a DM (ADR-0865), and `name:<room_id>` / `avatar:<room_id>`, the
+stream ordering of the `m.room.name` / `m.room.avatar` event the room was last sent with: a room whose event differs is
+sent again, a removed one as `null` (ADR-0869). Any reader that treats its keys as room IDs strips `invite:`,
+`membership:`, `dm:`, `name:` and `avatar:` (`sliding_previously_sent_rooms`).
 
 `parse_sliding_sync_request` clamps `timeline_limit` to
 `sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions (100),
@@ -166,7 +170,7 @@ strips `invite:`, `membership:` and `dm:` (`sliding_previously_sent_rooms`).
 
 A room's sliding sync timeline is read through `newest_timeline_window`, like `/sync`'s, so it stops after `max_timeline_rows_skipped` rows not taken and then is `limited` with a `prev_batch` where the walk stopped (ADR-0664). Never add a loop over `room_in_stream_order` that `continue`s on a visibility test.
 
-A list filter or sort key reads the request's `SlidingSyncRequestLookups`, never a scan of `store.memberships`, `store.state` or `store.receipts` per room (ADR-0665); a new filter adds a lookup there. Only `joined_rooms()` reads the room table (`room_rows_visited`), so the long-poll's invite check, which asks only `is_invited` and the filters, costs the user's own rows.
+A list filter or sort key reads the request's `SlidingSyncRequestLookups`, never a scan of `store.memberships`, `store.state` or `store.receipts` per room (ADR-0665); a new filter adds a lookup there. Only `joined_rooms()` reads the room table (`room_rows_visited`), so the long-poll's invite check, which asks only `is_invited` and the filters, costs the user's own rows. A filter that needs to know whether the user is joined to a room (`space_children`) reads the join rows until `joined_rooms()` has run, never `m_joined` alone: the invite check never lists the joined rooms.
 
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
@@ -190,12 +194,17 @@ handler's `ExtensionScopeSource`), whatever the user's membership, not the rooms
 when it changed after `since`, and all of them when the connection's `ExtensionScopeHistory` says the extension was off;
 a room row when it changed after `since`, or every row of a room entering the scope (not in `account_data_rooms`), which
 covers a room new to the connection (ADR-0493). With no history it falls back to `initial_room_ids`. A room is found in
-the scope through a hash set, never a scan per row. Room account data outside the scope does not wake a long poll.
+the scope through a hash set, never a scan per row. Room account data outside the scope does not wake a long poll. The
+floor a row is sent from is `account_data_floor_for` (`ExtensionScope.hpp`), which the long-poll check reads too, so
+turning the extension on or a room entering its scope answers a poll at once with what predates `pos`, and such a
+response sets `sent_on_scope_entry` and takes a `pos` page (ADR-0869).
 
 The receipts extension (MSC4551) sends a room entering its scope for the first time its initial receipts: the user's
 own and every user's on the events of its timeline in this response (`ExtensionScopeSource::timeline_event_ids`), and
 nothing older; a room whose entry is `initial` or `expanded_timeline` (`fresh_timeline_rooms`) also gets the receipts on
-its timeline. Typing and receipts keep their `{type, content}` wrapper (ADR-0868). Every extension answers under each
+its timeline. First entry is `enters_receipts_scope`, shared with the long-poll check, which wakes for the user's own
+receipt in such a room (ADR-0869). Every extension ORs into `SlidingSyncExtensionResponses::sent_on_scope_entry`, never
+assigns it. Typing and receipts keep their `{type, content}` wrapper (ADR-0868). Every extension answers under each
 name its request used, bare or MSC-prefixed (`ExtensionNames`, `name_sliding_extensions`).
 
 A room's timeline is built newest first and stops at `timeline_limit + 1` events (ADR-0494); a filter added to that walk is a
@@ -495,8 +504,8 @@ path records with (tests move it with `PersistentStore::test_sticky_clock_ms`), 
 - **Typing and receipts entering scope (ADR-0863):** the connection keeps what each response left in the typing and
   receipts scope (`extension_scope_history`, committed like the rest of the pending response). A room entering the
   typing scope is sent its current typing state, and a room back in the receipts scope the receipts after the position
-  it dropped out at (its floor). The long-poll check reads the same `enters_typing_scope` and `receipt_floor_for` and
-  skips ignored senders as the response does, and a response that sent such state takes a `pos` page like a sticky
+  it dropped out at (its floor). The long-poll check reads the same `enters_typing_scope`, `receipt_floor_for` and
+  `enters_receipts_scope` and skips ignored senders as the response does, and a response that sent such state takes a `pos` page like a sticky
   delivery, so the next request acknowledges it. Never wake a poll for scope entry with a test the response does not
   share: it would be answered with nothing, again.
 - **Lazy members (MSC4480):** in a room built with `$LAZY` members, the senders of the sticky events sent are timeline
@@ -521,7 +530,7 @@ three transports run `long_poll_wait`: cursor, then the positions check, then th
 before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when
 its last waiter leaves: a publish between two slices must be seen. The audience reads the room's rows through
 `for_each_room_membership_row` (ADR-0437).
-- The sliding-sync relevance check (`has_relevant_event` and the receipt and typing predicates) tests rooms against one set of the caller's joined rooms built from `for_each_user_membership_row`; the receipt, typing and sticky predicates look only at the joined rooms of their extension's MSC4508 scope, over the windows the previous response held and the subscriptions, so a change outside it never answers a poll with nothing (ADR-0861). Apart from the extensions, the user's own receipt in any joined room wakes a connection with a list sorted `by_notification_count` (`own_receipt_moved_in_any`), since it can move a room into or out of that list's window (ADR-0861). Likewise the user's own `m.tag` or `m.direct` wakes a connection with a list filtered on `is_favourite` or `is_dm` (`own_list_filter_data_moved`), since it can move a room into a window the poll saved (ADR-0861). It walks at most `sliding_sync_relevance_scan_rows` events, and treats reaching that cap as relevant (answer, never park, so no wake-up is lost and the next poll's walk is short). Never call a per-event `user_is_joined`-style scan of `memberships` there (ADR-0609). The same pass over the user's own rows also answers the poll for a deliverable invite newer than `since` that a subscription or a list whose filters it passes could hold (`room_passes_list_filters`, the list's own test), and for any newer row that is not an invite (a join, leave, kick, ban, or the end of an invite, sent or not: each can move a list's count); an event in a room the user is neither joined nor invited to still parks it (ADR-0864). A response that reports an invite with no stream advanced carries a new page (ADR-0862), or the next request would replay it.
+- The sliding-sync relevance check (`has_relevant_event` and the receipt and typing predicates) tests rooms against one set of the caller's joined rooms built from `for_each_user_membership_row`; the receipt, typing and sticky predicates look only at the joined rooms of their extension's MSC4508 scope, over the windows the previous response held and the subscriptions, so a change outside it never answers a poll with nothing (ADR-0861). Apart from the extensions, the user's own receipt in any joined room wakes a connection with a list sorted `by_notification_count` (`own_receipt_moved_in_any`), since it can move a room into or out of that list's window (ADR-0861). Likewise the user's own `m.tag` or `m.direct` wakes a connection with a list filtered on `is_favourite`, `is_dm`, `tags` or `not_tags` (`own_list_filter_data_moved`), since it can move a room into a window the poll saved (ADR-0861). A change of `m.direct` also wakes any connection when it changes the `is_dm` of a joined room it has sent and could send again, read against the room's `dm:` entry (`sent_room_dm_status_moved`, ADR-0869). It walks at most `sliding_sync_relevance_scan_rows` events, and treats reaching that cap as relevant (answer, never park, so no wake-up is lost and the next poll's walk is short). Never call a per-event `user_is_joined`-style scan of `memberships` there (ADR-0609). The same pass over the user's own rows also answers the poll for a deliverable invite newer than `since` that a subscription or a list whose filters it passes could hold (`room_passes_list_filters`, the list's own test), and for any newer row that is not an invite (a join, leave, kick, ban, or the end of an invite, sent or not: each can move a list's count); an event in a room the user is neither joined nor invited to still parks it (ADR-0864). A response that reports an invite with no stream advanced carries a new page (ADR-0862), or the next request would replay it.
 - A long-poll on the `sync_pool` path does not wait on a pool thread (ADR-0569): it parks in `ParkedPollRegistry`
   (owned by `SyncNotifier`) and is resumed on the pool by a publish for its user or by its deadline. Park with a cursor
   taken before the last rerun (`SyncNotifier::park` inserts, then compares the cursor), keep the registry mutex a leaf

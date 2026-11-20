@@ -547,6 +547,18 @@ and is never persisted. Its connection identifier data is limited to presence
 and byte length, and it contains no request bodies, tokens, event content, or
 encryption material.
 
+## Sliding sync position refusals (ADR-0862, ADR-0866)
+
+A sliding sync request whose `pos` is refused with `400 M_UNKNOWN_POS` logs `sliding_sync.unknown_pos` under the
+`client_server` module at debug level, with `actor` and `device_id`, and one of two field sets, never the `pos` as sent:
+
+- `reason` `not issued`: the `pos` does not unbind for this user and device (another user's or device's, altered, or
+  sent before the binding existed) or does not read as a position. The binding's hash and the text sent are not logged.
+- `requested_pos`, `event_watermark` and `sync_watermark`: an unbound position from another stream epoch, or ahead of
+  the server's streams. The connection's state is dropped and the client starts again.
+
+Neither is an audit event: a client sends a stale `pos` after every upgrade and restore, so it is not persisted.
+
 ## OAuth 2.0 client registration diagnostics (ADR-0779, ADR-0780)
 
 `POST /_merovingian/oauth2/register` logs under the `oauth` module with the fields `client_id`, `application_type`

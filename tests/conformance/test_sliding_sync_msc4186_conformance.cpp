@@ -26,10 +26,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -155,6 +157,52 @@ struct RoomEntry final
     return errcode == nullptr ? std::string{} : *errcode;
 }
 
+// The (type, state_key) of each event of a room's `required_state`, sorted.
+[[nodiscard]] auto required_state_keys(RoomEntry const& entry) -> std::vector<std::pair<std::string, std::string>>
+{
+    auto keys = std::vector<std::pair<std::string, std::string>>{};
+    auto const* state = object_member_as_array(entry.value, "required_state");
+    if (state == nullptr)
+    {
+        return keys;
+    }
+    for (auto const& event : *state)
+    {
+        auto const& object = std::get<json::Object>(event.storage());
+        auto const* type = string_member(object, "type");
+        auto const* state_key = string_member(object, "state_key");
+        keys.emplace_back(type == nullptr ? std::string{} : *type, state_key == nullptr ? std::string{} : *state_key);
+    }
+    std::ranges::sort(keys);
+    return keys;
+}
+
+// Whether `keys` holds an event of `type`.
+// The `content.membership` of each event in a room entry's timeline, in order.
+[[nodiscard]] auto timeline_memberships(RoomEntry const& entry) -> std::vector<std::string>
+{
+    auto memberships = std::vector<std::string>{};
+    auto const* timeline = object_member_as_array(entry.value, "timeline");
+    REQUIRE(timeline != nullptr);
+    for (auto const& event : *timeline)
+    {
+        auto const* content = object_member_as_object(std::get<json::Object>(event.storage()), "content");
+        REQUIRE(content != nullptr);
+        auto const* membership = string_member(*content, "membership");
+        REQUIRE(membership != nullptr);
+        memberships.push_back(*membership);
+    }
+    return memberships;
+}
+
+[[nodiscard]] auto holds_type(std::vector<std::pair<std::string, std::string>> const& keys, std::string_view type)
+    -> bool
+{
+    return std::ranges::any_of(keys, [type](auto const& key) {
+        return key.first == type;
+    });
+}
+
 // The `type` of each event of a room's timeline, in order.
 [[nodiscard]] auto timeline_types(RoomEntry const& entry) -> std::vector<std::string>
 {
@@ -207,10 +255,13 @@ SCENARIO("MSC4186 a pos is refused to any user or device it was not issued to",
             {
                 // Spec MUST: a pos not issued to the requesting user is rejected with M_UNKNOWN_POS.
                 REQUIRE(by_bob.response.status == 400U);
+                // Spec MUST: the refusal's errcode is M_UNKNOWN_POS.
                 REQUIRE(errcode_of(by_bob) == "M_UNKNOWN_POS");
                 // Spec MUST: a pos not issued to the requesting device is rejected with M_UNKNOWN_POS.
                 REQUIRE(by_second.response.status == 400U);
+                // Spec MUST: the refusal's errcode is M_UNKNOWN_POS.
                 REQUIRE(errcode_of(by_second) == "M_UNKNOWN_POS");
+                // Spec MUST: the user and device a pos was issued to continue the connection with it.
                 REQUIRE(by_owner.response.status == 200U);
             }
         }
@@ -225,6 +276,7 @@ SCENARIO("MSC4186 a pos is refused to any user or device it was not issued to",
             {
                 // Spec MUST: a pos the server did not issue is rejected with M_UNKNOWN_POS.
                 REQUIRE(result.response.status == 400U);
+                // Spec MUST: the refusal's errcode is M_UNKNOWN_POS.
                 REQUIRE(errcode_of(result) == "M_UNKNOWN_POS");
             }
         }
@@ -255,6 +307,7 @@ SCENARIO("MSC4186 a pos is accepted as a /messages token", "[sync][sliding-sync]
             {
                 // Spec MUST (MSC4186 "Connections"): a pos is usable in /messages as a /v3/sync next_batch is.
                 REQUIRE(messages.response.status == 200U);
+                // Spec MUST: /messages from the pos returns the events before it, as from a next_batch.
                 REQUIRE(messages.response.body.find("\"first\"") != std::string::npos);
             }
         }
@@ -280,6 +333,7 @@ SCENARIO("MSC4186 a request without a pos is answered at once, whatever its time
             {
                 // Spec MUST: `timeout` is ignored without a pos.
                 REQUIRE(result.status == hs::DispatchResult::Status::complete);
+                // Spec MUST: the request is answered as a normal response, at once.
                 REQUIRE(result.response.status == 200U);
             }
         }
@@ -314,31 +368,40 @@ SCENARIO("MSC4186 a joined room carries its membership, bump stamp, lists and he
 
             THEN("each room says she is joined, gives a bump stamp and names the list that holds it")
             {
+                // Spec MUST: a room in a list's range is sent on the connection's first response.
                 REQUIRE(unnamed_entry.present);
+                // Spec MUST: a room in a list's range is sent on the connection's first response.
                 REQUIRE(named_entry.present);
                 // Spec MUST (`membership`): the user's membership in the room.
                 REQUIRE(membership_of(unnamed_entry) == "join");
+                // Spec MUST (`membership`): the user's membership in the room.
                 REQUIRE(membership_of(named_entry) == "join");
-                // Spec (`bump_stamp`): an integer for the room's last proper activity.
+                // Spec MUST (`bump_stamp`): an integer for the room's last proper activity.
                 auto const* stamp = int_member(unnamed_entry.value, "bump_stamp");
                 REQUIRE(stamp != nullptr);
+                // Spec MUST (`bump_stamp`): a stream position, so greater than zero once the room has activity.
                 REQUIRE(*stamp > 0);
-                // Spec (`lists`): the names of the lists the room matched.
+                // Spec MUST (`lists`): the names of the lists the room matched.
                 auto const* lists = object_member_as_array(unnamed_entry.value, "lists");
                 REQUIRE(lists != nullptr);
+                // Spec MUST (`lists`): one entry per list whose range holds the room; the request has one list.
                 REQUIRE(lists->size() == 1U);
+                // Spec MUST (`lists`): the entry is the list's name.
                 REQUIRE(std::get<std::string>(lists->front().storage()) == "all");
             }
 
             THEN("the unnamed room has bob as its hero and the named room has none")
             {
-                // Spec (`heroes`): "only if the room has no name"; the users /v3/sync `m.heroes` names.
+                // Spec MUST (`heroes`): present when the room has no name.
                 auto const* heroes = object_member_as_array(unnamed_entry.value, "heroes");
                 REQUIRE(heroes != nullptr);
+                // Spec MUST (`heroes`): the users /v3/sync `m.heroes` names: the one other member.
                 REQUIRE(heroes->size() == 1U);
                 auto const* hero_id = string_member(std::get<json::Object>(heroes->front().storage()), "user_id");
                 REQUIRE(hero_id != nullptr);
+                // Spec MUST (`heroes`): each hero carries its `user_id`.
                 REQUIRE(*hero_id == "@bob:example.org");
+                // Spec MUST (`heroes`): "only if the room has no name".
                 REQUIRE(object_member(named_entry.value, "heroes") == nullptr);
             }
         }
@@ -367,11 +430,57 @@ SCENARIO("MSC4186 a removed room name is sent as null", "[sync][sliding-sync][co
 
             THEN("the room's name is null")
             {
+                // Spec MUST: a room whose name changed is sent in the incremental response.
                 REQUIRE(entry.present);
                 auto const* name = object_member(entry.value, "name");
+                // Spec MUST: a removed name is sent, as `null`, not left out.
                 REQUIRE(name != nullptr);
-                // Spec: a removed name is `null`.
+                // Spec MUST: a removed name is `null`.
                 REQUIRE(std::holds_alternative<std::nullptr_t>(name->storage()));
+            }
+        }
+    }
+
+    GIVEN("alice's named room, sent on a connection that asks for no timeline and no required_state")
+    {
+        constexpr auto bare_body =
+            std::string_view{R"({"lists":{"all":{"ranges":[[0,99]],"required_state":[],"timeline_limit":0}}})"};
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const room_id = make_room(rt, alice, R"({"name":"Old name"})");
+        auto const pos = pos_of(sliding(rt, alice, bare_body));
+
+        WHEN("she removes the name and syncs from the pos")
+        {
+            expect_ok(rt, alice, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name/",
+                      R"({"name":""})");
+            auto const result = sliding(rt, alice, bare_body, pos);
+            REQUIRE(result.response.status == 200U);
+            auto const entry = room_entry(result.response.body, room_id);
+
+            THEN("the room is sent, with its name null, though nothing else of it changed")
+            {
+                // Spec MUST: a room whose name changed is sent in the incremental response.
+                REQUIRE(entry.present);
+                auto const* name = object_member(entry.value, "name");
+                // Spec MUST: a removed name is sent, as `null`, not left out.
+                REQUIRE(name != nullptr);
+                // Spec MUST: a removed name is `null`; the change is the room's, so the room is sent with it.
+                REQUIRE(std::holds_alternative<std::nullptr_t>(name->storage()));
+            }
+
+            AND_WHEN("she syncs again from that response's pos")
+            {
+                auto const again = sliding(rt, alice, bare_body, pos_of(result));
+                REQUIRE(again.response.status == 200U);
+
+                THEN("the room is not sent again: its name has not changed since")
+                {
+                    // Spec MUST: an incremental response carries a room only when something of it changed.
+                    REQUIRE_FALSE(room_entry(again.response.body, room_id).present);
+                }
             }
         }
     }
@@ -413,19 +522,25 @@ SCENARIO("MSC4186 lists hold kicked, knocked and previously sent left rooms, and
 
             THEN("the kicked room is listed as left, with her kick and nothing after it")
             {
+                // Spec MUST: a room the user was kicked from is in the list.
                 REQUIRE(kicked.present);
                 // Spec MUST: a room the user was kicked from is in the list, with its membership.
                 REQUIRE(membership_of(kicked) == "leave");
+                // Spec MUST: a departed room is sent as of the departure: its timeline ends at the kick.
                 REQUIRE(timeline_types(kicked) == std::vector<std::string>{"m.room.member"});
+                // Spec MUST: nothing after the departure is sent.
                 REQUIRE(result.response.body.find("after-the-kick") == std::string::npos);
             }
 
             THEN("the knocked room is listed with its stripped state")
             {
+                // Spec MUST: a room the user has knocked on is in the list.
                 REQUIRE(knocked.present);
-                // Spec MUST: a knocked room is in the list; "Invite/knock/rejections" carry `stripped_state`.
+                // Spec MUST: a knocked room is in the list, with its membership.
                 REQUIRE(membership_of(knocked) == "knock");
+                // Spec MUST: "Invite/knock/rejections" carry `stripped_state`.
                 REQUIRE(object_member_as_array(knocked.value, "stripped_state") != nullptr);
+                // Spec MUST: a knocked room is sent its stripped state in place of a timeline.
                 REQUIRE(object_member(knocked.value, "timeline") == nullptr);
             }
 
@@ -457,10 +572,171 @@ SCENARIO("MSC4186 lists hold kicked, knocked and previously sent left rooms, and
             THEN("only the room the connection was sent is listed, as left")
             {
                 auto const entry = room_entry(result.response.body, left_after);
+                // Spec MUST: a room left of the user's own accord, previously sent on the connection, is listed.
                 REQUIRE(entry.present);
+                // Spec MUST: the room carries the user's membership, `leave`.
                 REQUIRE(membership_of(entry) == "leave");
-                // Spec: a room left of the user's own accord is listed only if previously sent on the connection.
+                // Spec MUST: a room left of the user's own accord is listed only if previously sent on the connection.
                 REQUIRE_FALSE(room_entry(result.response.body, left_before).present);
+            }
+        }
+    }
+}
+
+// Spec: MSC4186 — room config `timeline_limit`: "The maximum number of timeline events to return per response"; and
+// "Lists": a room the user was banned from after joining is in the list, sent as of the departure. C-S API v1.19,
+// "History visibility": an event is visible when the history was `world_readable`, or the user's membership was `join`,
+// at the event; so a ban after leaving is visible only in a `world_readable` room.
+SCENARIO("MSC4186 a departed room's timeline holds at most timeline_limit events",
+         "[sync][sliding-sync][conformance][msc4186][lists]")
+{
+    GIVEN("alice joined to two of bob's rooms, one world_readable and one shared, both sent on her connection")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const readable =
+            make_room(rt, bob,
+                      R"({"preset":"public_chat","initial_state":[{"type":"m.room.history_visibility","state_key":"",)"
+                      R"("content":{"history_visibility":"world_readable"}}]})");
+        auto const shared = make_room(rt, bob, R"({"preset":"public_chat"})");
+        for (auto const& room_id : {readable, shared})
+        {
+            expect_ok(rt, alice, "POST", "/_matrix/client/v3/rooms/" + room_id + "/join", "{}");
+        }
+        auto const pos = pos_of(sliding(rt, alice, list_body));
+
+        WHEN("alice leaves both, bob bans her from both, and she syncs with a timeline_limit of 1")
+        {
+            for (auto const& room_id : {readable, shared})
+            {
+                expect_ok(rt, alice, "POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", "{}");
+                expect_ok(rt, bob, "POST", "/_matrix/client/v3/rooms/" + room_id + "/ban",
+                          R"({"user_id":"@alice:example.org"})");
+            }
+            auto const result = sliding(rt, alice, list_body, pos);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the world_readable room is sent as banned with the ban alone, and a prev_batch to reach her leave")
+            {
+                auto const entry = room_entry(result.response.body, readable);
+                // Spec MUST: a room the user was banned from after joining is in the list.
+                REQUIRE(entry.present);
+                // Spec MUST: a room the user was banned from after joining is in the list, with its membership.
+                REQUIRE(membership_of(entry) == "ban");
+                // Spec MUST: at most `timeline_limit` events per response, and the newest of them: the ban.
+                REQUIRE(timeline_memberships(entry) == std::vector<std::string>{"ban"});
+                // Spec MUST: a timeline with older events behind it carries `prev_batch` to paginate to them.
+                REQUIRE(string_member(entry.value, "prev_batch") != nullptr);
+            }
+            THEN("the shared room's timeline is her leave, the newest event she may see, not the ban she may not")
+            {
+                auto const entry = room_entry(result.response.body, shared);
+                // Spec MUST: a room the user was banned from after joining is in the list.
+                REQUIRE(entry.present);
+                // Spec MUST: a room the user was banned from after joining is in the list, with its membership.
+                REQUIRE(membership_of(entry) == "ban");
+                // Spec MUST: the ban, sent while she was not joined to a shared room, is not visible to her, and
+                // `timeline_limit` counts only the events she may see.
+                REQUIRE(timeline_memberships(entry) == std::vector<std::string>{"leave"});
+            }
+        }
+    }
+}
+
+// Spec: MSC4186 — "RequiredStateRequest": `include` lists the state to return, an omitted `type` or `state_key`
+// matching every value; `exclude` filters state out of what `include` returns; with `lazy_members`, member events are
+// those of the timeline's senders. "Combining room configs": a room matched by several configs is sent the union of
+// the state each returns, one config's `exclude` never filtering another's `include`.
+SCENARIO("MSC4186 required_state objects return what include names, less what exclude names",
+         "[sync][sliding-sync][conformance][msc4186][room-result]")
+{
+    GIVEN("bob's named room with a topic, which alice has joined, and bob's message last in it")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const room_id = make_room(rt, bob, R"({"preset":"public_chat","name":"Named","topic":"A topic"})");
+        expect_ok(rt, alice, "POST", "/_matrix/client/v3/rooms/" + room_id + "/join", "{}");
+        send_text(rt, bob, room_id, "last");
+        auto const list = [](std::string const& required_state) {
+            return R"({"lists":{"all":{"ranges":[[0,99]],"required_state":)" + required_state +
+                   R"(,"timeline_limit":1}})";
+        };
+
+        WHEN("a list includes every state event but the topic")
+        {
+            auto const result =
+                sliding(rt, alice, list(R"({"include":[{}],"exclude":[{"type":"m.room.topic"}]})") + "}");
+            REQUIRE(result.response.status == 200U);
+            auto const keys = required_state_keys(room_entry(result.response.body, room_id));
+
+            THEN("the room's state is sent without its topic")
+            {
+                // Spec MUST: an element with no `type` and no `state_key` matches every state event.
+                REQUIRE(holds_type(keys, "m.room.create"));
+                REQUIRE(holds_type(keys, "m.room.name"));
+                // Spec MUST: state an `exclude` element matches is not returned.
+                REQUIRE_FALSE(holds_type(keys, "m.room.topic"));
+            }
+        }
+
+        WHEN("a list includes only events of one state key, with the type omitted")
+        {
+            auto const result = sliding(rt, alice, list(R"({"include":[{"state_key":"@alice:example.org"}]})") + "}");
+            REQUIRE(result.response.status == 200U);
+            auto const keys = required_state_keys(room_entry(result.response.body, room_id));
+
+            THEN("only alice's member event is sent")
+            {
+                // Spec MUST: an omitted `type` matches every type, and the `state_key` only that key.
+                REQUIRE(keys == std::vector<std::pair<std::string, std::string>>{
+                                    {"m.room.member", "@alice:example.org"}
+                });
+            }
+        }
+
+        WHEN("a list includes everything with lazy_members")
+        {
+            auto const result = sliding(rt, alice, list(R"({"include":[{}],"lazy_members":true})") + "}");
+            REQUIRE(result.response.status == 200U);
+            auto const keys = required_state_keys(room_entry(result.response.body, room_id));
+
+            THEN("the non-member state is sent, and the member events are those of the timeline's sender")
+            {
+                // Spec MUST: `lazy_members` returns the members of the timeline's senders, not every member.
+                // Spec MUST: `lazy_members` does not hold back the non-member state `include` names.
+                REQUIRE(holds_type(keys, "m.room.name"));
+                auto const members = std::ranges::count_if(keys, [](auto const& key) {
+                    return key.first == "m.room.member";
+                });
+                REQUIRE(members == 1);
+                // Spec MUST: the member sent is the timeline's sender's.
+                REQUIRE(std::ranges::find(keys, std::pair<std::string, std::string>{"m.room.member",
+                                                                                    "@bob:example.org"}) != keys.end());
+            }
+        }
+
+        WHEN("a list excludes the topic and a subscription to the room includes it")
+        {
+            auto const result = sliding(
+                rt, alice,
+                list(R"({"include":[{}],"exclude":[{"type":"m.room.topic"}]})") + R"(,"room_subscriptions":{")" +
+                    room_id +
+                    R"(":{"required_state":{"include":[{"type":"m.room.topic","state_key":""}]},"timeline_limit":1}}})");
+            REQUIRE(result.response.status == 200U);
+            auto const keys = required_state_keys(room_entry(result.response.body, room_id));
+
+            THEN("the room is sent the union: its topic too")
+            {
+                // Spec MUST: combined configs return the union; one config's `exclude` does not filter another's.
+                REQUIRE(holds_type(keys, "m.room.topic"));
+                // Spec MUST: and what the list's config returns.
+                REQUIRE(holds_type(keys, "m.room.name"));
             }
         }
     }
@@ -492,6 +768,7 @@ SCENARIO("MSC4186 a room whose DM status changes is sent again", "[sync][sliding
                 REQUIRE(entry.present);
                 auto const* is_dm = merovingian::tests::bool_member(entry.value, "is_dm");
                 REQUIRE(is_dm != nullptr);
+                // Spec MUST: `is_dm` is true once the room is a DM.
                 REQUIRE(*is_dm);
             }
         }
@@ -524,11 +801,17 @@ SCENARIO("MSC4186 extensions are answered under the names the request used",
 
             THEN("each is answered under each name it was asked by, and no other")
             {
+                // Spec MUST: an extension asked for by its MSC-prefixed name is answered under that name.
                 REQUIRE(object_member(*extensions, "org.matrix.msc4538.to_device") != nullptr);
+                // Spec MUST: and not under a name the request did not use.
                 REQUIRE(object_member(*extensions, "to_device") == nullptr);
+                // Spec MUST: an extension asked for by its MSC-prefixed name is answered under that name.
                 REQUIRE(object_member(*extensions, "org.matrix.msc4543.e2ee") != nullptr);
+                // Spec MUST: and not under a name the request did not use.
                 REQUIRE(object_member(*extensions, "e2ee") == nullptr);
+                // Spec MUST: an extension asked for under both names is answered under each.
                 REQUIRE(object_member(*extensions, "org.matrix.msc4548.account_data") != nullptr);
+                // Spec MUST: an extension asked for under both names is answered under each.
                 REQUIRE(object_member(*extensions, "account_data") != nullptr);
             }
         }
@@ -547,7 +830,9 @@ SCENARIO("MSC4186 extensions are answered under the names the request used",
                                          "org.matrix.msc4548", "org.matrix.msc4551"})
                 {
                     auto const* advertised = merovingian::tests::bool_member(*unstable, flag);
+                    // Spec SHOULD: a server supporting an unstable MSC advertises it in `unstable_features`.
                     REQUIRE(advertised != nullptr);
+                    // Spec SHOULD: the flag is true while the MSC is supported.
                     REQUIRE(*advertised);
                 }
             }
@@ -585,6 +870,7 @@ SCENARIO("MSC4543 the e2ee extension sends no device lists without a pos",
                 REQUIRE(object_member(e2ee_of(first), "device_lists") == nullptr);
                 // Spec MUST: the section is included in the response to a request without `pos`.
                 REQUIRE(object_member(e2ee_of(first), "device_one_time_keys_count") != nullptr);
+                // Spec MUST: a request with a pos is answered as usual.
                 REQUIRE(second.response.status == 200U);
             }
         }
@@ -637,7 +923,7 @@ SCENARIO("MSC4548 room account data follows the extension's scope, whatever the 
             {
                 // Spec MUST: account data for an in-scope room regardless of membership.
                 REQUIRE(object_member(*rooms, invited) != nullptr);
-                // Spec: `rooms` covers in-scope rooms only.
+                // Spec MUST: `rooms` covers in-scope rooms only.
                 REQUIRE(object_member(*rooms, own) == nullptr);
             }
         }

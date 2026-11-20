@@ -139,8 +139,6 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   state has none, rather than at the oldest sticky event (ADR-0862).
 * A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
   sent as a new joined room (ADR-0864).
-* Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
-  list or room subscription could hold ends a waiting long poll at once (ADR-0864).
 * A rejected or withdrawn invite wakes the invitee's sliding sync long poll and stays in the list as `leave`, as MSC4186
   says; an accepted one is sent as a new joined room (ADR-0864, ADR-0867).
 * Any other change of a user's own membership answers their sliding sync long poll, so an invite withdrawn outside
@@ -151,6 +149,15 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   never a pass over every room the server holds (ADR-0665).
 * Sliding sync's e2ee extension sends no `device_lists` without a `pos`, and `timeout` without a `pos` is ignored
   (MSC4543, MSC4186, ADR-0865).
+* Turning on sliding sync's `account_data`, or a room entering its or the receipts scope, answers a long poll with what
+  predates `pos`, under a new page, and is not sent again (MSC4548, MSC4551, ADR-0869).
+* A sliding sync room whose name or avatar changed or was removed is sent again, `null` once removed, even with no
+  timeline or `required_state` to carry it (MSC4186, ADR-0869).
+* A sliding sync long poll wakes for a tag that moves a room into a list filtered on `tags` or `not_tags`, and for an
+  `m.direct` change of a sent room's `is_dm` (ADR-0869).
+* A knock on a room this server holds is filtered on its encryption, type and name, which read empty before.
+* A departed room's sliding sync timeline holds at most `timeline_limit` events, its `prev_batch` from the oldest kept.
+* An invite into a sliding sync list filtered on `spaces` answers a long poll; the space read as not joined before.
 
 ## Release notes
 

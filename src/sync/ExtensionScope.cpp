@@ -109,4 +109,21 @@ auto receipt_floor_for(ExtensionScopeHistory const& history, std::string const& 
     return floor != history.receipt_floors.end() ? std::min(floor->second, since_sync_stream_id) : since_sync_stream_id;
 }
 
+auto enters_receipts_scope(ExtensionScopeHistory const& history, std::string const& room_id,
+                           std::uint64_t since_sync_stream_id) -> bool
+{
+    return !history.receipt_rooms.contains(room_id) &&
+           receipt_floor_for(history, room_id, since_sync_stream_id) >= since_sync_stream_id;
+}
+
+auto account_data_floor_for(ExtensionScopeHistory const& history, std::string const& room_id,
+                            std::uint64_t since_sync_stream_id) -> std::uint64_t
+{
+    if (!history.account_data_enabled)
+    {
+        return 0U;
+    }
+    return room_id.empty() || history.account_data_rooms.contains(room_id) ? since_sync_stream_id : std::uint64_t{0U};
+}
+
 } // namespace merovingian::sync

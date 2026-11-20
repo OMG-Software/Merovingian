@@ -3647,3 +3647,236 @@ SCENARIO("a sliding sync room back in the typing or receipts scope is sent what 
         }
     }
 }
+
+// MSC4548 "Long-polling" and MSC4551 "Which receipts" (PR #608 review): a room entering the account_data scope is sent
+// all of its account data, and a room entering the receipts scope for the first time the user's own receipts, though
+// both predate the request's position. Such data answers a long poll at once, as the response sends it, and the
+// response's `pos` page lets the next request acknowledge it rather than be answered again.
+SCENARIO("a sliding sync room entering the account_data or receipts scope answers a long poll with what predates it",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice's own account data or read receipt in the second of two subscribed rooms, outside the scope")
+    {
+        auto const extension = std::string{GENERATE("account_data", "receipts")};
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        if (extension == "receipts")
+        {
+            std::ignore = post_expect_ok(
+                rt, rooms.alice_token,
+                "/_matrix/client/v3/rooms/" + rooms.second + "/receipt/m.read/" + rooms.second_message, "{}");
+        }
+        else
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + rooms.second +
+                         "/account_data/org.example.note",
+                     rooms.alice_token, R"({"note":"kept"})"});
+            REQUIRE(put.response.status == 200U);
+        }
+        auto const poll = [&](std::string const& pos, bool second_in_scope) {
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" + pos;
+            return merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", target, rooms.alice_token, subscribed_scope_request(rooms, extension, second_in_scope)},
+                /*can_wait=*/true);
+        };
+        auto const first_only = sliding_sync(rt, rooms.alice_token, subscribed_scope_request(rooms, extension, false));
+        REQUIRE(first_only.response.status == 200U);
+        REQUIRE_FALSE(std::ranges::contains(extension_room_ids(first_only.response.body, extension), rooms.second));
+
+        WHEN("alice's next long poll puts the second room in scope")
+        {
+            auto const entered = poll(sliding_sync_pos(first_only.response.body), true);
+            THEN("it is answered at once with that room's data, under a new pos")
+            {
+                REQUIRE(entered.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(entered.response.status == 200U);
+                REQUIRE(std::ranges::contains(extension_room_ids(entered.response.body, extension), rooms.second));
+                REQUIRE(sliding_sync_pos(entered.response.body) != sliding_sync_pos(first_only.response.body));
+            }
+
+            AND_WHEN("alice polls again from that response's pos")
+            {
+                auto const again = poll(sliding_sync_pos(entered.response.body), true);
+                THEN("the poll keeps waiting: the room is no longer entering the scope")
+                {
+                    REQUIRE(again.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                }
+            }
+        }
+
+        WHEN("alice's next long poll keeps the second room out of scope")
+        {
+            auto const out = poll(sliding_sync_pos(first_only.response.body), false);
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(out.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}
+
+// MSC4548 "Account data": "When the extension is enabled for the first time on a connection, the response MUST contain
+// all of the user's global account data". That answers a long poll at once, under a new pos, and only once.
+SCENARIO("turning the sliding sync account_data extension on answers a long poll with the global account data",
+         "[homeserver][sliding-sync][integration][extension-scope]")
+{
+    GIVEN("alice with global account data and a connection that has not asked for the account_data extension")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        set_ignored_users(rt, rooms.alice_token, "%40alice%3Aexample.org", R"({"ignored_users":{}})");
+        auto const request = [&](bool account_data) {
+            return R"({"conn_id":"toggle","room_subscriptions":{")" + rooms.first +
+                   R"(":{"required_state":[],"timeline_limit":0}})" +
+                   (account_data ? R"(,"extensions":{"account_data":{"enabled":true}}})" : std::string{"}"});
+        };
+        auto const poll = [&](std::string const& pos, bool account_data) {
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" + pos;
+            return merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", target, rooms.alice_token, request(account_data)}, /*can_wait=*/true);
+        };
+        auto const without = sliding_sync(rt, rooms.alice_token, request(false));
+        REQUIRE(without.response.status == 200U);
+
+        WHEN("alice's next long poll turns the extension on")
+        {
+            auto const enabled = poll(sliding_sync_pos(without.response.body), true);
+            THEN("it is answered at once with m.ignored_user_list, under a new pos")
+            {
+                REQUIRE(enabled.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(enabled.response.status == 200U);
+                REQUIRE(enabled.response.body.find("m.ignored_user_list") != std::string::npos);
+                REQUIRE(sliding_sync_pos(enabled.response.body) != sliding_sync_pos(without.response.body));
+            }
+
+            AND_WHEN("alice polls again from that response's pos with the extension still on")
+            {
+                auto const again = poll(sliding_sync_pos(enabled.response.body), true);
+                THEN("the poll keeps waiting")
+                {
+                    REQUIRE(again.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                }
+            }
+        }
+    }
+}
+
+// MSC4186 `tags` / `not_tags` filters (PR #608 review): a list filtered on them holds the rooms the user's own `m.tag`
+// decides, so a tag that brings a room into the window wakes the poll, as `is_favourite` does (ADR-0861).
+SCENARIO("a sliding sync long-poll wakes when the user's own tag moves a room into a list filtered on tags",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("alice and bob in two rooms, and alice's list of rooms tagged u.work, which holds none of them")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        auto const body =
+            std::string{R"({"conn_id":"work","lists":{"work":{"ranges":[[0,9]],"filters":{"tags":["u.work"]},)"} +
+            R"("required_state":[],"timeline_limit":1}}})";
+        auto const first = sliding_sync(rt, rooms.alice_token, body);
+        REQUIRE(first.response.status == 200U);
+        REQUIRE(rooms_object(first.response.body).empty());
+        auto const poll = [&]() {
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" +
+                                sliding_sync_pos(first.response.body);
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, rooms.alice_token, body},
+                                                                         /*can_wait=*/true);
+        };
+
+        WHEN("alice tags the first room u.work from another device")
+        {
+            REQUIRE(
+                merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + rooms.first + "/tags/u.work",
+                         rooms.alice_token, "{}"})
+                    .response.status == 200U);
+            auto const result = poll();
+            THEN("the poll is answered with the first room")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(object_member_as_object(rooms_object(result.response.body), rooms.first) != nullptr);
+            }
+        }
+    }
+}
+
+// MSC4186 `is_dm`: "Must be included in an incremental sync if the DM state changes" (PR #608 review). A change of the
+// user's `m.direct` alone sends a room whose DM status it changed again, in a list with no filter or a subscription,
+// so it wakes the poll; a change that leaves every sent room's status as it was does not.
+SCENARIO("a sliding sync long-poll wakes when m.direct changes the DM status of a room it has sent",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("alice subscribed to two rooms she shares with bob, sent on her connection, neither a DM")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const rooms = two_shared_rooms(rt);
+        auto const subscription = std::string{R"(":{"required_state":[],"timeline_limit":0})"};
+        auto const body = R"({"conn_id":"dm","room_subscriptions":{")" + rooms.first + subscription + R"(,")" +
+                          rooms.second + subscription + "}}";
+        auto const first = sliding_sync(rt, rooms.alice_token, body);
+        REQUIRE(first.response.status == 200U);
+        auto const set_direct = [&](std::string const& content) {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct",
+                             rooms.alice_token, content})
+                        .response.status == 200U);
+        };
+        auto const poll = [&](std::string const& pos) {
+            auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000&pos=" + pos;
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, rooms.alice_token, body},
+                                                                         /*can_wait=*/true);
+        };
+
+        WHEN("alice's m.direct makes the first room a DM with bob")
+        {
+            set_direct(R"({"@bob:example.org":[")" + rooms.first + R"("]})");
+            auto const result = poll(sliding_sync_pos(first.response.body));
+            THEN("the poll is answered with the first room, now a DM, and not the second")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                auto const synced = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(synced, rooms.first);
+                REQUIRE(room != nullptr);
+                auto const* is_dm = bool_member(*room, "is_dm");
+                REQUIRE(is_dm != nullptr);
+                REQUIRE(*is_dm);
+                REQUIRE(object_member_as_object(synced, rooms.second) == nullptr);
+            }
+
+            AND_WHEN("alice polls again from that response's pos")
+            {
+                auto const again = poll(sliding_sync_pos(result.response.body));
+                THEN("the poll keeps waiting: the room was sent with its new status")
+                {
+                    REQUIRE(again.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                }
+            }
+        }
+
+        WHEN("alice's m.direct names a room she is not subscribed to")
+        {
+            set_direct(R"({"@bob:example.org":["!elsewhere:example.org"]})");
+            auto const result = poll(sliding_sync_pos(first.response.body));
+            THEN("the poll keeps waiting")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}

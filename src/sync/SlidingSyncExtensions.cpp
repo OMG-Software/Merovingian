@@ -213,12 +213,15 @@ namespace
         // One lookup per row, not a scan of the scope per row.
         auto const in_scope = std::unordered_set<std::string_view>{scope_rooms.begin(), scope_rooms.end()};
         // "When the extension is enabled for the first time on a connection, the response MUST contain all of the
-        // user's global account data"; re-enabling it may send all of it too.
-        auto const global_floor =
-            history != nullptr && !history->account_data_enabled ? std::uint64_t{0U} : since_sync_stream_id;
-        auto const enters_scope = [&](std::string const& room_id) {
-            return history != nullptr ? !history->account_data_enabled || !history->account_data_rooms.contains(room_id)
-                                      : initial_room_ids.contains(room_id);
+        // user's global account data"; re-enabling it may send all of it too. A room entering the scope, for the first
+        // time or again, is sent all of its account data, whatever its age (`account_data_floor_for`, which the
+        // long-poll check reads too). Without the connection's history, a room new to the response enters it.
+        auto const floor_for = [&](std::string const& room_id) -> std::uint64_t {
+            if (history != nullptr)
+            {
+                return account_data_floor_for(*history, room_id, since_sync_stream_id);
+            }
+            return !room_id.empty() && initial_room_ids.contains(room_id) ? std::uint64_t{0U} : since_sync_stream_id;
         };
 
         database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& data) {
@@ -226,15 +229,11 @@ namespace
             {
                 return;
             }
-            // A room entering the scope, for the first time or again, is sent all of its account data, whatever its
-            // age; any other row goes down when it changed after `since`.
-            auto const floor = data.room_id.empty()         ? global_floor
-                               : enters_scope(data.room_id) ? std::uint64_t{0U}
-                                                            : since_sync_stream_id;
-            if (data.stream_id <= floor)
+            if (data.stream_id <= floor_for(data.room_id))
             {
                 return;
             }
+            resp.sent_on_scope_entry = resp.sent_on_scope_entry || data.stream_id <= since_sync_stream_id;
             auto event = canonicaljson::Object{};
             event.push_back(canonicaljson::make_member("type", jstr(data.event_type)));
             event.push_back(canonicaljson::make_member("content", parse_account_data_content(data.content_json)));
@@ -470,7 +469,7 @@ namespace
                 {
                     selection.floors.emplace(room_id, floor);
                 }
-                else if (!history->receipt_rooms.contains(room_id))
+                else if (enters_receipts_scope(*history, room_id, since_sync_stream_id))
                 {
                     selection.first_entry.insert(room_id);
                 }
@@ -535,6 +534,7 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
                                                    extension_scope.list_windows, extension_scope.subscriptions);
         resp.account_data =
             build_account_data(store, user, since_sync_stream_id, account_data_rooms, history, initial_room_ids);
+        resp.sent_on_scope_entry = resp.account_data->sent_on_scope_entry;
     }
 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
@@ -553,10 +553,12 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
             next_history = receipts_scope_history(*history, rooms, since_sync_stream_id, room_access);
         }
         auto receipts = build_receipts(rt, user, since_sync_stream_id, rooms, selection, ignored_senders);
-        resp.sent_on_scope_entry = std::ranges::any_of(rooms, [&](std::string const& room_id) {
-            return (selection.floors.contains(room_id) || selection.first_entry.contains(room_id)) &&
-                   receipts.rooms_json.contains(room_id);
-        });
+        // OR, never assign: account data above may already have sent rows on entering its scope.
+        resp.sent_on_scope_entry =
+            resp.sent_on_scope_entry || std::ranges::any_of(rooms, [&](std::string const& room_id) {
+                return (selection.floors.contains(room_id) || selection.first_entry.contains(room_id)) &&
+                       receipts.rooms_json.contains(room_id);
+            });
         resp.receipts = std::move(receipts);
     }
     if (wants_typing)

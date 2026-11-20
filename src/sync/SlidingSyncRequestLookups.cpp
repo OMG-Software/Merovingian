@@ -137,6 +137,28 @@ namespace
         return nullptr;
     }
 
+    // The JSON of the summary state event of `type` (empty state key) a user invited to or knocking on `room_id` is
+    // told about, from the source its `stripped_state` is built from (`build_knock_state_events_array`): the user's
+    // invite record when it has one (an invite, or a knock on a room on another server, ADR-0243), else, for a knock on
+    // a room this server holds, the room's current state. A local knock has no invite record, and reading the record
+    // alone left its `is_encrypted`, `room_types` and name empty (PR #608 review).
+    [[nodiscard]] auto stripped_summary_event(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view user, std::string_view type, bool knocked)
+        -> std::string const*
+    {
+        if (database::find_invite_row(store, room_id, user) != nullptr || !knocked)
+        {
+            return invite_state_event(store, room_id, user, type);
+        }
+        auto const event_id = database::find_current_state_event_id(store, room_id, type, "");
+        if (!event_id.has_value())
+        {
+            return nullptr;
+        }
+        auto const found = store.events.find(*event_id);
+        return found != store.events.end() ? &found->json : nullptr;
+    }
+
     // The bump types as one string that no other list of types shares.
     [[nodiscard]] auto bump_key(std::vector<std::string> const& types) -> std::string
     {
@@ -321,7 +343,7 @@ auto SlidingSyncRequestLookups::is_encrypted(std::string_view room_id) -> bool
 {
     if (is_invited(room_id) || is_knocked(room_id))
     {
-        return invite_state_event(*m_store, room_id, m_user, "m.room.encryption") != nullptr;
+        return stripped_summary_event(*m_store, room_id, m_user, "m.room.encryption", is_knocked(room_id)) != nullptr;
     }
     // The room's current state by its index (ADR-0344): no scan of the state table.
     auto const encryption = database::find_current_state_event_id(*m_store, room_id, "m.room.encryption", "");
@@ -423,8 +445,12 @@ auto SlidingSyncRequestLookups::space_children(std::string_view space_id) -> std
     load_memberships();
     // MSC4186 `spaces`: "The server will inspect the `m.space.child` state events for the JOINED space room IDs given";
     // an unknown space, or one the user is not joined to, names no room. Only direct children count, and a child
-    // event without a non-empty `via` is not a child (CS API "m.space.child").
-    if (std::ranges::find(m_joined, key) != m_joined.end())
+    // event without a non-empty `via` is not a child (CS API "m.space.child"). Joined is read from the user's own join
+    // rows until `joined_rooms` has settled them, so a lookup that never lists the joined rooms (the long poll's invite
+    // check) still finds the space, and reads no room table: a join row of a room the store lacks has no state rows,
+    // so it names no child either way (PR #608 review).
+    auto const& joined = m_joined_resolved ? m_joined : m_join_rows;
+    if (std::ranges::find(joined, key) != joined.end())
     {
         database::for_each_room_state_row(*m_store, space_id, [&](database::PersistentStateEvent const& row) {
             if (row.event_type != "m.space.child" || row.state_key.empty())
@@ -461,7 +487,9 @@ auto SlidingSyncRequestLookups::room_type(std::string_view room_id) -> std::stri
     auto type = std::string{};
     if (is_invited(room_id) || is_knocked(room_id))
     {
-        if (auto const* create = invite_state_event(*m_store, room_id, m_user, "m.room.create"); create != nullptr)
+        if (auto const* create =
+                stripped_summary_event(*m_store, room_id, m_user, "m.room.create", is_knocked(room_id));
+            create != nullptr)
         {
             type = content_string(*create, "type");
         }
@@ -556,7 +584,8 @@ auto SlidingSyncRequestLookups::room_name(std::string_view room_id) -> std::stri
     auto name = std::string{};
     if (is_invited(room_id) || is_knocked(room_id))
     {
-        if (auto const* event = invite_state_event(*m_store, room_id, m_user, "m.room.name"); event != nullptr)
+        if (auto const* event = stripped_summary_event(*m_store, room_id, m_user, "m.room.name", is_knocked(room_id));
+            event != nullptr)
         {
             name = room_name_from_event(*event);
         }

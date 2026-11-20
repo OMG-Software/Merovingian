@@ -1483,24 +1483,20 @@ namespace
         {
             return build_invite_state_events_array(store, room_id, user_id);
         }
+        // The room's own state rows, through its index (ADR-0654), never a walk of every room's state.
         auto result = canonicaljson::Array{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
             auto const event_json = event_json_for_id(store, state.event_id);
             if (!event_json.has_value())
             {
-                continue;
+                return;
             }
             auto stripped = stripped_state_event_value(*event_json, user_id);
             if (stripped.has_value())
             {
                 result.push_back(std::move(*stripped));
             }
-        }
+        });
         return result;
     }
 
@@ -8215,13 +8211,14 @@ namespace
         });
     }
 
-    // Whether any of a sliding-sync request's lists filters on `is_dm` or `is_favourite`, which the user's own
-    // `m.direct` and `m.tag` account data decide.
+    // Whether any of a sliding-sync request's lists filters on `is_dm`, `is_favourite`, `tags` or `not_tags`, which the
+    // user's own `m.direct` and `m.tag` account data decide.
     [[nodiscard]] auto lists_filter_on_account_data(std::map<std::string, sync::SlidingSyncList> const& lists) -> bool
     {
         return std::ranges::any_of(lists, [](auto const& entry) {
             auto const& filters = entry.second.filters;
-            return filters.has_value() && (filters->is_dm.has_value() || filters->is_favourite.has_value());
+            return filters.has_value() && (filters->is_dm.has_value() || filters->is_favourite.has_value() ||
+                                           !filters->tags.empty() || !filters->not_tags.empty());
         });
     }
 
@@ -8418,6 +8415,76 @@ namespace
         return std::string{sliding_dm_seen_prefix} + std::string{room_id};
     }
 
+    // A joined room's current `m.room.name` and `m.room.avatar` events as last sent, by stream ordering (no entry:
+    // none). MSC4186 sends `name` and `avatar` with the room, and `null` once removed; a room whose events differ from
+    // its entries is sent again, or a change with no timeline or `required_state` to carry it would never reach the
+    // client.
+    constexpr auto sliding_name_seen_prefix = std::string_view{"name:"};
+    constexpr auto sliding_avatar_seen_prefix = std::string_view{"avatar:"};
+
+    [[nodiscard]] auto sliding_name_seen_key(std::string_view room_id) -> std::string
+    {
+        return std::string{sliding_name_seen_prefix} + std::string{room_id};
+    }
+
+    [[nodiscard]] auto sliding_avatar_seen_key(std::string_view room_id) -> std::string
+    {
+        return std::string{sliding_avatar_seen_prefix} + std::string{room_id};
+    }
+
+    // Whether `room`'s name or avatar event differs from the one the connection last sent it with.
+    [[nodiscard]] auto sliding_summary_changed(std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                               std::string_view room_id, sync::SlidingSyncRoomResponse const& room)
+        -> bool
+    {
+        auto const recorded = [&](std::string const& key) -> std::optional<std::uint64_t> {
+            auto const found = rooms_seen.find(key);
+            return found != rooms_seen.end() ? std::optional<std::uint64_t>{found->second} : std::nullopt;
+        };
+        return room.name_event_ordering != recorded(sliding_name_seen_key(room_id)) ||
+               room.avatar_event_ordering != recorded(sliding_avatar_seen_key(room_id));
+    }
+
+    // Whether the user's `m.direct` changed since `since_sync_stream_id` and now gives one of `rooms` the connection
+    // has sent another `is_dm` than it was sent with (its `dm:` entry). MSC4186: `is_dm` "Must be included in an
+    // incremental sync if the DM state changes", so the response sends such a room again (ADR-0865), whatever the lists
+    // filter on; the wake tests exactly that, so a poll is never answered with nothing. `rooms` are the joined rooms
+    // the response could send: the windows the previous response held and the subscriptions.
+    [[nodiscard]] auto sent_room_dm_status_moved(database::PersistentStore const& store, std::string_view user,
+                                                 std::uint64_t since_sync_stream_id,
+                                                 std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                                 std::vector<std::string> const& rooms) -> bool
+    {
+        auto direct_moved = false;
+        database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& row) {
+            direct_moved = direct_moved || (row.room_id.empty() && row.event_type == "m.direct" &&
+                                            row.stream_id > since_sync_stream_id);
+        });
+        if (!direct_moved)
+        {
+            return false;
+        }
+        auto lookups = sync::SlidingSyncRequestLookups{store, user};
+        return std::ranges::any_of(rooms, [&](std::string const& room_id) {
+            return rooms_seen.contains(room_id) &&
+                   lookups.is_dm(room_id) != rooms_seen.contains(sliding_dm_seen_key(room_id));
+        });
+    }
+
+    // Records `ordering` under `key`, or forgets the key when there is none.
+    auto record_sliding_summary_entry(std::unordered_map<std::string, std::uint64_t>& rooms_seen, std::string key,
+                                      std::optional<std::uint64_t> ordering) -> void
+    {
+        if (ordering.has_value())
+        {
+            rooms_seen[std::move(key)] = *ordering;
+        }
+        else
+        {
+            rooms_seen.erase(key);
+        }
+    }
+
     // MSC4186 "Lists": a room the user left of their own accord is listed only if "previously sent to the client in
     // that connection", in any form: joined, invited, knocked or departed (ADR-0867).
     [[nodiscard]] auto sliding_previously_sent_rooms(std::unordered_map<std::string, std::uint64_t> const& rooms_seen)
@@ -8428,8 +8495,8 @@ namespace
         for (auto const& entry : rooms_seen)
         {
             auto room_id = std::string_view{entry.first};
-            for (auto const prefix :
-                 {sliding_invite_seen_prefix, sliding_membership_seen_prefix, sliding_dm_seen_prefix})
+            for (auto const prefix : {sliding_invite_seen_prefix, sliding_membership_seen_prefix,
+                                      sliding_dm_seen_prefix, sliding_name_seen_prefix, sliding_avatar_seen_prefix})
             {
                 if (room_id.starts_with(prefix))
                 {
@@ -8872,6 +8939,9 @@ namespace
                 auto const subscriptions = subscription_room_ids(ssreq);
                 // MSC4548 "Long-polling": global account data, or that of a room in the extension's scope, whatever the
                 // user's membership; "A change to the account data of a room that is not in scope does not count."
+                // A row is relevant from the floor the response sends from (`account_data_floor_for`): all of it when
+                // the extension is turned on or a room enters the scope, so such a request is answered at once.
+                auto const& scope_history = conn.extension_scope_history;
                 auto has_relevant_ad = false;
                 if (wants_account_data)
                 {
@@ -8880,8 +8950,10 @@ namespace
                                                                    expansion_windows, subscriptions);
                     auto const in_scope = std::unordered_set<std::string_view>{scope.begin(), scope.end()};
                     database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& ad) {
-                        has_relevant_ad = has_relevant_ad || (ad.stream_id > since_sync_stream_id &&
-                                                              (ad.room_id.empty() || in_scope.contains(ad.room_id)));
+                        has_relevant_ad =
+                            has_relevant_ad || ((ad.room_id.empty() || in_scope.contains(ad.room_id)) &&
+                                                ad.stream_id > sync::account_data_floor_for(scope_history, ad.room_id,
+                                                                                            since_sync_stream_id));
                     });
                 }
                 auto const joined_in_scope = [&](std::optional<std::vector<std::string>> const& lists,
@@ -8892,11 +8964,11 @@ namespace
                     });
                     return scope;
                 };
-                // A room back in the receipts scope is read from where it dropped out, and a room entering the typing
-                // scope wakes the poll while someone it would be sent is typing there (ADR-0863). Both test exactly
-                // what the response sends, ignored senders included: a wake that sent nothing would be answered again
-                // at once.
-                auto const& scope_history = conn.extension_scope_history;
+                // A room back in the receipts scope is read from where it dropped out, a room entering it for the
+                // first time is sent the user's own receipts whatever their age (MSC4551), and a room entering the
+                // typing scope wakes the poll while someone it would be sent is typing there (ADR-0863). Each tests
+                // exactly what the response sends, ignored senders included: a wake that sent nothing would be
+                // answered again at once.
                 auto has_relevant_receipts = false;
                 if (wants_receipts)
                 {
@@ -8904,10 +8976,12 @@ namespace
                     has_relevant_receipts =
                         std::ranges::any_of(joined_in_scope(receipts.lists, receipts.rooms), [&](auto const& room_id) {
                             auto const floor = sync::receipt_floor_for(scope_history, room_id, since_sync_stream_id);
+                            auto const first_entry =
+                                sync::enters_receipts_scope(scope_history, room_id, since_sync_stream_id);
                             return std::ranges::any_of(
                                 database::receipts_in_room(rt.homeserver.database.persistent_store, room_id),
                                 [&](database::PersistentReceipt const* r) {
-                                    return r->stream_id > floor &&
+                                    return (first_entry ? r->user_id == user : r->stream_id > floor) &&
                                            sync::receipt_visible_to(r->receipt_type, r->user_id, user) &&
                                            !trust_safety::is_delivery_suppressed(ignored_senders, r->user_id,
                                                                                  /*is_state_event=*/false);
@@ -8946,9 +9020,14 @@ namespace
                 // `is_favourite` or `is_dm`, which leaves the saved windows above stale; the answer rebuilds them.
                 bool const has_refiltering_account_data = lists_filter_on_account_data(ssreq.lists) &&
                                                           own_list_filter_data_moved(store, user, since_sync_stream_id);
+                // A change of `m.direct` alone sends a room again whose `is_dm` it changed, in any list or
+                // subscription, so it wakes the poll when it does that to a room the response would send.
+                bool const has_dm_status_change =
+                    wants_rooms && sent_room_dm_status_moved(store, user, since_sync_stream_id, conn.rooms_seen,
+                                                             joined_in_scope(std::nullopt, std::nullopt));
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
                     !has_relevant_typing && !has_relevant_sticky && !has_reordering_receipt &&
-                    !has_refiltering_account_data)
+                    !has_refiltering_account_data && !has_dm_status_change)
                 {
                     // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.
@@ -9172,14 +9251,16 @@ namespace
                                                   *unread_classifier, expansion, room_last_ordering,
                                                   visible_event_ordering, device_id, &request_lookups.value());
             // Per MSC4186, only include a room in rooms{} when it has actual
-            // changes: first appearance (initial), post-pos timeline events, or changed
-            // required_state.  Unread counts are sent when the room is included for
+            // changes: first appearance (initial), post-pos timeline events, changed
+            // required_state, a changed `is_dm`, or a changed or removed name or avatar
+            // (ADR-0865).  Unread counts are sent when the room is included for
             // another reason; they must not pull an unchanged room back into the
             // response, otherwise the client receives identical data under the same
             // pos and may loop.
             auto const has_room_updates = is_initial || !room.timeline_json.empty() ||
                                           !room.required_state_json.empty() ||
-                                          room.is_dm != conn.rooms_seen.contains(sliding_dm_seen_key(room_id));
+                                          room.is_dm != conn.rooms_seen.contains(sliding_dm_seen_key(room_id)) ||
+                                          sliding_summary_changed(conn.rooms_seen, room_id, room);
             fill_common_fields(room_id, "join", room);
             if (sticky_request != nullptr && !room.timeline_json.empty())
             {
@@ -9348,6 +9429,8 @@ namespace
         }
 
         auto dm_status_sent = std::unordered_map<std::string, bool>{};
+        auto summary_sent =
+            std::unordered_map<std::string, std::pair<std::optional<std::uint64_t>, std::optional<std::uint64_t>>>{};
         for (auto& built : built_rooms)
         {
             if (!built.room.lazy_members_included.empty())
@@ -9357,6 +9440,8 @@ namespace
             if (built.has_updates)
             {
                 dm_status_sent.emplace(built.room_id, built.room.is_dm);
+                summary_sent.emplace(built.room_id,
+                                     std::pair{built.room.name_event_ordering, built.room.avatar_event_ordering});
                 rooms_obj.push_back(json_member(built.room_id, sliding_sync_room_to_value(std::move(built.room))));
             }
             else
@@ -9575,6 +9660,11 @@ namespace
             {
                 next_state.rooms_seen.erase(sliding_dm_seen_key(room_id));
             }
+        }
+        for (auto const& [room_id, orderings] : summary_sent)
+        {
+            record_sliding_summary_entry(next_state.rooms_seen, sliding_name_seen_key(room_id), orderings.first);
+            record_sliding_summary_entry(next_state.rooms_seen, sliding_avatar_seen_key(room_id), orderings.second);
         }
         // ADR-0864: an invite no longer held (rejected, withdrawn, accepted, or withheld now) forgets its entry, so the
         // next invite to the room is sent; a reported invite records its position and clears the room's joined-room
@@ -22240,13 +22330,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // `pos` that was not issued to the requesting user and device, responding with `M_UNKNOWN_POS`": a pos with no
         // valid binding to this user and device, or one that does not read as a position, is refused whole, never
         // served as if absent (ADR-0866).
-        auto const pos_text = [&]() -> std::optional<std::string> {
+        auto const pos_text = std::invoke([&]() -> std::optional<std::string> {
             if (auto from_query = query_param_value(req.target, "pos"); from_query.has_value() && !from_query->empty())
             {
                 return from_query;
             }
             return sliding_req->pos;
-        }();
+        });
         auto pos = std::optional<sync::SlidingSyncPos>{};
         if (pos_text.has_value())
         {

@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -366,6 +367,19 @@ namespace
     }
 
     // ── Name / avatar from state ────────────────────────────────────────────
+
+    // The stream ordering of the room's current state event of `event_type` with an empty state key, none without one.
+    [[nodiscard]] auto current_state_ordering(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view event_type) -> std::optional<std::uint64_t>
+    {
+        auto const event_id = database::find_current_state_event_id(store, room_id, event_type, "");
+        if (!event_id.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const found = store.events.find(*event_id);
+        return found != store.events.end() ? std::optional<std::uint64_t>{found->stream_ordering} : std::nullopt;
+    }
 
     [[nodiscard]] auto state_content_string(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view event_type, std::string_view content_field)
@@ -776,6 +790,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::strin
                         database::find_current_state_event_id(store, room_id, "m.room.name", "").has_value();
     resp.avatar_removed = !is_initial && !resp.avatar.has_value() &&
                           database::find_current_state_event_id(store, room_id, "m.room.avatar", "").has_value();
+    resp.name_event_ordering = current_state_ordering(store, room_id, "m.room.name");
+    resp.avatar_event_ordering = current_state_ordering(store, room_id, "m.room.avatar");
 
     // ── is_dm ───────────────────────────────────────────────────────────────
     // The room is in the user's m.direct global account data, parsed once per request.
@@ -1247,12 +1263,14 @@ auto build_departed_room_response(database::PersistentStore const& store, std::s
     {
         timeline.push_back(own);
     }
-    for (auto const* const ev : timeline)
+    // MSC4186 `timeline_limit`: the newest that many of them, oldest first, and `prev_batch` from the oldest kept.
+    std::erase_if(timeline, [&visibility](database::PersistentEvent const* ev) {
+        return !visibility.can_see(*ev);
+    });
+    auto const limit = static_cast<std::size_t>(sub.timeline_limit);
+    auto const kept_from = timeline.size() > limit ? timeline.size() - limit : std::size_t{0U};
+    for (auto const* const ev : std::span{timeline}.subspan(kept_from))
     {
-        if (!visibility.can_see(*ev) || sub.timeline_limit == 0U)
-        {
-            continue;
-        }
         if (auto json = client_event_json(store, *ev, viewer); !json.empty())
         {
             resp.timeline_json.push_back(std::move(json));

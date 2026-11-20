@@ -21,6 +21,11 @@ struct SlidingSyncRoomResponse final
     // MSC4186 `name` / `avatar` `null`: an incremental response for a room whose name or avatar was removed.
     bool name_removed{false};
     bool avatar_removed{false};
+    // The stream orderings of the room's current `m.room.name` and `m.room.avatar` events, none without one. Not sent:
+    // the handler keeps them per connection, so a room whose name or avatar changed is sent again even when nothing
+    // else of it changed (a `timeline_limit` of 0 and no matching `required_state`), and a removal reaches the client.
+    std::optional<std::uint64_t> name_event_ordering{};
+    std::optional<std::uint64_t> avatar_event_ordering{};
     // MSC4186 `bump_stamp`: the stream ordering of the room's last "proper" activity, or for a room the user is not
     // joined to the ordering of their membership; omitted when unchanged since the room was last sent (ADR-0865).
     std::optional<std::uint64_t> bump_stamp{};

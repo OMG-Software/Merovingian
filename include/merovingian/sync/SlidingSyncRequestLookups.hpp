@@ -71,8 +71,9 @@ public:
     [[nodiscard]] auto is_unjoined(std::string_view room_id) -> bool;
 
     // True when `room_id` is encrypted: its current m.room.encryption state event, or for an invited or knocked room
-    // the stripped state, since a user only invited may not read the room's state (ADR-0864). A departed room counts
-    // as encrypted only when its encryption event predates the departure (ADR-0867).
+    // the stripped state it is sent, since a user only invited may not read the room's state (ADR-0864): the invite
+    // record, or for a knock on a room this server holds, which keeps none, the room's current state. A departed room
+    // counts as encrypted only when its encryption event predates the departure (ADR-0867).
     [[nodiscard]] auto is_encrypted(std::string_view room_id) -> bool;
 
     // True when `room_id` is in the user's m.direct.
@@ -85,10 +86,12 @@ public:
     [[nodiscard]] auto room_tags(std::string_view room_id) -> std::unordered_set<std::string> const&;
 
     // The rooms the current `m.space.child` state of `space_id` names with a non-empty `via`, or none when the user is
-    // not joined to `space_id` (MSC4186 `spaces`: joined spaces only, no subspaces). Read once per space and request.
+    // not joined to `space_id` (MSC4186 `spaces`: joined spaces only, no subspaces). Read once per space and request,
+    // from the user's own join rows when the joined rooms have not been listed, never the room table.
     [[nodiscard]] auto space_children(std::string_view space_id) -> std::unordered_set<std::string> const&;
 
-    // content.type of the room's m.room.create event (the invite's stripped copy for an invited room), or empty.
+    // content.type of the room's m.room.create event (the stripped copy for an invited or knocked room, as for
+    // `is_encrypted`), or empty.
     [[nodiscard]] auto room_type(std::string_view room_id) -> std::string const&;
 
     // Where the user has read up to in `room_id` (see read_markers_for), read once per room and request.
@@ -101,8 +104,8 @@ public:
     // invite row's stream ordering, whatever the bump types: the user may not see the room's events (ADR-0864).
     [[nodiscard]] auto recency(std::string_view room_id, std::vector<std::string> const& bump_types) -> std::uint64_t;
 
-    // content.name of the room's current m.room.name event (the invite's stripped copy for an invited room), or
-    // empty: the `by_name` key.
+    // content.name of the room's current m.room.name event (the stripped copy for an invited or knocked room, as for
+    // `is_encrypted`), or empty: the `by_name` key.
     [[nodiscard]] auto room_name(std::string_view room_id) -> std::string const&;
 
     // Event rows `recency` has parsed or compared, in total: a test proves the cost by count.
