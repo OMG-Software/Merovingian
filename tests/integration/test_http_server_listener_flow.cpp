@@ -47,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -2044,10 +2045,12 @@ SCENARIO("sync admission bounds one account across devices without holding the r
         auto const login_device = [&](std::string const& user_id, std::string const& device_id) {
             auto const login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, user_id, device_id);
             REQUIRE(login.ok);
+            auto const& key = runtime.homeserver.database.mutual_rooms_token_key;
+            REQUIRE(key.has_value());
             auto const bound = merovingian::homeserver::bind_sliding_sync_pos(
-                since, user_id, device_id, runtime.homeserver.database.mutual_rooms_token_key->bytes());
+                since, user_id, device_id, key.has_value() ? key->bytes() : std::span<std::uint8_t const>{});
             REQUIRE(bound.has_value());
-            sliding_pos_by_token[login.value] = *bound;
+            sliding_pos_by_token[login.value] = bound.value_or(std::string{});
             return login.value;
         };
         auto tokens = std::vector<std::string>{};

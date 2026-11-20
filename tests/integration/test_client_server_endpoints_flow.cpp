@@ -59,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <span>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -10401,15 +10402,19 @@ SCENARIO("Sliding sync rejects a position ahead of the server's stream with M_UN
         {
             // The server's own epoch (ADR-0592), bound to alice's device as an issued pos is (ADR-0866), so the
             // position alone is what makes the pos unknown.
+            auto const& key = runtime.homeserver.database.mutual_rooms_token_key;
+            REQUIRE(key.has_value());
             auto const future_pos = merovingian::homeserver::bind_sliding_sync_pos(
                 merovingian::sync::encode_stream_token(
                     {0x2710U, 0x2710U, 0x2710U, runtime.homeserver.database.persistent_store.stream_token_epoch}),
                 string_field(registration.response.body, "user_id"),
                 string_field(registration.response.body, "device_id"),
-                runtime.homeserver.database.mutual_rooms_token_key->bytes());
+                key.has_value() ? key->bytes() : std::span<std::uint8_t const>{});
             REQUIRE(future_pos.has_value());
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + *future_pos + "&timeout=0",
+                runtime, {"POST",
+                          "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + future_pos.value_or(std::string{}) +
+                              "&timeout=0",
                           token, request_body});
 
             THEN("the request is rejected with 400 M_UNKNOWN_POS")

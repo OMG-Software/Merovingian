@@ -7754,7 +7754,8 @@ namespace
     // joined-room fields, "so we shouldn't leak anything to them". `initial` tells the client to replace what it held.
     auto push_stripped_room_fields(canonicaljson::Object& obj, sync::SlidingSyncRoomResponse const& room) -> void
     {
-        auto stripped = sliding_sync_event_value(*room.invite_state_json);
+        auto stripped = room.invite_state_json.has_value() ? sliding_sync_event_value(*room.invite_state_json)
+                                                           : canonicaljson::Value{canonicaljson::Array{}};
         if (!std::holds_alternative<canonicaljson::Array>(stripped.storage()))
         {
             stripped = json_arr(canonicaljson::Array{});
