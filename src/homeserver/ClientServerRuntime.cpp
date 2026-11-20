@@ -8441,6 +8441,23 @@ namespace
         return rooms;
     }
 
+    // ADR-0864: whether the connection was already sent the user's current invite to `room_id`: its sighting is at or
+    // past the invite record's stream ordering, or there is no record to be newer. The response leaves such an invite
+    // out and the long-poll wake check skips it, through this one test, so a poll never wakes for an invite its
+    // response would not send (the sighting can be above the token's position while a commit is in flight).
+    [[nodiscard]] auto sliding_invite_already_sent(database::PersistentStore const& store,
+                                                   std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
+                                                   std::string_view room_id, std::string_view user) -> bool
+    {
+        auto const seen = rooms_seen.find(sliding_invite_seen_key(room_id));
+        if (seen == rooms_seen.end())
+        {
+            return false;
+        }
+        auto const* const invite_record = database::find_invite_row(store, room_id, user);
+        return invite_record == nullptr || invite_record->stream_ordering <= seen->second;
+    }
+
     // ADR-0864: whether sliding sync may show the user's stored invite to `room_id` now. Withheld: an invite from a
     // user they ignore ("Servers must not send room invites from ignored users to clients"), and an invite to a room
     // whose state this server holds while that state does not yet have it (ADR-0301, the test /sync makes through
@@ -8505,10 +8522,13 @@ namespace
     // too; lists hold knocked and departed rooms, ADR-0867). A new invite answers it only when it is deliverable and a
     // subscription or a list whose filters it passes could hold it; an invite the user may not be shown, or that no
     // list would hold, leaves the poll parked, as does every event in a room the user is neither joined nor invited to
-    // (ADR-0609). `newer_rows` point into the store, which does not change while the caller holds runtime.mutex. The
-    // lookups are built only for a new invite.
+    // (ADR-0609), and so does an invite the connection was already sent (`sliding_invite_already_sent`, the response's
+    // own test): its row stays above `since` until a commit in flight ends, and must not answer every poll meanwhile.
+    // `newer_rows` point into the store, which does not change while the caller holds runtime.mutex. The lookups are
+    // built only for a new invite.
     [[nodiscard]] auto membership_rows_wake_sliding_poll(
         database::PersistentStore const& store, std::string_view user, sync::SlidingSyncRequest const& ssreq,
+        std::unordered_map<std::string, std::uint64_t> const& rooms_seen,
         std::vector<database::PersistentMembership const*> const& newer_rows,
         std::unordered_set<std::string> const& ignored_senders) -> bool
     {
@@ -8519,6 +8539,10 @@ namespace
             if (row->membership != "invite")
             {
                 return true;
+            }
+            if (sliding_invite_already_sent(store, rooms_seen, row->room_id, user))
+            {
+                continue;
             }
             if (!invites_blocked.has_value())
             {
@@ -8819,8 +8843,8 @@ namespace
             auto has_relevant_membership = false;
             if (!has_relevant_event && !newer_membership_rows.empty())
             {
-                has_relevant_membership =
-                    membership_rows_wake_sliding_poll(store, user, ssreq, newer_membership_rows, ignored_senders);
+                has_relevant_membership = membership_rows_wake_sliding_poll(store, user, ssreq, conn.rooms_seen,
+                                                                            newer_membership_rows, ignored_senders);
             }
             if (!has_relevant_event && !has_relevant_membership)
             {
@@ -9197,13 +9221,11 @@ namespace
             {
                 continue;
             }
-            auto const* const invite_record = database::find_invite_row(store, room_id, user);
-            auto const seen_it = conn.rooms_seen.find(sliding_invite_seen_key(room_id));
-            if (seen_it != conn.rooms_seen.end() &&
-                (invite_record == nullptr || invite_record->stream_ordering <= seen_it->second))
+            if (sliding_invite_already_sent(store, conn.rooms_seen, room_id, user))
             {
                 continue;
             }
+            auto const* const invite_record = database::find_invite_row(store, room_id, user);
             auto invite_room = sync::SlidingSyncRoomResponse{};
             invite_room.initial = true;
             fill_common_fields(room_id, "invite", invite_room);

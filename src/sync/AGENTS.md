@@ -144,6 +144,10 @@ invited room's sort keys and filters come from its invite (`by_recency` is the i
 `by_notification_count` is 0, name, type and encryption from the invite's stripped state), never from the room's
 current state or events. The handler withholds the invites it may not show (`withhold_invite`, decided by
 `sliding_invite_is_deliverable`) before any list is computed, and never passes a room the lookups call invited to
+`build_room_response`: it is sent `invite_state` only, recorded as `invite:<room_id>` in `rooms_seen` at the invite row's own stream ordering (never the visible position, which a commit in flight can leave below it). Whether the connection was already sent an invite is `sliding_invite_already_sent`, which the response and the long-poll wake check both call: the invite's row stays above the token while that commit is in flight, and a wake check of its own would answer every poll with nothing in it. `parse_sliding_sync_request` clamps `timeline_limit` to
+`sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions,
+`required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
+`build_room_response`: it is sent `invite_state` only, recorded as `invite:<room_id>` in `rooms_seen`.
 `build_room_response`: it is sent `invite_state` only, recorded as `invite:<room_id>` in `rooms_seen` at the invite
 row's own stream ordering (never the visible position, which a commit in flight can leave below it).
 

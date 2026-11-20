@@ -37,6 +37,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   adds `sticky_events` and `delayed_event_sticky_durations` (ADR-0854, ADR-0857).
 * The Linux packages set up a LiveKit SFU you install beside the server: a `merovingian-livekit` account and disabled
   service, `merovingian-livekit-setup` for the shared key, and `livekit.yaml.example` (ADR-0860).
+* Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
+  list or room subscription could hold ends a waiting long poll at once; one already sent never does (ADR-0864).
 * Sliding sync reads the MSC4186 request forms beside the older ones: `required_state` objects, `range`, and the
   `is_invited`, `spaces`, `tags` and `not_tags` filters; at most 100 lists and 100 room subscriptions (ADR-0865).
 * Sliding sync rooms carry `bump_stamp`, `membership`, `lists` and `stripped_state`, a removed name or avatar is `null`,
@@ -135,6 +137,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   a response's `pos` carries a page, so the next request acknowledges it rather than reading as a retry (ADR-0862).
 * A lazy-loading `/sync` sends a sticky-only sender's member as of the timeline's start, or as of the response when that
   state has none, rather than at the oldest sticky event (ADR-0862).
+* A rejected or withdrawn invite now wakes the invitee's sliding sync long poll and leaves the list; an accepted one is
+  sent as a new joined room (ADR-0864).
 * Sliding sync lists hold invited rooms (`invite_state` only, sorted by the invite's position), and a new invite a
   list or room subscription could hold ends a waiting long poll at once (ADR-0864).
 * A rejected or withdrawn invite wakes the invitee's sliding sync long poll and stays in the list as `leave`, as MSC4186
