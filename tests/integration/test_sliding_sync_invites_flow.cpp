@@ -13,11 +13,15 @@
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/PendingStreamOrdering.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -654,6 +658,61 @@ SCENARIO("A withdrawn invite outside every window answers a sliding sync long-po
                 REQUIRE(next.status == hs::DispatchResult::Status::complete);
                 REQUIRE(list_count(next.response.body, "top") == 1);
             }
+        }
+    }
+}
+
+// PR #607 review: while a commit is in flight the visible position, and so the token, stays below an invite stored
+// meanwhile, and the invite's sighting is recorded at its own row. The wake check reads rows above the token, so it
+// must skip an invite the connection was already sent, by the response's own test, or every poll is answered at once
+// with nothing in it until that commit ends.
+SCENARIO("A sliding sync long-poll does not wake again for an invite it was sent while a commit is in flight",
+         "[homeserver][sliding-sync][invites][integration]")
+{
+    GIVEN("benandez's connection, an ordering held open, and an invite from james stored above it")
+    {
+        auto started = start_server();
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const fixture = caught_up_invitee(rt);
+        auto const room_id = make_room(rt, fixture.james, R"({"preset":"private_chat"})");
+        auto pending = std::optional<hs::PendingStreamOrdering>{};
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            pending.emplace(rt.homeserver.database, hs::allocate_stream_ordering(rt.homeserver.database));
+        }
+        invite(rt, fixture.james, room_id, benandez);
+        auto const reported = poll(rt, fixture.benandez_token, persephone_body, fixture.pos, 0U);
+        REQUIRE(room_entry(reported.response.body, room_id).present);
+        auto const next_pos = pos_of(reported);
+
+        WHEN("he long-polls from the pos that reported the invite, with the commit still in flight")
+        {
+            auto const waiting = poll(rt, fixture.benandez_token, persephone_body, next_pos, 5000U);
+
+            THEN("the poll parks rather than answering with the invite it already sent")
+            {
+                REQUIRE(waiting.status == hs::DispatchResult::Status::needs_wait);
+            }
+        }
+
+        WHEN("james invites him to another room before that commit ends")
+        {
+            auto const second_room = make_room(rt, fixture.james, R"({"preset":"private_chat"})");
+            invite(rt, fixture.james, second_room, benandez);
+            auto const woken = poll(rt, fixture.benandez_token, persephone_body, next_pos, 5000U);
+
+            THEN("the new invite still answers the poll, and only it is sent")
+            {
+                REQUIRE(woken.status == hs::DispatchResult::Status::complete);
+                REQUIRE(room_entry(woken.response.body, second_room).present);
+                REQUIRE_FALSE(room_entry(woken.response.body, room_id).present);
+            }
+        }
+
+        {
+            auto const lock = std::lock_guard{rt.homeserver.mutex};
+            pending.reset();
         }
     }
 }
