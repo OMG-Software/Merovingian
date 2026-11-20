@@ -831,8 +831,11 @@ SCENARIO("A make_join template is built from the room's own state and tips",
             THEN("the template's auth_events also names the user's own membership event")
             {
                 REQUIRE(tmpl.has_value());
-                REQUIRE(std::ranges::find(tmpl->auth_events, "$bobinvite:local.example.org"sv) !=
-                        tmpl->auth_events.end());
+                if (tmpl.has_value())
+                {
+                    REQUIRE(std::ranges::find(tmpl->auth_events, "$bobinvite:local.example.org"sv) !=
+                            tmpl->auth_events.end());
+                }
             }
         }
 

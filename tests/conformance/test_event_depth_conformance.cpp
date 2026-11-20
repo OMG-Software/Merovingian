@@ -273,6 +273,8 @@ SCENARIO("A rejected PDU claiming the largest depth does not affect local events
                 REQUIRE(stored_depth(runtime, topic.value) == tip_depth + 2U);
                 // Spec SHOULD: a rejected event should not "be included as a prev event in any new events".
                 auto const stored = runtime.database.persistent_store.events.find(sent.value);
+                // Precondition: the sent event is stored, so the check below reads a real event.
+                REQUIRE(stored != runtime.database.persistent_store.events.end());
                 REQUIRE(std::ranges::find(stored->prev_event_ids, "$hostile:evil.example"sv) ==
                         stored->prev_event_ids.end());
             }
