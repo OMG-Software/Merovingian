@@ -255,7 +255,9 @@ class BsdExampleConfigTests(unittest.TestCase):
 # SingleLog level method. File-local wrappers (`log_diagnostic(event, fields, ...)`)
 # take the event first, so only the qualified calls are read. A level method is read only
 # on `SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872), so another
-# type's `.warning("text", ...)` is not taken for a module.
+# type's `.warning("text", ...)` is not taken for a module. The lookbehind keeps `log` or
+# `logger` a name of its own: a member reached through another object (`ctx->logger->info`,
+# `self.log.info`) is not the reference the rule names, and is not read.
 QUALIFIED_LOG_CALL = re.compile(
     r'observability::log_diagnostic(?:_audit)?\s*\(\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))'
 )
