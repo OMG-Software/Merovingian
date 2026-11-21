@@ -131,9 +131,10 @@ private:
 }
 
 // The first captured line at `level` (the logger's name for it, such as "INFO"), filed under `module`, that names
-// `event`; nullopt when there is none.
+// `event`; empty when there is none. A string rather than an optional, so the scenarios read it after
+// `REQUIRE_FALSE(line.empty())` with no access clang-tidy's optional-access check cannot see guarded.
 [[nodiscard]] auto module_line(std::string const& text, std::string_view level, std::string_view module,
-                               std::string_view event) -> std::optional<std::string>
+                               std::string_view event) -> std::string
 {
     auto const level_tag = "<" + std::string{level} + ">";
     auto const module_tag = "  " + std::string{module} + ":  ";
@@ -147,7 +148,7 @@ private:
             return line;
         }
     }
-    return std::nullopt;
+    return {};
 }
 
 // Whether a ` name=` field opens at `position` of a diagnostic line: a space, then a field name, then `=`.
@@ -330,11 +331,11 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
             {
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
-                REQUIRE(line.has_value());
-                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
-                CHECK(field_value(line.value(), "credential") == "shared_secret");
-                CHECK(field_value(line.value(), "ttl_seconds") == "3600");
-                CHECK(field_value(line.value(), "uri_count") == "1");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
+                CHECK(field_value(line, "credential") == "shared_secret");
+                CHECK(field_value(line, "ttl_seconds") == "3600");
+                CHECK(field_value(line, "uri_count") == "1");
             }
 
             THEN("the log holds neither the username, the password nor the shared secret")
@@ -390,8 +391,8 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
                 REQUIRE(uris != nullptr);
                 REQUIRE(uris->size() == 2U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
-                REQUIRE(line.has_value());
-                CHECK(field_value(line.value(), "uri_count") == "2");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "uri_count") == "2");
             }
         }
     }
@@ -420,11 +421,11 @@ SCENARIO("The turn log names an unreadable shared secret as an error under its o
             {
                 REQUIRE(response.status == 500U);
                 auto const line = module_line(text, "ERROR", "turn", "turn.credentials_unavailable");
-                REQUIRE(line.has_value());
-                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
                 // field_value stops only where the next ` name=` field opens, so the reason, which holds spaces, is
                 // read whole.
-                CHECK(field_value(line.value(), "reason") == "shared secret file unreadable or empty");
+                CHECK(field_value(line, "reason") == "shared secret file unreadable or empty");
             }
         }
     }
@@ -453,9 +454,9 @@ SCENARIO("The turn log files configured static credentials under its own module 
             {
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
-                REQUIRE(line.has_value());
-                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
-                CHECK(field_value(line.value(), "credential") == "static");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
+                CHECK(field_value(line, "credential") == "static");
                 CHECK(text.find("static-turn-user") == std::string::npos);
                 CHECK(text.find("static-turn-password") == std::string::npos);
             }
@@ -486,8 +487,8 @@ SCENARIO("The turn log says at debug level that no TURN server is configured", "
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body == "{}");
                 auto const line = module_line(text, "DEBUG", "turn", "turn.not_configured");
-                REQUIRE(line.has_value());
-                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
             }
         }
     }
