@@ -7,6 +7,7 @@
 // level, so the per-request lines (request.received, request.route_not_found, request.rejected) are seen.
 
 #include "../support/ConsoleLogCapture.hpp"
+#include "../support/ModuleLogLevel.hpp"
 #include "../support/OAuthAuthorizationSupport.hpp"
 #include "../support/OAuthRegistrationSupport.hpp"
 #include "../support/OAuthTokenSupport.hpp"
@@ -14,12 +15,10 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/observability/LogLevel.hpp"
-#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -37,31 +36,6 @@ auto send(hs::ClientServerRuntime& runtime, std::string method, std::string targ
     std::ignore = hs::handle_client_server_request(runtime, request, /*can_wait=*/false);
 }
 
-// Lowers a module's log level to debug for the scope (client_server by default), so its per-request lines are written.
-class DebugClientServerLog final
-{
-public:
-    explicit DebugClientServerLog(std::string module_name = "client_server")
-        : module_name_{std::move(module_name)}
-        , previous_{merovingian::observability::SingleLog::instance().exchange_module_log_level(
-              module_name_, merovingian::observability::LogLevel::debug)}
-    {
-    }
-    ~DebugClientServerLog()
-    {
-        std::ignore =
-            merovingian::observability::SingleLog::instance().exchange_module_log_level(module_name_, previous_);
-    }
-    DebugClientServerLog(DebugClientServerLog const&) = delete;
-    auto operator=(DebugClientServerLog const&) -> DebugClientServerLog& = delete;
-    DebugClientServerLog(DebugClientServerLog&&) = delete;
-    auto operator=(DebugClientServerLog&&) -> DebugClientServerLog& = delete;
-
-private:
-    std::string module_name_;
-    std::optional<merovingian::observability::LogLevel> previous_;
-};
-
 } // namespace
 
 SCENARIO("The query of an OAuth 2.0 request is never logged", "[integration][oauth][oauth-log][logging][security]")
@@ -74,7 +48,8 @@ SCENARIO("The query of an OAuth 2.0 request is never logged", "[integration][oau
 
         WHEN("OAuth 2.0 requests carry a state, a code, a login hint and a session in their query")
         {
-            auto const debug_module = DebugClientServerLog{};
+            auto const debug_module =
+                merovingian::tests::ModuleLogLevel{"client_server", merovingian::observability::LogLevel::debug};
             auto const capture = merovingian::tests::ConsoleLogCapture{merovingian::observability::LogLevel::debug};
             send(runtime, "GET", "/_merovingian/oauth2/authorize?state=SECRETSTATE&login_hint=SECRETHINT");
             send(runtime, "POST", "/_merovingian/oauth2/register?code=SECRETCODE", "{}");
@@ -119,7 +94,8 @@ SCENARIO("A refused token or device request logs the client ID only when it name
         WHEN("an unregistered client ID is sent to every token grant and to the device endpoint, and the registered "
              "client asks for a grant it does not hold")
         {
-            auto const debug_module = DebugClientServerLog{"oauth"};
+            auto const debug_module =
+                merovingian::tests::ModuleLogLevel{"oauth", merovingian::observability::LogLevel::debug};
             auto const capture = merovingian::tests::ConsoleLogCapture{merovingian::observability::LogLevel::debug};
             constexpr auto probe = std::string_view{"UNREGISTEREDPROBE"};
             auto const refresh = merovingian::tests::post_oauth_form(

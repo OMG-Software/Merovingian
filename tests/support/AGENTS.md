@@ -31,6 +31,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `CapturedAppserviceRequest.hpp` | `CapturedAppserviceRequest`: one request recorded by `MockAppservice` (method, target, `Authorization`, body, answered status) |
 | `TestAppservice.hpp` | `TestAppservice`: the fields of one appservice registration written by `appservice_test_config()` |
 | `ConsoleLogCapture.hpp` | `ConsoleLogCapture`: sends the console log to a string for the scope's lifetime; safe only while the logger's asynchronous writer threads are not running (the unit test binary); `text()` returns everything captured |
+| `ModuleLogLevel.hpp` | `ModuleLogLevel`: sets one logger module's level for the scope and restores the previous override (or its absence) on exit. Use it whenever a scenario needs a module raised or silenced, never a file-local copy |
 | `CrossSigningKeyPair.hpp` | `CrossSigningKeyPair`: a cross-signing public key (unpadded base64) and its secret key |
 | `CrossSigningSet.hpp` | `CrossSigningSet`: a user's master, self-signing and user-signing keys, the latter two signed by the master key |
 | `EduRelayChannels.hpp` / `EduRelayContext.hpp` | `EduRelayChannels` and `make_edu_relay_channels()`: a main and a worker `IpcChannel` over a real authenticated transport, for the downstream EDU relay fixtures. Creates a `socketpair`, so it is an I/O exception |
