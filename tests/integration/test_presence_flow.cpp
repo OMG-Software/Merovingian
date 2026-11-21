@@ -1283,7 +1283,9 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
         auto const now_ms = merovingian::homeserver::presence_limit_clock_ms(runtime.homeserver);
         for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
         {
-            tracker.note_change("@user" + std::to_string(index) + ":other.example", now_ms);
+            // Started a window ahead, so no window can end while the scenario runs on the live clock.
+            tracker.note_change("@user" + std::to_string(index) + ":other.example",
+                                now_ms + AccountPresenceTracker::change_window_ms);
         }
         auto const& store = runtime.homeserver.database.persistent_store;
         auto const watermark = store.next_sync_stream_id;

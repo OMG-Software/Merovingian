@@ -341,6 +341,12 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
     if (!asks_online && any_device_online)
     {
         // ADR-0871: another device of the account asked for online in the freshness time; online beats unavailable.
+        log_presence("presence.change.limited", {
+                                                    {"actor",     std::string{user},   false},
+                                                    {"device_id", std::string{device}, false},
+                                                    {"presence",  "unavailable",       false},
+                                                    {"cause",     "device_online",     false}
+        });
         return std::nullopt;
     }
     auto& store = runtime.database.persistent_store;
