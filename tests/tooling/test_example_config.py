@@ -316,20 +316,42 @@ def without_comments(source: str) -> str:
     )
 
 
+def without_literal_contents(source: str) -> str:
+    """The source with each literal replaced by a quote, blanks and a quote, of the same length.
+
+    A string's contents are never code, so nothing inside one is found as a call or a constant;
+    the quotes stay, so a call that opens with a literal still looks like one.
+    """
+    return CPP_COMMENT_OR_LITERAL.sub(
+        lambda match: match.group(0)
+        if match.group("comment")
+        else '"' + re.sub(r"[^\n]", " ", match.group(0)[1:-1]) + '"',
+        source,
+    )
+
+
 def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
     """The logger modules one C++ source names, and each module argument it cannot resolve, prefixed with `label`."""
     modules: set[str] = set()
     unresolved: set[str] = set()
     text = without_comments(source)
+    # Calls and constants are found in `code`, where every literal's contents are blanked, so a
+    # logger call written inside a string (`R"cpp(observability::log_diagnostic(...))cpp"`) is no
+    # call. Their arguments are then read from `text` at the same position: the two are the same
+    # length, character for character.
+    code = without_literal_contents(text)
     # Every value each name is given in the file: the scan does not know scopes, so a name
     # given two values (say, a `log_module` in each of two functions) is ambiguous, never
     # silently resolved to whichever definition came last.
     constants: dict[str, set[str]] = {}
     for regex in (MODULE_CONSTANT, MODULE_CONSTANT_INIT):
-        for name, value in regex.findall(text):
-            constants.setdefault(name, set()).add(value)
+        for found in regex.finditer(text):
+            # Its value is a literal, so it is matched in `text`; its name must be code, not the
+            # inside of some other literal, where `code` holds a blank instead.
+            if code[found.start()] == text[found.start()]:
+                constants.setdefault(found.group(1), set()).add(found.group(2))
     for opening, call in CALL_FORMS:
-        for found in opening.finditer(text):
+        for found in opening.finditer(code):
             read = call.match(text, found.start())
             if read is None:
                 excerpt = " ".join(text[found.start() : found.end() + 40].split())
@@ -345,7 +367,9 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
                 modules.update(constants[short])
             elif short in constants:
                 unresolved.add(f"{label}: {identifier} (given {sorted(constants[short])} in this file)")
-            elif short in FORWARDED_MODULE_PARAMETERS:
+            elif identifier in FORWARDED_MODULE_PARAMETERS:
+                # Only a bare parameter forwards its caller's module. A qualified name such as
+                # `shared::module` names a constant defined elsewhere, which the scan cannot read.
                 continue
             else:
                 unresolved.add(f"{label}: {identifier}")
@@ -516,6 +540,41 @@ class ExampleLogModuleListTests(unittest.TestCase):
 
         # THEN nothing is read and nothing is reported.
         self.assertEqual((modules, unresolved), (set(), set()))
+
+    def test_logger_call_text_inside_a_string_literal_is_not_a_call(self) -> None:
+        # GIVEN a logger call and a module constant written inside string literals, beside a
+        # real call that names its module with a literal and one through a real constant.
+        source = (
+            'auto const sample = R"cpp(observability::log_diagnostic("example_only", "event", fields, severity);)cpp";\n'
+            'auto const doc = "log.info(\\"quoted_level\\", x); auto m = std::string_view{\\"in_string\\"};";\n'
+            'constexpr auto log_module = std::string_view{"real_constant"};\n'
+            'observability::log_diagnostic("real_literal", "event", fields, severity);\n'
+            'observability::log_diagnostic(log_module, "event", fields, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN only the real calls count: the text inside the literals names no module and
+        # defines no constant.
+        self.assertEqual(modules, {"real_literal", "real_constant"})
+        self.assertEqual(unresolved, set())
+
+    def test_a_qualified_forwarding_name_is_reported_not_skipped(self) -> None:
+        # GIVEN calls naming their module through `shared::module`, a constant in another file,
+        # and through a bare `module` parameter.
+        source = (
+            'observability::log_diagnostic(shared::module, "event", fields, severity);\n'
+            'auto log_line(std::string_view module) -> void\n'
+            '{ observability::log_diagnostic(module, "event", fields, severity); }\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN only the bare parameter is skipped: the qualified name is reported.
+        self.assertEqual(modules, set())
+        self.assertEqual(unresolved, {"f.cpp: shared::module"})
 
     def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
         # GIVEN a file that defines a module constant called `module`, and another file whose

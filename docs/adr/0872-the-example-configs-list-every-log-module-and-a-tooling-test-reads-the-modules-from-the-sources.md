@@ -26,7 +26,8 @@ by nothing. How do the examples stay complete without someone remembering to edi
 
 Chosen option: "a tooling test that reads the module names from the sources",
 `ExampleLogModuleListTests` in `tests/tooling/test_example_config.py`. It blanks C++ comments (a comment that quotes a
-call names no module), then reads the first argument of the qualified `observability::log_diagnostic` and
+call names no module) and finds calls and constants only outside string literals (logger-call text inside a string is
+no call), then reads the first argument of the qualified `observability::log_diagnostic` and
 `log_diagnostic_audit` calls and of `SingleLog` level calls, the second argument of the homeserver's
 `log_diagnostic_audit(database, "module", ...)` overload, and resolves an identifier through a string constant defined
 in the same file. Each example must list exactly that set as `# log_modules.<name>=` lines, each once. A hand-kept list
