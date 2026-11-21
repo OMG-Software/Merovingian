@@ -226,11 +226,17 @@ SCENARIO("An account holds a bounded number of devices, and the cap never ends a
         WHEN("one more device syncs asking for unavailable")
         {
             auto const any_online = tracker.note_sync(alice, "NEWEST", false, start_ms + 1'000);
+            // Forgetting every device but D0 leaves the account held online only if D0, the least recently seen, kept
+            // its place; it is never synced again, so the probe cannot put it back.
+            for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_devices_per_account; ++index)
+            {
+                tracker.forget_device(alice, "D" + std::to_string(index), start_ms + 1'001);
+            }
 
-            THEN("it is not recorded, since it holds nothing, and every online hold stays")
+            THEN("it is not recorded, since it holds nothing, and every online hold stays, D0's included")
             {
                 REQUIRE(any_online);
-                REQUIRE(tracker.note_sync(alice, "D0", true, start_ms + 1'001));
+                REQUIRE(tracker.note_sync(alice, "PROBE", false, start_ms + 1'002));
             }
         }
 
