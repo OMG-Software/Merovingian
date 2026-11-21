@@ -186,7 +186,10 @@ SCENARIO("A prune removes what no longer speaks for an account", "[unit][presenc
     }
 }
 
-SCENARIO("The tracker is bounded per account and in all", "[unit][presence][account_presence_tracker][bounds]")
+// ADR-0871: an account holds at most max_devices_per_account devices; at the cap a device that holds nothing gives up
+// its place first, and only a device asking for online takes an online device's place.
+SCENARIO("An account holds a bounded number of devices, and the cap never ends an online hold for nothing",
+         "[unit][presence][account_presence_tracker][bounds]")
 {
     GIVEN("an account with as many devices as the cap, the oldest of them the only one asking for online")
     {
@@ -248,7 +251,12 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             }
         }
     }
+}
 
+// ADR-0871, ADR-0872: the table holds at most its account cap. A full table evicts the account whose devices go stale
+// soonest, and refuses (fails closed) only while every account has an open window.
+SCENARIO("The tracker holds a bounded number of accounts", "[unit][presence][account_presence_tracker][bounds]")
+{
     GIVEN("a table holding as many accounts as the cap, each inside its window")
     {
         auto tracker = AccountPresenceTracker{small_cap};
