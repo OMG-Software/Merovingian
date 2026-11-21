@@ -80,4 +80,5 @@ to it, for a list that exists to be documented.
 
 ## Links
 
-* Refines [ADR-0871](0871-turn-credential-requests-log-under-their-own-turn-module.md)
+* See [ADR-0871](0871-turn-credential-requests-log-under-their-own-turn-module.md): the `turn` module it adds is one of
+  the modules the examples must list.

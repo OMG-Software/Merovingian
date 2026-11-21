@@ -41,9 +41,10 @@ service function: starting a runtime wires config, the store, the signing key an
 ## Tooling tests that read the sources
 
 A list that documents something in the code (the example configurations' `log_modules` lines, for one) is checked by a
-tooling test that reads the code, never against a second list kept by hand in the test. Such a test fails on anything it
-cannot read rather than skipping it, so a new form in the code is taught to the test instead of dropping out of the
-check, and it ignores comments. What it skips on purpose it names, in the test and in the documents that describe it.
+tooling test that reads the code, never against a second list kept by hand in the test. Such a test fails on an argument
+it finds but cannot resolve rather than skipping it, and it ignores comments. A form it does not recognise at all is
+missed, not failed (ADR-0872), so a change that adds a new form adds it to the scan too; a green run never proves a form
+the test does not name was checked. What it skips on purpose it names, in the test and in the documents that describe it.
 `ExampleLogModuleListTests` in `tests/tooling/test_example_config.py` is the model: a logger call names its module with
 a literal or a string constant in the same file; the only identifiers it skips are `module`, `mod` and `logger` where the
 file declares them as string parameters (or copies one into them), and `__func__`; a level method is read only on `SingleLog::instance()` or a reference named `log`
