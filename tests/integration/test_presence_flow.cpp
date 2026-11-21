@@ -30,8 +30,10 @@
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/EduType.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/DispatchResult.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
 
@@ -201,6 +203,18 @@ auto install_unstarted_dispatch_worker(ClientServerRuntime& runtime) -> void
 {
     return std::string{R"({"push":[{"user_id":")"} + std::string{user_id} + R"(","presence":")" +
            std::string{presence} + R"(","last_active_ago":5000)" + std::string{extra} + "}]}";
+}
+
+// The clock of the presence change window and of the devices' freshness moves on without a sleep (ADR-0871, ADR-0872).
+auto advance_presence_clock(ClientServerRuntime& runtime, std::int64_t by_ms) -> void
+{
+    runtime.homeserver.test_presence_clock_advance_ms += by_ms;
+}
+
+// Lets the window opened by the last presence change end, so the next change is kept.
+auto let_presence_window_end(ClientServerRuntime& runtime) -> void
+{
+    advance_presence_clock(runtime, merovingian::homeserver::AccountPresenceTracker::change_window_ms);
 }
 
 [[nodiscard]] auto sync_presence_senders(ClientServerRuntime& runtime, std::string const& token)
@@ -544,7 +558,8 @@ namespace
 constexpr auto minute_ms = std::int64_t{60 * 1000};
 
 // Presence rows hold when they were last observed; moving that back is the passage of time without a
-// sleep. The row is changed in place, as `record_presence` would restamp it.
+// sleep. The row is changed in place, as `record_presence` would restamp it. The clock of the change window and of
+// the devices' freshness (ADR-0871, ADR-0872) moves on by as much.
 auto age_presence(ClientServerRuntime& runtime, std::string_view user_id, std::int64_t by_ms) -> void
 {
     for (auto& row : runtime.homeserver.database.persistent_store.presence_states)
@@ -554,6 +569,7 @@ auto age_presence(ClientServerRuntime& runtime, std::string_view user_id, std::i
             row.observed_at_ms -= by_ms;
         }
     }
+    advance_presence_clock(runtime, by_ms);
 }
 
 [[nodiscard]] auto read_alice_presence(ClientServerRuntime& runtime, std::string const& token) -> std::string
@@ -637,6 +653,7 @@ SCENARIO("A user idle past the presence threshold is set unavailable", "[integra
 
         WHEN("alice set herself offline, a long time ago, and the idle sweep runs")
         {
+            let_presence_window_end(runtime);
             REQUIRE(put_alice_presence(runtime, token, R"({"presence":"offline"})").status == 200U);
             age_presence(runtime, local_alice, 60 * minute_ms);
             std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
@@ -710,6 +727,7 @@ SCENARIO("A user who keeps sending messages is not set unavailable", "[integrati
 
         WHEN("she is unavailable by her own choice and sends a message")
         {
+            let_presence_window_end(runtime);
             REQUIRE(put_alice_presence(runtime, token, R"({"presence":"unavailable"})").status == 200U);
             REQUIRE(send(1).status == 200U);
 
@@ -920,6 +938,237 @@ SCENARIO("Sliding sync honours set_presence", "[integration][presence][sliding-s
             THEN("the answer is 400")
             {
                 REQUIRE(poll("?set_presence=busy", "{}").status == 400U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A second device of alice's, for the scenarios where two clients of one account sync at once.
+[[nodiscard]] auto log_alice_in_on(ClientServerRuntime& runtime, std::string_view device_id) -> std::string
+{
+    auto const login = call(runtime, "POST", "/_matrix/client/v3/login", {},
+                            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"alice"},)"
+                            R"("password":"CorrectHorse7!","device_id":")" +
+                                std::string{device_id} + R"("})");
+    REQUIRE(login.status == 200U);
+    auto const body = parse_object(login.body);
+    auto const* token = string_member(body, "access_token");
+    REQUIRE(token != nullptr);
+    return *token;
+}
+
+// A /sync that answers at once, asking for `mode` (online, unavailable or offline).
+auto sync_once(ClientServerRuntime& runtime, std::string const& token, std::string_view mode) -> void
+{
+    REQUIRE(call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&set_presence=" + std::string{mode}, token).status ==
+            200U);
+}
+
+[[nodiscard]] auto alice_presence_state(ClientServerRuntime const& runtime) -> std::string
+{
+    auto const row = stored_presence(runtime, local_alice);
+    return row.has_value() ? row->presence : std::string{"none"};
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, Presence, "Idle timeout": "Any activity that bumps the last active time on any
+// of the user's clients will cause the server to automatically set their presence to `online`."
+//
+// ADR-0871: a device that syncs online holds the account online for AccountPresenceTracker::device_fresh_ms, so another
+// device syncing unavailable does not set it unavailable in between. Without this, a client in the foreground and one
+// in the background set the presence back and forth on every sync, each change waking the other's sync and queueing an
+// EDU for every server in the user's rooms.
+SCENARIO("Two devices of one account syncing online and unavailable do not set its presence back and forth",
+         "[integration][presence][sync][devices]")
+{
+    GIVEN("alice shares a room with bob on another server and her desktop has synced online")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const desktop = register_alice(runtime);
+        auto const phone = log_alice_in_on(runtime, "PHONE");
+        share_room_with_remote_bob(runtime);
+        sync_once(runtime, desktop, "online");
+        REQUIRE(alice_presence_state(runtime) == "online");
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+
+        WHEN("her phone syncs unavailable and her desktop online, in turn, with every change window ended")
+        {
+            for (auto round = 0; round < 10; ++round)
+            {
+                let_presence_window_end(runtime);
+                sync_once(runtime, phone, "unavailable");
+                let_presence_window_end(runtime);
+                sync_once(runtime, desktop, "online");
+            }
+
+            THEN("she stays online and bob's server was told once")
+            {
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+
+        WHEN("her desktop stops syncing for longer than a device holds the account and her phone syncs unavailable")
+        {
+            advance_presence_clock(runtime, merovingian::homeserver::AccountPresenceTracker::device_fresh_ms);
+            sync_once(runtime, phone, "unavailable");
+
+            THEN("she is unavailable and bob's server is told")
+            {
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+        }
+
+        WHEN("her desktop syncs with set_presence=offline and then her phone syncs unavailable")
+        {
+            sync_once(runtime, desktop, "offline");
+            let_presence_window_end(runtime);
+            sync_once(runtime, phone, "unavailable");
+
+            THEN("the desktop no longer holds her online, so she is unavailable")
+            {
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+            }
+        }
+    }
+}
+
+// ADR-0872: the first change of an account's presence opens a window of AccountPresenceTracker::change_window_ms in
+// which no other change is kept: a sync's is dropped, a PUT is answered 429 M_LIMIT_EXCEEDED, which the spec gives this
+// endpoint. The first change asked for is the one kept, never the last.
+//
+// Spec: Matrix Client-Server API v1.19, PUT /_matrix/client/v3/presence/{userId}/status, responses 200 and 429.
+SCENARIO("Only the first presence change in a window is kept", "[integration][presence][rate_limit]")
+{
+    GIVEN("alice shares a room with bob on another server and has just synced online")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        sync_once(runtime, token, "online");
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto const watermark = store.next_sync_stream_id;
+
+        WHEN("she syncs unavailable at once")
+        {
+            sync_once(runtime, token, "unavailable");
+
+            THEN("the change is dropped: nothing is stored, woken or sent")
+            {
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(store.next_sync_stream_id == watermark);
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+
+        WHEN("she syncs unavailable once the window has ended")
+        {
+            let_presence_window_end(runtime);
+            sync_once(runtime, token, "unavailable");
+
+            THEN("the change is kept and bob's server is told")
+            {
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+        }
+
+        WHEN("she sets her presence at once")
+        {
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"unavailable","status_msg":"away"})");
+
+            THEN("it is refused with 429 M_LIMIT_EXCEEDED and when to retry, and nothing is stored or sent")
+            {
+                REQUIRE(put.status == 429U);
+                auto const body = parse_object(put.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
+                auto const* retry_after_ms = int_member(body, "retry_after_ms");
+                REQUIRE(retry_after_ms != nullptr);
+                REQUIRE(*retry_after_ms > 0);
+                REQUIRE(*retry_after_ms <= merovingian::homeserver::AccountPresenceTracker::change_window_ms);
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(store.next_sync_stream_id == watermark);
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+
+        WHEN("she sets her presence once the window has ended")
+        {
+            let_presence_window_end(runtime);
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"unavailable"})");
+
+            THEN("it is stored and sent")
+            {
+                REQUIRE(put.status == 200U);
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+        }
+    }
+}
+
+// ADR-0873: a /sync never sends the caller their own presence, so a long-poll whose only news is the caller's own
+// presence row would be answered with nothing, and its client would sync again at once. It keeps waiting instead, as
+// sliding sync does for what its response does not send (ADR-0869).
+SCENARIO("A long-polling /sync whose only news is the caller's own presence keeps waiting",
+         "[integration][presence][sync][long_poll]")
+{
+    GIVEN("alice has synced with set_presence=offline and holds its next_batch")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_alice(runtime);
+        auto const initial = call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&set_presence=offline", token);
+        REQUIRE(initial.status == 200U);
+        auto const initial_body = parse_object(initial.body);
+        auto const* since = string_member(initial_body, "next_batch");
+        REQUIRE(since != nullptr);
+        auto const long_poll = merovingian::homeserver::LocalHttpRequest{
+            "GET", "/_matrix/client/v3/sync?timeout=30000&since=" + *since, token, {}};
+        auto const& store = runtime.homeserver.database.persistent_store;
+
+        WHEN("she long-polls from it without set_presence, which marks her online")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+
+            THEN("she is online and the sync waits past her own presence row")
+            {
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.wait.since_sync_stream_id == store.next_sync_stream_id);
+            }
+        }
+
+        WHEN("something else is stored for her after her own presence, and the sync runs again")
+        {
+            std::ignore = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+            REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/org.example.a",
+                         token, R"({"a":1})")
+                        .status == 200U);
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+
+            THEN("it is answered")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
             }
         }
     }

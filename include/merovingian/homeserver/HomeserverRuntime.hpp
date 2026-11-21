@@ -17,6 +17,7 @@
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
 #include "merovingian/homeserver/AccountSessionStore.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
@@ -261,6 +262,12 @@ struct HomeserverRuntime final
     // Test-only: added to the wall clock by `oauth_device_clock_ms`, so a test moves the device grant's time (expiry,
     // polling interval, the wrong-code window) without sleeping. Always 0 in production.
     std::uint64_t test_device_grant_clock_advance_ms{0U};
+    // What each local account's devices last asked of its presence, and when its presence last changed (ADR-0871,
+    // ADR-0872). In memory only, bounded. Guarded by `mutex`. Takes its time from `presence_limit_clock_ms`.
+    AccountPresenceTracker presence_tracker{};
+    // Test-only: added to the steady clock by `presence_limit_clock_ms`, so a test moves past a presence change window
+    // or a device's freshness without sleeping. Always 0 in production.
+    std::int64_t test_presence_clock_advance_ms{0};
     // The signed-in sessions of the account pages at `/_merovingian/account` (plan P6, ADR-0796) and the cross-signing
     // reset approvals they grant (ADR-0797). In memory only, bounded. Here, not on `ClientServerRuntime`, because a
     // password change, a password reset and a deactivation (`AuthService.cpp`) end them. Guarded by `mutex`.

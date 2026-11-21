@@ -61,6 +61,10 @@ inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 // Wall-clock milliseconds since the Unix epoch.
 [[nodiscard]] auto presence_now_ms() -> std::int64_t;
 
+// The clock of `HomeserverRuntime::presence_tracker` (ADR-0871, ADR-0872): steady-clock milliseconds, which never go
+// back, plus `test_presence_clock_advance_ms`. Not a point in calendar time.
+[[nodiscard]] auto presence_limit_clock_ms(HomeserverRuntime const& runtime) -> std::int64_t;
+
 // "The last active time must be up to date whenever the server gives a presence event to the
 // client": the stored value plus the time since it was true. Never negative.
 [[nodiscard]] auto presence_last_active_ago(database::PersistentPresence const& row, std::int64_t now_ms) noexcept
@@ -115,12 +119,17 @@ auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view us
 [[nodiscard]] auto parse_sync_presence_mode(std::optional<std::string_view> value) noexcept
     -> std::optional<SyncPresenceMode>;
 
-// Applies a /sync's `set_presence` to a local user. Only a change of state is stored (and so only
-// a change is sent to other users); an `online` user who syncs again just has their last-active
-// time refreshed in memory. The caller holds runtime.mutex. Returns the new row when the state
-// changed, so the caller can send it to other servers and wake long-polling syncs.
-[[nodiscard]] auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, SyncPresenceMode mode)
-    -> std::optional<database::PersistentPresence>;
+// Applies the `set_presence` of a /sync from `device` to a local user. Only a change of state is stored (and so only
+// a change is sent to other users); an `online` user who syncs again just has their last-active time refreshed in
+// memory. The device's ask is noted in `runtime.presence_tracker`:
+//  * `offline` stores nothing and the device no longer holds the account online;
+//  * `unavailable` changes nothing while another device of the account asked for `online` within
+//    `AccountPresenceTracker::device_fresh_ms` (ADR-0871);
+//  * a change within `AccountPresenceTracker::change_window_ms` of the account's last one is dropped (ADR-0872).
+// The caller holds runtime.mutex. Returns the new row when the state changed, so the caller can send it to other
+// servers and wake long-polling syncs.
+[[nodiscard]] auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std::string_view device,
+                                       SyncPresenceMode mode) -> std::optional<database::PersistentPresence>;
 
 // The `presence.events` of a /sync response for `user`: other users who share a joined room,
 // whose presence changed since `since_sync_stream_id` or who started sharing a room in

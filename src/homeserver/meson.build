@@ -14,6 +14,7 @@ homeserver_sources = files(
   'PendingAuthorisationStore.cpp',
   'DeviceAuthorisationStore.cpp',
   'UserCodeAttemptThrottle.cpp',
+  'AccountPresenceTracker.cpp',
   'RequestHeaders.cpp',
   'SafetyReportIndex.cpp',
   'RetentionSweep.cpp',

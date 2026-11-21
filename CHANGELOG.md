@@ -177,6 +177,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The Fedora 44 and 45 RPMs build again: GCC 16 refused `std::ranges::find` with a bare string literal under C++26,
   and `reject-unsafe.sh` now rejects that form in code and tests (ADR-0870).
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
+* Two clients of one account, one syncing online and one `unavailable`, no longer flip its presence on every sync: an
+  online device holds the account online for 5 minutes (ADR-0871).
+* An account's presence changes at most once every 5 s: later changes in the window are dropped, and `PUT /presence`
+  answers 429. A flip loop no longer fills the federation queue for every other send (ADR-0872).
+* A classic `/sync` whose only news is the caller's own presence keeps waiting instead of answering nothing (ADR-0873).
+* `docs/observability-audit.md` named the wrong logger for `presence.sync.set`; it is `client_server`.
 
 ## Release notes
 

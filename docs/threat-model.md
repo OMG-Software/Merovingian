@@ -2791,6 +2791,15 @@ nothing, all from trusting the worker's view or the hook's transport.
   reporting it.
 - **Presence off.** `presence.enabled=false` stores and sends nothing, so an operator who does not
   want to publish presence to the federation need not.
+- **One account flooding the federation queue with presence.** Each change of a local user's
+  presence queues an `m.presence` EDU for every server in their rooms. Two clients of one account
+  fighting over `set_presence` changed it many times a second and filled the dispatch queue, so
+  every other federation send was refused. A device that synced online holds the account online
+  for 5 minutes (ADR-0871), a classic `/sync` no longer wakes for its own presence (ADR-0873), and
+  an account's presence changes at most once every 5 s, the first change kept (ADR-0872). The
+  tracker behind both is bounded and fails closed when full. **Residual risk:** one change every
+  5 s per account still costs an EDU per remote server; many accounts at once are bounded only by
+  the dispatch queue's own shares.
 
 ### Remote space hierarchy answers (0.12.60)
 

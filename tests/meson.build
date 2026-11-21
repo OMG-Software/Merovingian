@@ -506,6 +506,7 @@ shell = find_program('sh')
       'unit/test_oauth_account_session_store.cpp',
       'unit/test_oauth_cross_signing_reset_approvals.cpp',
       'unit/test_oauth_device_authorisation_store.cpp',
+      'unit/test_account_presence_tracker.cpp',
       'unit/test_oauth_pending_authorisation_store.cpp',
       'unit/test_oauth_pkce.cpp',
       'unit/test_oauth_redirect_uri.cpp',

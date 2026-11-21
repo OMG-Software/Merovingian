@@ -80,6 +80,7 @@
 #include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
 #include "merovingian/homeserver/AccountPage.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
 #include "merovingian/homeserver/AppserviceDelivery.hpp"
 #include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -122,6 +123,8 @@
 #include "merovingian/homeserver/PasswordReset.hpp"
 #include "merovingian/homeserver/PresenceReadStatus.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
+#include "merovingian/homeserver/PresenceWrite.hpp"
+#include "merovingian/homeserver/PresenceWriteStatus.hpp"
 #include "merovingian/homeserver/PublicRooms.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
@@ -7070,6 +7073,20 @@ namespace
         joined_room.push_back(json_member(std::string{events::unstable_sticky_field}, section));
     }
 
+    // True when the one sync stream position after `since` is `user`'s own presence row (ADR-0873). A /sync never sends
+    // the caller their own presence (`build_sync_presence_events`), so its response would hold nothing new. Only one
+    // position is judged: with any other after `since` the sync answers, as before.
+    [[nodiscard]] auto only_own_presence_since(database::PersistentStore const& store, std::string_view user,
+                                               std::uint64_t since) -> bool
+    {
+        if (store.next_sync_stream_id <= since || store.next_sync_stream_id - since != 1U)
+        {
+            return false;
+        }
+        auto const* const own = database::find_presence_state(store, user);
+        return own != nullptr && own->stream_id == store.next_sync_stream_id;
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -7123,12 +7140,16 @@ namespace
             auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
             auto const has_timeline_advance = visible_stream_position(rt.homeserver.database) > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
-            if (!has_timeline_advance && !has_sync_advance)
+            // ADR-0873: the caller's own presence row is never in their response, so a sync whose only news it is
+            // waits on, past it, rather than answering nothing and being sent again at once.
+            auto const only_own_presence =
+                since_token.has_value() && only_own_presence_since(store, user, since_sync_stream_id);
+            if (!has_timeline_advance && (!has_sync_advance || only_own_presence))
             {
                 return DispatchResult{
                     DispatchResult::Status::needs_wait,
                     {},
-                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
+                    {since_ordering, store.next_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
                                           std::string{user}, std::string{device_id}}
                 };
             }
@@ -22326,7 +22347,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *presence_mode); changed.has_value())
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, device_id, *presence_mode);
+            changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
                                                     {"actor",    *user,             false},
@@ -22388,7 +22410,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *sliding_presence_mode); changed.has_value())
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, device_id_4186, *sliding_presence_mode);
+            changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
                                                     {"actor",    *user,             false},
@@ -24353,7 +24376,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             state.status_msg = status_msg != nullptr ? *status_msg : std::string{};
             state.last_active_ago = 0;
             state.currently_active = (presence_state == "online");
-            if (!set_presence(rt, state))
+            auto const written = set_presence(rt, state);
+            if (written.status == PresenceWriteStatus::limited)
+            {
+                // ADR-0872: the spec's 429 for this endpoint. The change is refused, not kept for later.
+                log_diagnostic("presence.set.limited",
+                               {
+                                   {"actor",          *user,                                  false},
+                                   {"presence",       presence_state,                         false},
+                                   {"retry_after_ms", std::to_string(written.retry_after_ms), false}
+                });
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "presence changed too recently",
+                                    written.retry_after_ms);
+            }
+            if (written.status == PresenceWriteStatus::failed)
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "presence persistence failed");
             }
@@ -25348,22 +25384,31 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
     return stored;
 }
 
-auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool
+auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> PresenceWrite
 {
     auto guard = RuntimeLock{runtime.homeserver.mutex};
     if (!presence_enabled(runtime.homeserver))
     {
         // Nothing is tracked, so there is nothing to fail: the caller's update is accepted and dropped.
-        return true;
+        return PresenceWrite{PresenceWriteStatus::stored, 0U};
     }
-    auto const stored = record_presence(runtime.homeserver, state);
-    if (stored)
+    auto& tracker = runtime.homeserver.presence_tracker;
+    auto const clock_ms = presence_limit_clock_ms(runtime.homeserver);
+    // ADR-0872: judged and noted under the same lock as the write, so two requests at once cannot both be first.
+    if (auto const blocked = tracker.change_blocked_for_ms(state.user_id, clock_ms); blocked.has_value())
     {
-        std::ignore = ensure_sync_notifier(runtime);
-        // The servers that share a room with the user are told; the row is as stored just now.
-        broadcast_presence_edu(runtime.homeserver, state);
+        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, AccountPresenceTracker::change_window_ms);
+        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms)};
     }
-    return stored;
+    if (!record_presence(runtime.homeserver, state))
+    {
+        return PresenceWrite{PresenceWriteStatus::failed, 0U};
+    }
+    tracker.note_change(state.user_id, clock_ms);
+    std::ignore = ensure_sync_notifier(runtime);
+    // The servers that share a room with the user are told; the row is as stored just now.
+    broadcast_presence_edu(runtime.homeserver, state);
+    return PresenceWrite{PresenceWriteStatus::stored, 0U};
 }
 
 auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
