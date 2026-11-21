@@ -130,7 +130,8 @@ auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view us
 //  * `offline` stores nothing and the device no longer holds the account online;
 //  * `unavailable` changes nothing while another device of the account asked for `online` within
 //    `AccountPresenceTracker::device_fresh_ms` (ADR-0871);
-//  * a change within `AccountPresenceTracker::change_window_ms` of the account's last one is dropped (ADR-0872).
+//  * a change within `AccountPresenceTracker::change_window_ms` of the account's last one is dropped, and so is a
+//    change of an account the tracker has no room for (`is_full_for`, ADR-0872).
 // The caller holds runtime.mutex. Returns the new row when the state changed, so the caller can send it to other
 // servers and wake long-polling syncs.
 [[nodiscard]] auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std::string_view device,
