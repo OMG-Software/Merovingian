@@ -320,14 +320,16 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
     for regex in (QUALIFIED_LOG_CALL, LEVEL_LOG_CALL, DATABASE_AUDIT_CALL):
         for literal, identifier in regex.findall(text):
             short = identifier.split("::")[-1]
+            # A constant the file defines comes first, whatever it is called: the forwarding names
+            # are skipped only when no constant of that name exists, so they skip by role, not name.
             if literal:
                 modules.add(literal)
-            elif short in FORWARDED_MODULE_PARAMETERS:
-                continue
             elif len(constants.get(short, ())) == 1:
                 modules.update(constants[short])
             elif short in constants:
                 unresolved.add(f"{label}: {identifier} (given {sorted(constants[short])} in this file)")
+            elif short in FORWARDED_MODULE_PARAMETERS:
+                continue
             else:
                 unresolved.add(f"{label}: {identifier}")
     return modules, unresolved
@@ -461,6 +463,27 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertEqual(modules, set())
         self.assertEqual(unresolved, {"f.cpp: log_module (given ['first', 'second'] in this file)"})
 
+    def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
+        # GIVEN a file that defines a module constant called `module`, and another file whose
+        # `module` is only a parameter forwarding its caller's module.
+        with_constant = (
+            'constexpr auto module = std::string_view{"named_module"};\n'
+            'observability::log_diagnostic(module, "x", fields, severity);\n'
+        )
+        forwarding = (
+            'auto log_line(std::string_view module) -> void\n'
+            '{ observability::log_diagnostic(module, "x", fields, severity); }\n'
+        )
+
+        # WHEN each is scanned.
+        constant_modules, constant_unresolved = scan_log_modules(with_constant, "a.cpp")
+        forwarded_modules, forwarded_unresolved = scan_log_modules(forwarding, "b.cpp")
+
+        # THEN the constant names its module, and only the bare parameter is skipped: the skip
+        # is by role, so a constant is never dropped for its name.
+        self.assertEqual((constant_modules, constant_unresolved), ({"named_module"}, set()))
+        self.assertEqual((forwarded_modules, forwarded_unresolved), (set(), set()))
+
     def test_a_level_named_method_of_another_type_names_no_module(self) -> None:
         # GIVEN level calls on the logger beside level-named methods of other types.
         source = (
@@ -470,6 +493,10 @@ class ExampleLogModuleListTests(unittest.TestCase):
             'result.warning("deprecated", detail);\n'
             'status->error("phantom", detail);\n'
             'catalog.info("catalog", detail);\n'
+            'm_log.info("member_prefix", detail);\n'
+            'event_log.error("name_prefix", detail);\n'
+            'log_.warning("name_suffix", detail);\n'
+            'logger_->error("pointer_suffix", detail);\n'
         )
 
         # WHEN the level calls are read.

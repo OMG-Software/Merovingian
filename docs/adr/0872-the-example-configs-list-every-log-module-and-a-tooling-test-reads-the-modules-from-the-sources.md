@@ -52,7 +52,8 @@ to it, for a list that exists to be documented.
 * Name a logger call's module with a string literal, or with a string constant defined in the same file under a name
   given no other value there: the scan does not know scopes, so a name two functions each define with a different value
   is reported as ambiguous. The database audit overload's module argument follows the same rule. A parameter
-  that only forwards a caller's module is named `logger`, `mod` or `module`, which the scan skips. So is `__func__`:
+  that only forwards a caller's module is named `logger`, `mod` or `module`, which the scan skips, but only when the
+  file defines no string constant of that name: a constant always resolves first, so the skip goes by role. So is `__func__`:
   the legacy `LOG_*` macros log under the calling function's name, which is no module and is not listed in the
   examples. These four identifiers are the only first arguments the scan skips; say so wherever the test is described.
 * Call a level method (`info`, `warning`, ...) directly only on `SingleLog::instance()` or on a reference named `log`
