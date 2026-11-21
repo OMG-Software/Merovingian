@@ -39,8 +39,9 @@ Chosen option: 1.
 * Not limited: the idle sweep (the server's own change, at most once per idle period; a user who returns at once is
   marked online at once), the profile propagation that resends an unchanged presence with a new display name or avatar,
   and inbound presence from other servers (their own server's to limit).
-* With `AccountPresenceTracker` full after a prune, a change of an account it does not hold is refused (fails closed,
-  as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself.
+* With `AccountPresenceTracker` full and no account in it expired, a change of an account it does not hold is refused
+  (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself; once an
+  account has expired, the change is allowed and takes its place.
 * Tests move the clock with `HomeserverRuntime::test_presence_clock_advance_ms`.
 
 ### Positive Consequences

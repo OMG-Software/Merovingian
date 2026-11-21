@@ -7135,7 +7135,9 @@ namespace
         // Spec §9.4: omitting `timeout` means respond immediately — no default.
         // HTTP-4: cap the client-supplied timeout so a single sync cannot pin a
         // worker indefinitely; the client receives the capped wait.
-        if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
+        // Spec (GET /sync, `full_state`): with it true "the `timeout` parameter will be ignored and the query will
+        // return immediately", so such a sync never waits.
+        if (can_wait && !request.full_state.value_or(false) && request.timeout.has_value() && *request.timeout > 0U)
         {
             auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
             auto const has_timeline_advance = visible_stream_position(rt.homeserver.database) > since_ordering;

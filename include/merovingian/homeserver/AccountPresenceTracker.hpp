@@ -8,9 +8,11 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -29,16 +31,18 @@ namespace merovingian::homeserver
 // the one kept, never the last.
 //
 // Bounded: at most `max_accounts` accounts of `max_devices_per_account` devices each. A new device past the device cap
-// replaces the account's least recently seen one. An account the table has no room for after a prune has its devices
-// ignored (its sync asks for itself alone, as without this table) and every change refused until there is room, so a
-// flood of accounts cannot lift the limit for itself. Not thread-safe: `runtime.mutex` serialises every use
-// (`HomeserverRuntime::presence_tracker`).
+// replaces the account's least recently seen one. Each account is filed under the time it stops mattering (its last
+// online device stale and its window ended), so a prune visits only the accounts that have expired, never the table: an
+// overflow request does as much work as there are accounts to remove. An account the table has no room for, once the
+// expired ones are gone, has its devices ignored (its sync asks for itself alone, as without this table) and every
+// change refused until there is room, so a flood of accounts cannot lift the limit for itself. Not thread-safe:
+// `runtime.mutex` serialises every use (`HomeserverRuntime::presence_tracker`).
 class AccountPresenceTracker final
 {
 public:
     static constexpr auto change_window_ms = std::int64_t{5'000};
     // The idle timeout (`presence_idle_timeout_ms`): a device holds the account online for as long as the idle sweep
-    // would leave it online after that device's last sync.
+    // would leave it online after that device's last sync. `PresenceService.cpp` asserts the two are equal.
     static constexpr auto device_fresh_ms = std::int64_t{5 * 60 * 1000};
     // Far more devices than one person syncs from at once; each is a device ID and two integers.
     static constexpr auto max_devices_per_account = std::size_t{64U};
@@ -60,11 +64,14 @@ public:
     // Starts the window of `user` at `now_ms`: a change was just kept.
     auto note_change(std::string_view user, std::int64_t now_ms) -> void;
 
-    // Removes the devices not seen for `device_fresh_ms`, then every account left with no device whose window ended.
+    // Removes every account whose devices are all stale and whose window ended by `now_ms`.
     auto prune(std::int64_t now_ms) -> void;
 
     // Accounts held, ones a prune would remove included.
     [[nodiscard]] auto account_count() const noexcept -> std::size_t;
+
+    // Accounts a prune has looked at since the table was made, for tests that prove its cost.
+    [[nodiscard]] auto accounts_examined() const noexcept -> std::uint64_t;
 
 private:
     struct Device final
@@ -77,13 +84,26 @@ private:
     {
         std::vector<Device> devices{};
         std::optional<std::int64_t> changed_at_ms{};
+        // When the account stops mattering: its latest device stale and its window ended. Its key in `m_by_expiry`.
+        std::int64_t expires_at_ms{0};
     };
+    using Accounts = std::unordered_map<std::string, Account, database::detail::StateGroupKeyHash, std::equal_to<>>;
+    using ExpiryKey = std::pair<std::int64_t, std::string>;
 
-    // The account of `user`, made when there is room (after a prune when the table is full); nullptr when there is
-    // none.
-    [[nodiscard]] auto account_for(std::string_view user, std::int64_t now_ms) -> Account*;
+    // The account of `user`, made when there is room (after removing the expired accounts when the table is full);
+    // `m_accounts.end()` when there is none.
+    [[nodiscard]] auto account_for(std::string_view user, std::int64_t now_ms) -> Accounts::iterator;
 
-    std::unordered_map<std::string, Account, database::detail::StateGroupKeyHash, std::equal_to<>> m_accounts{};
+    // Files `entry` under its expiry again, after its devices or window changed.
+    auto refile(Accounts::iterator entry, std::int64_t now_ms) -> void;
+
+    // True when an account has expired by `now_ms`, so a prune would make room.
+    [[nodiscard]] auto has_expired_account(std::int64_t now_ms) const noexcept -> bool;
+
+    Accounts m_accounts{};
+    // (expires_at_ms, user) of every account, soonest first.
+    std::set<ExpiryKey> m_by_expiry{};
+    std::uint64_t m_accounts_examined{0U};
 };
 
 } // namespace merovingian::homeserver

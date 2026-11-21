@@ -77,6 +77,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   so the worker stops serving the removed event (ADR-0862).
 * A sliding sync `pos` is bound to the user and device it was issued to; any other is `M_UNKNOWN_POS`, so one user can
   no longer continue another's connection (ADR-0866).
+* An account's presence changes at most once every 5 s (a later sync's change is dropped, `PUT /presence` is 429), so a
+  flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0872).
 
 ## Bug fixes
 
@@ -179,9 +181,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
 * Two clients of one account, one syncing online and one `unavailable`, no longer flip its presence on every sync: an
   online device holds the account online for 5 minutes (ADR-0871).
-* An account's presence changes at most once every 5 s: later changes in the window are dropped, and `PUT /presence`
-  answers 429. A flip loop no longer fills the federation queue for every other send (ADR-0872).
 * A classic `/sync` whose only news is the caller's own presence keeps waiting instead of answering nothing (ADR-0873).
+* A classic `/sync` with `full_state=true` is answered at once, whatever its `timeout`, as the spec says; it waited
+  like any other long poll (ADR-0873).
 * `docs/observability-audit.md` named the wrong logger for `presence.sync.set`; it is `client_server`.
 
 ## Release notes

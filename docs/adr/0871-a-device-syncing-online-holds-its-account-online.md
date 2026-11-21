@@ -36,10 +36,13 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
 
 * `set_presence=offline` forgets the device's ask: it no longer holds the account online.
 * The freshness time is the idle timeout, so a closed client holds the account online exactly as long as the idle
-  sweep would leave it online after that client's last sync.
+  sweep would leave it online after that client's last sync; a `static_assert` in `PresenceService.cpp` keeps the
+  two equal.
 * At most `max_devices_per_account` (64) devices per account, the least recently seen replaced; at most `max_accounts`
-  (65,536) accounts, pruned by the idle sweep every 30 s. With the table full after a prune, a sync of an account it
-  does not hold asks for itself alone, as before this decision.
+  (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. Each account is filed under the
+  time it stops mattering (its latest device stale and its window ended), so a prune visits only expired accounts,
+  never the table: a flood of overflow requests under `runtime.mutex` costs no scan. With the table full after a prune,
+  a sync of an account it does not hold asks for itself alone, as before this decision.
 * The asks are in memory only: after a restart each device's next sync puts its ask back.
 * The clock is the steady clock (`presence_limit_clock_ms`), which never goes back.
 

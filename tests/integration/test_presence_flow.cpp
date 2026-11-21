@@ -1157,6 +1157,20 @@ SCENARIO("A long-polling /sync whose only news is the caller's own presence keep
             }
         }
 
+        WHEN("she long-polls from it with full_state=true and nothing new to send")
+        {
+            std::ignore = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+            auto const full_state = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/v3/sync?timeout=30000&full_state=true&since=" + *since, token, {}};
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, full_state);
+
+            THEN("the timeout is ignored and it is answered at once, as the spec requires")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+            }
+        }
+
         WHEN("something else is stored for her after her own presence, and the sync runs again")
         {
             std::ignore = merovingian::homeserver::handle_client_server_request(runtime, long_poll);

@@ -1211,8 +1211,10 @@ the users who share a room with them in `/sync` (`presence.events`) and by
 `m.presence` EDU. `PUT /presence/{userId}/status` sets it, and so does `/sync`: omitting
 `set_presence` marks the user online, `unavailable` marks them idle, `offline` leaves it as it
 is. A device that synced online in the last 5 minutes keeps the user online while another of their devices syncs
-`unavailable`. A user's presence changes at most once every 5 seconds: a later change by `/sync` in that time is
-ignored, and `PUT /presence` answers `429` with `retry_after_ms`. Presence reaches only users who share a joined
+`unavailable`; a sync from that device with `set_presence=offline` ends its hold at once. A user's presence changes at
+most once every 5 seconds: a later change by `/sync` in that time is ignored, and `PUT /presence` answers `429` with
+`retry_after_ms`. The server's own idle change (an online user inactive for 5 minutes becomes `unavailable`) is not
+limited and does not start those 5 seconds. Presence reaches only users who share a joined
 room with the user; anyone else asking for it gets `403 M_FORBIDDEN`, as for a user who does not exist.
 
 | Key | Default | When to change |

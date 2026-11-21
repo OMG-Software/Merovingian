@@ -32,6 +32,13 @@
 
 namespace merovingian::homeserver
 {
+
+// ADR-0871: a device's online ask goes stale exactly when the idle sweep would set its account unavailable. With the
+// two apart, a background device's `unavailable` would win while the sweep still counts the user active, or a closed
+// client would hold the account online past the sweep.
+static_assert(AccountPresenceTracker::device_fresh_ms == presence_idle_timeout_ms,
+              "a device's online ask must last exactly as long as the idle timeout");
+
 namespace
 {
 

@@ -109,8 +109,7 @@ SCENARIO("The first presence change in a window is kept and the rest wait for it
             THEN("another change two seconds later waits for the rest of the window")
             {
                 auto const blocked = tracker.change_blocked_for_ms(alice, start_ms + 2'000);
-                REQUIRE(blocked.has_value());
-                REQUIRE(*blocked == AccountPresenceTracker::change_window_ms - 2'000);
+                REQUIRE(blocked == std::optional<std::int64_t>{AccountPresenceTracker::change_window_ms - 2'000});
             }
             THEN("a change once the window has ended may be kept")
             {
@@ -219,6 +218,52 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             THEN("the ended accounts are pruned to make room and it is held")
             {
                 REQUIRE(tracker.account_count() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("A prune of a full table looks only at the accounts that have expired",
+         "[unit][presence][account_presence_tracker][bounds]")
+{
+    GIVEN("a full table in which one account's window ended as the others' began")
+    {
+        auto tracker = AccountPresenceTracker{};
+        tracker.note_change("@early:example.org", start_ms);
+        auto const later_ms = start_ms + AccountPresenceTracker::change_window_ms;
+        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
+        {
+            tracker.note_change("@user" + std::to_string(index) + ":example.org", later_ms);
+        }
+        REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+
+        WHEN("an account with no entry asks to change its presence")
+        {
+            auto const blocked = tracker.change_blocked_for_ms(alice, later_ms + 1);
+            tracker.note_change(alice, later_ms + 1);
+
+            THEN("it is allowed and takes the expired account's place, the one account a prune looked at")
+            {
+                REQUIRE_FALSE(blocked.has_value());
+                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.change_blocked_for_ms(alice, later_ms + 2).has_value());
+            }
+        }
+
+        WHEN("the table is full again and a flood of accounts with no entry syncs")
+        {
+            tracker.note_change(alice, later_ms + 1);
+            for (auto index = 0; index < 1'000; ++index)
+            {
+                std::ignore =
+                    tracker.note_sync("@flood" + std::to_string(index) + ":example.org", desktop, true, later_ms + 2);
+            }
+
+            THEN("no request looks at the table, since no account has expired")
+            {
+                REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
             }
         }
     }

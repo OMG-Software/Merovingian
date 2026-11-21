@@ -34,6 +34,9 @@ account's other devices, and a request's own `set_presence` waking itself.
 
 * With any other position after `since`, or several, the sync answers as before; the check never delays news.
 * A sync with no `since` (an initial sync) is not affected.
+* A sync with `full_state=true` never waits, this check or any other: the spec says that with it "the `timeout`
+  parameter will be ignored and the query will return immediately". The long-poll gate waited for it before this
+  decision.
 * The rerun of a woken poll judges again from the same `since`: a new position that is not the caller's presence ends
   the wait.
 
