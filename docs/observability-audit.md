@@ -137,8 +137,8 @@ is full.
   logger `client_server`) records a `/sync` that changed the caller's state (fields `actor`,
   `presence`). `presence.change.limited` (debug, logger `presence`) records a `/sync` change dropped
   for either reason (fields `actor`, `device_id`, `presence`, `cause`, `retry_after_ms`), and a `/sync` asking for
-  `unavailable` while another device of the account holds it online (`cause` `device_online`, no `retry_after_ms`;
-  ADR-0871).
+  `unavailable` while another device of the account holds it online and the account is not already `unavailable`
+  (`cause` `device_online`, no `retry_after_ms`; ADR-0871).
   `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
   has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
   is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger
