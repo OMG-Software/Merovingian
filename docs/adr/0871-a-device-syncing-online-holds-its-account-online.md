@@ -40,9 +40,10 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
   two equal.
 * At most `max_devices_per_account` (64) devices per account, the least recently seen replaced; at most `max_accounts`
   (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. Each account is filed under the
-  time it stops mattering (its latest device stale and its window ended), so a prune visits only expired accounts,
-  never the table: a flood of overflow requests under `runtime.mutex` costs no scan. With the table full after a prune,
-  a sync of an account it does not hold asks for itself alone, as before this decision.
+  time it stops mattering (its latest online device stale and its window ended; a device that last asked for
+  `unavailable` holds no place), so a prune visits only expired accounts, never the table: a flood of overflow requests
+  under `runtime.mutex` costs no scan. With the table full after a prune, a sync of an account it does not hold asks
+  for itself alone, as before this decision.
 * The asks are in memory only: after a restart each device's next sync puts its ask back.
 * The clock is the steady clock (`presence_limit_clock_ms`), which never goes back.
 

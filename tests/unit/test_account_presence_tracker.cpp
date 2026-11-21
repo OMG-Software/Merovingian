@@ -154,6 +154,22 @@ SCENARIO("A prune removes what no longer speaks for an account", "[unit][presenc
             }
         }
     }
+
+    GIVEN("bob, whose presence has not changed, synced from a device asking for unavailable")
+    {
+        auto tracker = AccountPresenceTracker{};
+        std::ignore = tracker.note_sync(bob, phone, false, start_ms);
+
+        WHEN("a prune runs at once")
+        {
+            tracker.prune(start_ms);
+
+            THEN("the account is removed: a device asking for unavailable speaks for nothing and holds no place")
+            {
+                REQUIRE(tracker.account_count() == 0U);
+            }
+        }
+    }
 }
 
 SCENARIO("The tracker is bounded per account and in all", "[unit][presence][account_presence_tracker][bounds]")

@@ -37,11 +37,16 @@ namespace
 auto AccountPresenceTracker::refile(Accounts::iterator entry, std::int64_t now_ms) -> void
 {
     auto& account = entry->second;
-    // The account matters until its latest device is stale and its window has ended; with neither, it is done now.
+    // The account matters until its latest online device is stale and its window has ended; with neither, it is done
+    // now. A device whose last ask was unavailable speaks for nothing (`note_sync` answers from online devices only),
+    // so it never keeps an account in a full table.
     auto expires_at_ms = now_ms;
     for (auto const& held : account.devices)
     {
-        expires_at_ms = std::max(expires_at_ms, saturating_after(held.seen_at_ms, device_fresh_ms));
+        if (held.online)
+        {
+            expires_at_ms = std::max(expires_at_ms, saturating_after(held.seen_at_ms, device_fresh_ms));
+        }
     }
     if (account.changed_at_ms.has_value())
     {

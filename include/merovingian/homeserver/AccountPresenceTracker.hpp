@@ -44,7 +44,7 @@ public:
     static constexpr auto device_fresh_ms = std::int64_t{5 * 60 * 1000};
     // Far more devices than one person syncs from at once; each is a device ID and two integers.
     static constexpr auto max_devices_per_account = std::size_t{64U};
-    // Accounts that synced or changed presence within the last five minutes.
+    // Accounts with a device that asked for online within the last five minutes, or a window open.
     static constexpr auto max_accounts = std::size_t{65'536U};
 
     // Notes that `device` of `user` synced asking for `online` (true) or `unavailable` (false) at `now_ms`. True when a
@@ -86,7 +86,8 @@ private:
     {
         std::vector<Device> devices{};
         std::optional<std::int64_t> changed_at_ms{};
-        // When the account stops mattering: its latest device stale and its window ended. Its key in `m_by_expiry`.
+        // When the account stops mattering: its latest online device stale and its window ended. Its key in
+        // `m_by_expiry`.
         std::int64_t expires_at_ms{0};
     };
     // Looks a user ID up as a string_view without making a string.
