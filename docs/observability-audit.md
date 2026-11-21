@@ -132,10 +132,11 @@ is full.
 - `presence.set` (debug, logger `client_server`) records a `PUT /presence/{userId}/status`
   (fields `actor`, `presence`; never the status message). `presence.set.limited` (debug, logger
   `client_server`) records one refused with 429 because the account's presence changed less than
-  5 s before (fields `actor`, `presence`, `retry_after_ms`; ADR-0872). `presence.sync.set` (debug,
+  5 s before (`cause` `window`) or the presence tracker had no room for the account (`cause`
+  `tracker_full`) (fields `actor`, `presence`, `cause`, `retry_after_ms`; ADR-0872). `presence.sync.set` (debug,
   logger `client_server`) records a `/sync` that changed the caller's state (fields `actor`,
   `presence`). `presence.change.limited` (debug, logger `presence`) records a `/sync` change dropped
-  for the same reason (fields `actor`, `device_id`, `presence`, `retry_after_ms`).
+  for either reason (fields `actor`, `device_id`, `presence`, `cause`, `retry_after_ms`).
   `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
   has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
   is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger

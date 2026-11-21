@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/StateGroupKeyHash.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -57,9 +55,13 @@ public:
     // A sync with `set_presence=offline`: the device no longer holds the account online.
     auto forget_device(std::string_view user, std::string_view device) -> void;
 
-    // How long `user` must wait before a change of presence is kept, or nullopt when one may be kept now.
+    // How long `user` must wait before a change of presence is kept, or nullopt when one may be kept now: the rest of
+    // the account's window, or, when `is_full_for`, the time until the table's soonest account expires.
     [[nodiscard]] auto change_blocked_for_ms(std::string_view user, std::int64_t now_ms) const
         -> std::optional<std::int64_t>;
+
+    // True when a change of `user` is refused because the table has no room for the account, not because of a window.
+    [[nodiscard]] auto is_full_for(std::string_view user, std::int64_t now_ms) const -> bool;
 
     // Starts the window of `user` at `now_ms`: a change was just kept.
     auto note_change(std::string_view user, std::int64_t now_ms) -> void;
@@ -87,7 +89,16 @@ private:
         // When the account stops mattering: its latest device stale and its window ended. Its key in `m_by_expiry`.
         std::int64_t expires_at_ms{0};
     };
-    using Accounts = std::unordered_map<std::string, Account, database::detail::StateGroupKeyHash, std::equal_to<>>;
+    // Looks a user ID up as a string_view without making a string.
+    struct UserHash final
+    {
+        using is_transparent = void;
+        [[nodiscard]] auto operator()(std::string_view user) const noexcept -> std::size_t
+        {
+            return std::hash<std::string_view>{}(user);
+        }
+    };
+    using Accounts = std::unordered_map<std::string, Account, UserHash, std::equal_to<>>;
     using ExpiryKey = std::pair<std::int64_t, std::string>;
 
     // The account of `user`, made when there is room (after removing the expired accounts when the table is full);

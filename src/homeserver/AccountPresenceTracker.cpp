@@ -137,9 +137,13 @@ auto AccountPresenceTracker::change_blocked_for_ms(std::string_view user, std::i
     auto const found = m_accounts.find(user);
     if (found == m_accounts.end())
     {
-        // No window to wait for, unless there is no room to start one: then the change is refused (fails closed).
-        auto const no_room = m_accounts.size() >= max_accounts && !has_expired_account(now_ms);
-        return no_room ? std::optional<std::int64_t>{change_window_ms} : std::nullopt;
+        // No window to wait for, unless there is no room to start one: then the change is refused (fails closed) until
+        // the soonest account expires, which is later than now since none has.
+        if (is_full_for(user, now_ms))
+        {
+            return m_by_expiry.begin()->first - now_ms;
+        }
+        return std::nullopt;
     }
     auto const changed_at_ms = found->second.changed_at_ms;
     if (!changed_at_ms.has_value() || window_has_ended(changed_at_ms, now_ms))
@@ -150,6 +154,11 @@ auto AccountPresenceTracker::change_blocked_for_ms(std::string_view user, std::i
     // A start ahead of `now_ms` (which the clock does not produce) is waited for in full, never longer.
     auto const elapsed = now_ms > started_ms ? now_ms - started_ms : std::int64_t{0};
     return change_window_ms - elapsed;
+}
+
+auto AccountPresenceTracker::is_full_for(std::string_view user, std::int64_t now_ms) const -> bool
+{
+    return m_accounts.size() >= max_accounts && !has_expired_account(now_ms) && !m_accounts.contains(user);
 }
 
 auto AccountPresenceTracker::note_change(std::string_view user, std::int64_t now_ms) -> void

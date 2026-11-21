@@ -221,6 +221,27 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             }
         }
     }
+
+    GIVEN("a table holding as many accounts as the cap, each held online by a device")
+    {
+        auto tracker = AccountPresenceTracker{};
+        for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
+        {
+            std::ignore = tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms);
+        }
+
+        WHEN("an account with no entry asks to change its presence")
+        {
+            auto const blocked = tracker.change_blocked_for_ms(alice, start_ms + 1);
+
+            THEN("it waits for an account to expire, not for a window it never opened, and the table is the cause")
+            {
+                REQUIRE(blocked == std::optional<std::int64_t>{AccountPresenceTracker::device_fresh_ms - 1});
+                REQUIRE(tracker.is_full_for(alice, start_ms + 1));
+                REQUIRE_FALSE(tracker.is_full_for("@user0:example.org", start_ms + 1));
+            }
+        }
+    }
 }
 
 SCENARIO("A prune of a full table looks only at the accounts that have expired",

@@ -372,11 +372,14 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
     }
     if (auto const blocked = tracker.change_blocked_for_ms(user, clock_ms); blocked.has_value())
     {
-        // ADR-0872: the first change in the window was kept; this one is dropped, not kept for later.
+        // ADR-0872: the first change in the window was kept, or the tracker has no room for the account; this one is
+        // dropped, not kept for later.
+        auto const cause = std::string{tracker.is_full_for(user, clock_ms) ? "tracker_full" : "window"};
         log_presence("presence.change.limited", {
                                                     {"actor",          std::string{user},        false},
                                                     {"device_id",      std::string{device},      false},
                                                     {"presence",       std::string{desired},     false},
+                                                    {"cause",          cause,                    false},
                                                     {"retry_after_ms", std::to_string(*blocked), false}
         });
         return std::nullopt;

@@ -24384,11 +24384,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // ADR-0872: the spec's 429 for this endpoint. The change is refused, not kept for later.
                 log_diagnostic("presence.set.limited",
                                {
-                                   {"actor",          *user,                                  false},
-                                   {"presence",       presence_state,                         false},
-                                   {"retry_after_ms", std::to_string(written.retry_after_ms), false}
+                                   {"actor",          *user,                                            false},
+                                   {"presence",       presence_state,                                   false},
+                                   {"cause",          written.tracker_full ? "tracker_full" : "window", false},
+                                   {"retry_after_ms", std::to_string(written.retry_after_ms),           false}
                 });
-                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "presence changed too recently",
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    written.tracker_full ? "too many accounts are changing presence"
+                                                         : "presence changed too recently",
                                     written.retry_after_ms);
             }
             if (written.status == PresenceWriteStatus::failed)
@@ -25399,8 +25402,12 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
     // ADR-0872: judged and noted under the same lock as the write, so two requests at once cannot both be first.
     if (auto const blocked = tracker.change_blocked_for_ms(state.user_id, clock_ms); blocked.has_value())
     {
-        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, AccountPresenceTracker::change_window_ms);
-        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms)};
+        // A full table waits for an account to expire, at most the freshness time; a window, at most the window.
+        auto const longest_ms =
+            std::max(AccountPresenceTracker::change_window_ms, AccountPresenceTracker::device_fresh_ms);
+        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, longest_ms);
+        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms),
+                             tracker.is_full_for(state.user_id, clock_ms)};
     }
     if (!record_presence(runtime.homeserver, state))
     {

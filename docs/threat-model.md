@@ -2799,7 +2799,10 @@ nothing, all from trusting the worker's view or the hook's transport.
   an account's presence changes at most once every 5 s, the first change kept (ADR-0872). The
   tracker behind both is bounded and fails closed when full. **Residual risk:** one change every
   5 s per account still costs an EDU per remote server; many accounts at once are bounded only by
-  the dispatch queue's own shares.
+  the dispatch queue's own shares. A profile change stores the user's presence row again (so local
+  syncs and appservices see the new name or avatar) but sends no `m.presence` EDU and is not
+  limited: its federation cost is its `m.room.member` events, bounded by the profile propagation
+  (ADR-0353).
 
 ### Remote space hierarchy answers (0.12.60)
 

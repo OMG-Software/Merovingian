@@ -37,11 +37,13 @@ Chosen option: 1.
 * A change is a change of the stored state by a sync, or any `PUT`. A sync that leaves the state as it is refreshes the
   last-active time in memory as before and is not limited.
 * Not limited: the idle sweep (the server's own change, at most once per idle period; a user who returns at once is
-  marked online at once), the profile propagation that resends an unchanged presence with a new display name or avatar,
-  and inbound presence from other servers (their own server's to limit).
+  marked online at once), the profile propagation that resends an unchanged presence with a new display name or avatar
+  (it stores the row for local syncs and appservices and sends no `m.presence` EDU), and inbound presence from other
+  servers (their own server's to limit).
 * With `AccountPresenceTracker` full and no account in it expired, a change of an account it does not hold is refused
   (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself; once an
-  account has expired, the change is allowed and takes its place.
+  account has expired, the change is allowed and takes its place. The refusal's `retry_after_ms` is the time until the
+  soonest account expires (at most `device_fresh_ms`), and its log line's `cause` is `tracker_full`, not `window`.
 * Tests move the clock with `HomeserverRuntime::test_presence_clock_advance_ms`.
 
 ### Positive Consequences
