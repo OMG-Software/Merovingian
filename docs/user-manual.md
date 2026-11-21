@@ -1217,7 +1217,8 @@ most once every 5 seconds: a later change by `/sync` in that time is ignored, an
 by any other account is refused the same way (`too many accounts are changing presence`) until the soonest of those
 5 seconds ends, and the server logs the warning `presence.tracker.full` at most once a minute. The server's own idle
 change (an online user inactive for 5 minutes becomes `unavailable`) is not limited and does not start those 5 seconds.
-Presence reaches only users who share a joined room with the user; anyone else asking for it gets `403 M_FORBIDDEN`, as for a user who does not exist.
+Presence reaches only users who share a joined room with the user; anyone else asking for it gets `403 M_FORBIDDEN`, as
+for a user who does not exist.
 
 | Key | Default | When to change |
 |---|---|---|
