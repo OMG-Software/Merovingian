@@ -313,10 +313,10 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
                 REQUIRE(line.has_value());
-                CHECK(field_value(*line, "user_id") == "@alice:example.org");
-                CHECK(field_value(*line, "credential") == "shared_secret");
-                CHECK(field_value(*line, "ttl_seconds") == "3600");
-                CHECK(field_value(*line, "uri_count") == "1");
+                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
+                CHECK(field_value(line.value(), "credential") == "shared_secret");
+                CHECK(field_value(line.value(), "ttl_seconds") == "3600");
+                CHECK(field_value(line.value(), "uri_count") == "1");
             }
 
             THEN("the log holds neither the username, the password nor the shared secret")
@@ -373,7 +373,7 @@ SCENARIO("The turn log files an issued credential under its own module, naming t
                 REQUIRE(uris->size() == 2U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
                 REQUIRE(line.has_value());
-                CHECK(field_value(*line, "uri_count") == "2");
+                CHECK(field_value(line.value(), "uri_count") == "2");
             }
         }
     }
@@ -403,9 +403,9 @@ SCENARIO("The turn log names an unreadable shared secret as an error under its o
                 REQUIRE(response.status == 500U);
                 auto const line = module_line(text, "ERROR", "turn", "turn.credentials_unavailable");
                 REQUIRE(line.has_value());
-                CHECK(field_value(*line, "user_id") == "@alice:example.org");
+                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
                 // The reason holds spaces, so it is matched whole rather than through field_value.
-                CHECK(line->find(" reason=shared secret file unreadable or empty") != std::string::npos);
+                CHECK(line.value().find(" reason=shared secret file unreadable or empty") != std::string::npos);
             }
         }
     }
@@ -435,7 +435,7 @@ SCENARIO("The turn log files configured static credentials under its own module 
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
                 REQUIRE(line.has_value());
-                CHECK(line->find("credential=static") != std::string::npos);
+                CHECK(line.value().find("credential=static") != std::string::npos);
                 CHECK(text.find("static-turn-user") == std::string::npos);
                 CHECK(text.find("static-turn-password") == std::string::npos);
             }
@@ -467,7 +467,7 @@ SCENARIO("The turn log says at debug level that no TURN server is configured", "
                 REQUIRE(response.body == "{}");
                 auto const line = module_line(text, "DEBUG", "turn", "turn.not_configured");
                 REQUIRE(line.has_value());
-                CHECK(line->find("@alice:example.org") != std::string::npos);
+                CHECK(line.value().find("@alice:example.org") != std::string::npos);
             }
         }
     }

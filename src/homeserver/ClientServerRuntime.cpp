@@ -263,7 +263,7 @@ namespace
     // client-server line (ADR-0871). No field may carry credential text: never the username, the password or the
     // shared secret. Today's fields are `user_id` on every line, `credential`, `ttl_seconds` and `uri_count` on the
     // issued line, and a fixed `reason` on the unavailable one.
-    auto log_turn_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+    auto log_turn_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> const& fields,
                              observability::LogEventSeverity severity) -> void
     {
         observability::log_diagnostic("turn", event, fields, severity);
