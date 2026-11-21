@@ -5,9 +5,9 @@
 #include "../support/TempDirectory.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -20,13 +20,14 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -287,6 +288,8 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                                                                                    {"avatar_url", avatar_url}
                         }));
                     }
+                    // Each case changes the presence, so the change window of the last one is let end (ADR-0876).
+                    runtime.homeserver.test_presence_clock_advance_ms += hs::AccountPresenceTracker::change_window_ms;
                     std::ignore =
                         send_request("PUT", presence_path + with_marker("/status"),
                                      "{\"presence\":\"" + presence + "\",\"status_msg\":\"" + status_msg + "\"}");

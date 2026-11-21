@@ -15,6 +15,7 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentPresence.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -248,6 +249,9 @@ SCENARIO("Sync presence is visible only between users with current shared room m
         {
             REQUIRE(set_presence(runtime, localpart, token, R"({"presence":"online"})").status == 200U);
         }
+        // Each user's next change is kept, not refused inside the window this one opened (ADR-0876).
+        runtime.homeserver.test_presence_clock_advance_ms +=
+            merovingian::homeserver::AccountPresenceTracker::change_window_ms;
 
         WHEN("Alice performs an initial sync and then an incremental sync after everyone updates presence")
         {

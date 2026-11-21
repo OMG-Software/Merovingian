@@ -1216,8 +1216,17 @@ the users who share a room with them in `/sync` (`presence.events`) and by
 `GET /presence/{userId}/status`, and sent to other servers that share a room with them as an
 `m.presence` EDU. `PUT /presence/{userId}/status` sets it, and so does `/sync`: omitting
 `set_presence` marks the user online, `unavailable` marks them idle, `offline` leaves it as it
-is. Presence reaches only users who share a joined room with the user; anyone else asking for it
-gets `403 M_FORBIDDEN`, as for a user who does not exist.
+is. A device that synced online in the last 5 minutes keeps the user online while another of their devices syncs
+`unavailable`; a sync from that device with `set_presence=offline` ends its hold at once. A user's presence changes at
+most once every 5 seconds: a later change by `/sync` in that time is ignored, and `PUT /presence` answers `429` with
+`retry_after_ms`. While as many accounts as the server tracks (65,536) have all changed in the last 5 seconds, a change
+by any other account is refused the same way (`too many accounts are changing presence`) until the soonest of those
+5 seconds ends. With that many accounts tracked and some of them not changed lately, a new one takes the place of the
+account whose devices went quiet soonest instead, which loses its online hold until it next syncs. Both are logged by
+the warning `presence.tracker.full`, at most once a minute. The server's own idle
+change (an online user inactive for 5 minutes becomes `unavailable`) is not limited and does not start those 5 seconds.
+Presence reaches only users who share a joined room with the user; anyone else asking for it gets `403 M_FORBIDDEN`, as
+for a user who does not exist.
 
 | Key | Default | When to change |
 |---|---|---|

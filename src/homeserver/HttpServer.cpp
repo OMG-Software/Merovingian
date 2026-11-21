@@ -1256,7 +1256,8 @@ namespace
         -> DispatchResult
     {
         return handle_client_server_request(
-            runtime, request, ClientServerDispatchOptions{.can_wait = can_wait, .rate_limit_admitted = true});
+            runtime, request,
+            ClientServerDispatchOptions{.can_wait = can_wait, .rate_limit_admitted = true, .sync_rerun = true});
     }
 
     // The long-poll of the transports with no sync pool: one wait for the whole timeout, no peer peek. True when

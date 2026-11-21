@@ -80,6 +80,7 @@
 #include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
 #include "merovingian/homeserver/AccountPage.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
 #include "merovingian/homeserver/AppserviceDelivery.hpp"
 #include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -122,6 +123,8 @@
 #include "merovingian/homeserver/PasswordReset.hpp"
 #include "merovingian/homeserver/PresenceReadStatus.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
+#include "merovingian/homeserver/PresenceWrite.hpp"
+#include "merovingian/homeserver/PresenceWriteStatus.hpp"
 #include "merovingian/homeserver/PublicRooms.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
@@ -7080,6 +7083,20 @@ namespace
         joined_room.push_back(json_member(std::string{events::unstable_sticky_field}, section));
     }
 
+    // True when the one sync stream position after `since` is `user`'s own presence row (ADR-0873). A /sync never sends
+    // the caller their own presence (`build_sync_presence_events`), so its response would hold nothing new. Only one
+    // position is judged: with any other after `since` the sync answers, as before.
+    [[nodiscard]] auto only_own_presence_since(database::PersistentStore const& store, std::string_view user,
+                                               std::uint64_t since) -> bool
+    {
+        if (store.next_sync_stream_id <= since || store.next_sync_stream_id - since != 1U)
+        {
+            return false;
+        }
+        auto const* const own = database::find_presence_state(store, user);
+        return own != nullptr && own->stream_id == store.next_sync_stream_id;
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -7128,17 +7145,25 @@ namespace
         // Spec §9.4: omitting `timeout` means respond immediately — no default.
         // HTTP-4: cap the client-supplied timeout so a single sync cannot pin a
         // worker indefinitely; the client receives the capped wait.
-        if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
+        // Spec (GET /sync, `full_state`): with it true "the `timeout` parameter will be ignored and the query will
+        // return immediately", so such a sync never waits.
+        if (can_wait && !request.full_state.value_or(false) && request.timeout.has_value() && *request.timeout > 0U)
         {
             auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
             auto const has_timeline_advance = visible_stream_position(rt.homeserver.database) > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
-            if (!has_timeline_advance && !has_sync_advance)
+            // ADR-0873: the caller's own presence row is never in their response, so a sync whose only news it is
+            // waits on, past it, rather than answering nothing and being sent again at once.
+            auto const only_own_presence =
+                since_token.has_value() && only_own_presence_since(store, user, since_sync_stream_id);
+            if (!has_timeline_advance && (!has_sync_advance || only_own_presence))
             {
+                // Only the caller's own presence row moves the cursor; otherwise it stays at `since`, never behind it.
+                auto const wait_sync_stream_id = only_own_presence ? store.next_sync_stream_id : since_sync_stream_id;
                 return DispatchResult{
                     DispatchResult::Status::needs_wait,
                     {},
-                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
+                    {since_ordering, wait_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
                                           std::string{user}, std::string{device_id}}
                 };
             }
@@ -8682,6 +8707,17 @@ namespace
         return false;
     }
 
+    // A token from this stream epoch and not ahead of the live watermarks (ADR-0592): the only kind a sliding sync
+    // serves. The dispatcher asks it too, before it applies `set_presence`, so a request this refuses changes nothing.
+    [[nodiscard]] auto sliding_sync_token_is_current(HomeserverRuntime const& runtime,
+                                                     sync::StreamToken const& token) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const event_watermark = visible_stream_position(runtime.database);
+        return token.epoch == store.stream_token_epoch && token.event_ordering <= event_watermark &&
+               token.membership_ordering <= event_watermark && token.sync_stream_id <= store.next_sync_stream_id;
+    }
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
                                          std::optional<sync::SlidingSyncPos> const& request_pos,
@@ -8724,8 +8760,7 @@ namespace
         {
             auto const event_watermark = visible_stream_position(rt.homeserver.database);
             auto const sync_watermark = store.next_sync_stream_id;
-            if (pos->epoch != store.stream_token_epoch || pos->event_ordering > event_watermark ||
-                pos->membership_ordering > event_watermark || pos->sync_stream_id > sync_watermark)
+            if (!sliding_sync_token_is_current(rt.homeserver, *pos))
             {
                 // Drop the connection state: the client restarts with no pos
                 // and must receive a full initial snapshot.
@@ -22360,7 +22395,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *presence_mode); changed.has_value())
+        // ADR-0876: applied on the request's first run only. A rerun of a parked poll is the same request, and a
+        // change the window dropped stays dropped, never kept once the window has ended. Every refusal of a /sync is
+        // above this line: `sync_json` serves any `since` (one it cannot use as no `since`, ADR-0315) and filter it is
+        // given, so a refused request never changes presence. Keep any new refusal above it.
+        if (auto const changed = dispatch_options.sync_rerun
+                                     ? std::nullopt
+                                     : apply_sync_presence(rt.homeserver, *user, device_id, *presence_mode);
+            changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
                                                     {"actor",    *user,             false},
@@ -22422,15 +22464,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *sliding_presence_mode); changed.has_value())
-        {
-            log_diagnostic("presence.sync.set", {
-                                                    {"actor",    *user,             false},
-                                                    {"presence", changed->presence, false}
-            });
-            broadcast_presence_edu(rt.homeserver, *changed);
-            std::ignore = ensure_sync_notifier(rt);
-        }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields. MSC4186: "Servers MUST reject a
         // `pos` that was not issued to the requesting user and device, responding with `M_UNKNOWN_POS`": a pos with no
         // valid binding to this user and device, or one that does not read as a position, is refused whole, never
@@ -22456,6 +22489,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_POS", "unknown sliding sync position");
             }
+        }
+        // ADR-0876: on the request's first run only, as for /sync, and only for a `pos` that is bound and current (the
+        // check `sliding_sync_json` refuses with M_UNKNOWN_POS), so a refused request changes no presence and opens no
+        // window.
+        auto const pos_is_current = !pos.has_value() || sliding_sync_token_is_current(rt.homeserver, pos->token);
+        if (auto const changed =
+                dispatch_options.sync_rerun || !pos_is_current
+                    ? std::nullopt
+                    : apply_sync_presence(rt.homeserver, *user, device_id_4186, *sliding_presence_mode);
+            changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            std::ignore = ensure_sync_notifier(rt);
         }
         // MSC4186 `timeout`: "Ignored when no `pos` is set": a request without one is answered at once (ADR-0865).
         auto const timeout =
@@ -24387,7 +24437,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             state.status_msg = status_msg != nullptr ? *status_msg : std::string{};
             state.last_active_ago = 0;
             state.currently_active = (presence_state == "online");
-            if (!set_presence(rt, state))
+            auto const written = set_presence(rt, state);
+            if (written.status == PresenceWriteStatus::limited)
+            {
+                // ADR-0876: the spec's 429 for this endpoint. The change is refused, not kept for later.
+                log_diagnostic("presence.set.limited",
+                               {
+                                   {"actor",          *user,                                            false},
+                                   {"presence",       presence_state,                                   false},
+                                   {"cause",          written.tracker_full ? "tracker_full" : "window", false},
+                                   {"retry_after_ms", std::to_string(written.retry_after_ms),           false}
+                });
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    written.tracker_full ? "too many accounts are changing presence"
+                                                         : "presence changed too recently",
+                                    written.retry_after_ms);
+            }
+            if (written.status == PresenceWriteStatus::failed)
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "presence persistence failed");
             }
@@ -25382,22 +25448,40 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
     return stored;
 }
 
-auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool
+auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> PresenceWrite
 {
     auto guard = RuntimeLock{runtime.homeserver.mutex};
     if (!presence_enabled(runtime.homeserver))
     {
         // Nothing is tracked, so there is nothing to fail: the caller's update is accepted and dropped.
-        return true;
+        return PresenceWrite{PresenceWriteStatus::stored, 0U};
     }
-    auto const stored = record_presence(runtime.homeserver, state);
-    if (stored)
+    auto& tracker = runtime.homeserver.presence_tracker;
+    auto const clock_ms = presence_limit_clock_ms(runtime.homeserver);
+    // ADR-0876: judged and noted under the same lock as the write, so two requests at once cannot both be first.
+    if (auto const blocked = tracker.change_blocked_for_ms(state.user_id, clock_ms); blocked.has_value())
     {
-        std::ignore = ensure_sync_notifier(runtime);
-        // The servers that share a room with the user are told; the row is as stored just now.
-        broadcast_presence_edu(runtime.homeserver, state);
+        // The account's own window, or a full table's soonest one: never longer than the window.
+        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, AccountPresenceTracker::change_window_ms);
+        auto const tracker_full = tracker.is_full_for(state.user_id, clock_ms);
+        if (tracker_full)
+        {
+            tracker.note_full_refusal();
+        }
+        report_presence_tracker_saturation(runtime.homeserver, clock_ms);
+        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms), tracker_full};
     }
-    return stored;
+    if (!record_presence(runtime.homeserver, state))
+    {
+        return PresenceWrite{PresenceWriteStatus::failed, 0U};
+    }
+    tracker.note_change(state.user_id, clock_ms);
+    // The change may have evicted an account to make room (ADR-0875).
+    report_presence_tracker_saturation(runtime.homeserver, clock_ms);
+    std::ignore = ensure_sync_notifier(runtime);
+    // The servers that share a room with the user are told; the row is as stored just now.
+    broadcast_presence_edu(runtime.homeserver, state);
+    return PresenceWrite{PresenceWriteStatus::stored, 0U};
 }
 
 auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds

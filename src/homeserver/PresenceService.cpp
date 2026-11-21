@@ -7,18 +7,23 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/homeserver/AccountPresenceTracker.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/PresenceRead.hpp"
 #include "merovingian/homeserver/PresenceReadStatus.hpp"
 #include "merovingian/homeserver/SyncPresenceMode.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/sync/SyncFilter.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -27,6 +32,14 @@
 
 namespace merovingian::homeserver
 {
+
+// ADR-0875: a device's online ask goes stale exactly when the idle sweep would set its account unavailable. With the
+// two apart, a background device's `unavailable` would win while the sweep still counts the user active, or a closed
+// client would hold the account online past the sweep. This keeps the durations equal; the hold runs on the steady
+// clock and the sweep on the wall clock, so a wall-clock step still moves them apart by the step (accepted in the ADR).
+static_assert(AccountPresenceTracker::device_fresh_ms == presence_idle_timeout_ms,
+              "a device's online ask must last exactly as long as the idle timeout");
+
 namespace
 {
 
@@ -129,6 +142,31 @@ auto presence_now_ms() -> std::int64_t
         .count();
 }
 
+auto presence_limit_clock_ms(HomeserverRuntime const& runtime) -> std::int64_t
+{
+    auto const steady_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    return static_cast<std::int64_t>(steady_ms) + runtime.test_presence_clock_advance_ms;
+}
+
+auto report_presence_tracker_saturation(HomeserverRuntime& runtime, std::int64_t clock_ms) -> void
+{
+    auto& tracker = runtime.presence_tracker;
+    if (auto const report = tracker.take_saturation_report(clock_ms); report.has_value())
+    {
+        // Aggregate only: the operator learns the tracker saturated, never which accounts were refused or evicted.
+        log_presence("presence.tracker.full",
+                     {
+                         {"refused",  std::to_string(report->refused),         false},
+                         {"evicted",  std::to_string(report->evicted),         false},
+                         {"accounts", std::to_string(tracker.account_count()), false},
+                         {"limit",    std::to_string(tracker.account_cap()),   false}
+        },
+                     observability::LogEventSeverity::warning);
+    }
+}
+
 auto presence_last_active_ago(database::PersistentPresence const& row, std::int64_t now_ms) noexcept -> std::int64_t
 {
     auto ago = std::max(row.last_active_ago, std::int64_t{0});
@@ -196,6 +234,10 @@ auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms, std::
     {
         return changed;
     }
+    // The pass also drops the devices and change windows that no longer speak for an account (ADR-0875). Its own
+    // changes are neither limited nor noted: the server sets an account idle at most once per idle period, and a user
+    // who comes back at once is marked online at once.
+    runtime.presence_tracker.prune(presence_limit_clock_ms(runtime));
     // Chosen first, written after: recording a row must not run while the rows are being walked. At most `max_changes`
     // are chosen; the rest are found by the next pass.
     auto idle = std::vector<database::PersistentPresence>{};
@@ -297,44 +339,102 @@ auto parse_sync_presence_mode(std::optional<std::string_view> value) noexcept ->
     return std::nullopt;
 }
 
-auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, SyncPresenceMode mode)
-    -> std::optional<database::PersistentPresence>
+namespace
 {
-    if (mode == SyncPresenceMode::offline || !presence_enabled(runtime))
+
+    // `apply_sync_presence` without the saturation report, so the report is made once, after every way out.
+    [[nodiscard]] auto judge_sync_presence(HomeserverRuntime& runtime, std::string_view user, std::string_view device,
+                                           SyncPresenceMode mode) -> std::optional<database::PersistentPresence>
     {
-        return std::nullopt;
-    }
-    auto& store = runtime.database.persistent_store;
-    auto const now_ms = presence_now_ms();
-    auto const desired =
-        mode == SyncPresenceMode::online ? std::string_view{"online"} : std::string_view{"unavailable"};
-    auto const existing = std::ranges::find_if(store.presence_states, [user](database::PersistentPresence const& row) {
-        return row.user_id == user;
-    });
-    if (existing != store.presence_states.end() && existing->presence == desired)
-    {
-        if (mode == SyncPresenceMode::online)
+        if (!presence_enabled(runtime))
         {
-            // Still online: nothing to tell anyone, but the user did just do something.
-            existing->last_active_ago = 0;
-            existing->observed_at_ms = now_ms;
-            existing->currently_active = true;
+            return std::nullopt;
         }
-        return std::nullopt;
+        auto& tracker = runtime.presence_tracker;
+        auto const clock_ms = presence_limit_clock_ms(runtime);
+        if (mode == SyncPresenceMode::offline)
+        {
+            // "offline": the client is not to be marked online, so it no longer holds the account online either.
+            tracker.forget_device(user, device, clock_ms);
+            return std::nullopt;
+        }
+        auto const asks_online = mode == SyncPresenceMode::online;
+        auto const any_device_online = tracker.note_sync(user, device, asks_online, clock_ms);
+        if (!asks_online && any_device_online)
+        {
+            // ADR-0875: another device of the account asked for online in the freshness time; online beats unavailable.
+            // Logged only when the ask would have changed the stored state: an account already unavailable loses
+            // nothing.
+            if (auto const* const row = database::find_presence_state(runtime.database.persistent_store, user);
+                row == nullptr || row->presence != "unavailable")
+            {
+                log_presence("presence.change.limited", {
+                                                            {"actor",     std::string{user},   false},
+                                                            {"device_id", std::string{device}, false},
+                                                            {"presence",  "unavailable",       false},
+                                                            {"cause",     "device_online",     false}
+                });
+            }
+            return std::nullopt;
+        }
+        auto& store = runtime.database.persistent_store;
+        auto const now_ms = presence_now_ms();
+        auto const desired = asks_online ? std::string_view{"online"} : std::string_view{"unavailable"};
+        auto* const existing = database::find_mutable_presence_state(store, user);
+        if (existing != nullptr && existing->presence == desired)
+        {
+            if (asks_online)
+            {
+                // Still online: nothing to tell anyone, but the user did just do something.
+                existing->last_active_ago = 0;
+                existing->observed_at_ms = now_ms;
+                existing->currently_active = true;
+            }
+            return std::nullopt;
+        }
+        if (auto const blocked = tracker.change_blocked_for_ms(user, clock_ms); blocked.has_value())
+        {
+            // ADR-0876: the first change in the window was kept, or the tracker has no room for the account; this one
+            // is dropped, not kept for later.
+            auto const tracker_full = tracker.is_full_for(user, clock_ms);
+            if (tracker_full)
+            {
+                tracker.note_full_refusal();
+            }
+            auto const cause = std::string{tracker_full ? "tracker_full" : "window"};
+            log_presence("presence.change.limited", {
+                                                        {"actor",          std::string{user},        false},
+                                                        {"device_id",      std::string{device},      false},
+                                                        {"presence",       std::string{desired},     false},
+                                                        {"cause",          cause,                    false},
+                                                        {"retry_after_ms", std::to_string(*blocked), false}
+            });
+            return std::nullopt;
+        }
+        auto row = existing != nullptr ? *existing : database::PersistentPresence{};
+        row.user_id = std::string{user};
+        row.presence = std::string{desired};
+        row.last_active_ago =
+            asks_online || existing == nullptr ? std::int64_t{0} : presence_last_active_ago(*existing, now_ms);
+        row.currently_active = asks_online;
+        if (!record_presence(runtime, row))
+        {
+            return std::nullopt;
+        }
+        tracker.note_change(user, clock_ms);
+        row.observed_at_ms = now_ms;
+        return row;
     }
-    auto row = existing != store.presence_states.end() ? *existing : database::PersistentPresence{};
-    row.user_id = std::string{user};
-    row.presence = std::string{desired};
-    row.last_active_ago = mode == SyncPresenceMode::online || existing == store.presence_states.end()
-                              ? std::int64_t{0}
-                              : presence_last_active_ago(*existing, now_ms);
-    row.currently_active = mode == SyncPresenceMode::online;
-    if (!record_presence(runtime, row))
-    {
-        return std::nullopt;
-    }
-    row.observed_at_ms = now_ms;
-    return row;
+
+} // namespace
+
+auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std::string_view device,
+                         SyncPresenceMode mode) -> std::optional<database::PersistentPresence>
+{
+    auto changed = judge_sync_presence(runtime, user, device, mode);
+    // ADR-0876: an eviction (by the sync's online ask or its change) or a refusal made above is reported here.
+    report_presence_tracker_saturation(runtime, presence_limit_clock_ms(runtime));
+    return changed;
 }
 
 auto build_sync_presence_events(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
