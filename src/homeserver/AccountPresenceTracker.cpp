@@ -239,4 +239,22 @@ auto AccountPresenceTracker::account_cap() const noexcept -> std::size_t
     return m_account_cap;
 }
 
+auto AccountPresenceTracker::note_full_refusal(std::int64_t now_ms) -> std::optional<std::uint64_t>
+{
+    ++m_full_refusals;
+    if (m_full_warned_at_ms.has_value() && now_ms - m_full_warned_at_ms.value() < full_warning_interval_ms)
+    {
+        return std::nullopt;
+    }
+    auto const since_last_warning = m_full_refusals - m_full_refusals_warned;
+    m_full_refusals_warned = m_full_refusals;
+    m_full_warned_at_ms = now_ms;
+    return since_last_warning;
+}
+
+auto AccountPresenceTracker::full_refusals() const noexcept -> std::uint64_t
+{
+    return m_full_refusals;
+}
+
 } // namespace merovingian::homeserver

@@ -150,6 +150,22 @@ auto presence_limit_clock_ms(HomeserverRuntime const& runtime) -> std::int64_t
     return static_cast<std::int64_t>(steady_ms) + runtime.test_presence_clock_advance_ms;
 }
 
+auto note_presence_tracker_full(HomeserverRuntime& runtime, std::int64_t clock_ms) -> void
+{
+    auto& tracker = runtime.presence_tracker;
+    if (auto const refused = tracker.note_full_refusal(clock_ms); refused.has_value())
+    {
+        // Aggregate only: the operator learns the tracker saturated, never which accounts were refused.
+        log_presence("presence.tracker.full",
+                     {
+                         {"refused",  std::to_string(*refused),                false},
+                         {"accounts", std::to_string(tracker.account_count()), false},
+                         {"limit",    std::to_string(tracker.account_cap()),   false}
+        },
+                     observability::LogEventSeverity::warning);
+    }
+}
+
 auto presence_last_active_ago(database::PersistentPresence const& row, std::int64_t now_ms) noexcept -> std::int64_t
 {
     auto ago = std::max(row.last_active_ago, std::int64_t{0});
@@ -374,7 +390,12 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
     {
         // ADR-0872: the first change in the window was kept, or the tracker has no room for the account; this one is
         // dropped, not kept for later.
-        auto const cause = std::string{tracker.is_full_for(user, clock_ms) ? "tracker_full" : "window"};
+        auto const tracker_full = tracker.is_full_for(user, clock_ms);
+        if (tracker_full)
+        {
+            note_presence_tracker_full(runtime, clock_ms);
+        }
+        auto const cause = std::string{tracker_full ? "tracker_full" : "window"};
         log_presence("presence.change.limited", {
                                                     {"actor",          std::string{user},        false},
                                                     {"device_id",      std::string{device},      false},

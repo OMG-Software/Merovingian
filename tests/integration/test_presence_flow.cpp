@@ -1123,6 +1123,57 @@ SCENARIO("Only the first presence change in a window is kept", "[integration][pr
     }
 }
 
+// ADR-0872: a sync that leaves the stored presence as it is changes nothing, so it opens no window. Without this, a
+// client polling /sync (an omitted set_presence asks for online) could never change its presence: every poll would
+// open a window, and PUT /presence would answer 429.
+SCENARIO("A sync that leaves the presence as it is opens no change window", "[integration][presence][rate_limit]")
+{
+    GIVEN("alice shares a room with bob on another server and her change to online has had its window end")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        sync_once(runtime, token, "online");
+        let_presence_window_end(runtime);
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+
+        WHEN("she syncs online again, which changes nothing, and at once sets her presence unavailable")
+        {
+            sync_once(runtime, token, "online");
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"unavailable"})");
+
+            THEN("the change is kept and sent")
+            {
+                REQUIRE(put.status == 200U);
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+        }
+
+        WHEN("she is set unavailable, the window ends, she syncs unavailable, and at once sets her presence online")
+        {
+            // Offline forgets the device's online ask, so the unavailable sync below is judged on the stored state
+            // alone.
+            sync_once(runtime, token, "offline");
+            REQUIRE(put_alice_presence(runtime, token, R"({"presence":"unavailable"})").status == 200U);
+            let_presence_window_end(runtime);
+            sync_once(runtime, token, "unavailable");
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"online"})");
+
+            THEN("the unavailable sync changed nothing, so the change is kept and sent")
+            {
+                REQUIRE(put.status == 200U);
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(queued_presence_edus(runtime).size() == 3U);
+            }
+        }
+    }
+}
+
 // ADR-0872: a change dropped in a window is dropped, never kept for later. A long-polling sync whose change was
 // dropped is run again after a wake-up or its timeout (`rerun_waiting_sync`); that rerun is the same request and does
 // not apply its `set_presence` again, even once the window has ended.
@@ -1359,6 +1410,7 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
                 REQUIRE(alice_presence_state(runtime) == "none");
                 REQUIRE(store.next_sync_stream_id == watermark);
                 REQUIRE(queued_presence_edus(runtime).empty());
+                REQUIRE(tracker.full_refusals() == 1U);
             }
         }
 
@@ -1371,6 +1423,7 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
                 REQUIRE(alice_presence_state(runtime) == "none");
                 REQUIRE(queued_presence_edus(runtime).empty());
                 REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.full_refusals() == 1U);
             }
         }
     }

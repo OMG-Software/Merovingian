@@ -375,3 +375,33 @@ SCENARIO("A tracker holds max_accounts accounts unless it is made with another c
         }
     }
 }
+
+// ADR-0872: a change refused because the table is full is counted, and a warning is due at most once every
+// full_warning_interval_ms, carrying how many it stands for, so a flood of refusals costs one warning a minute.
+SCENARIO("Changes refused by a full tracker are counted and warned about at most once an interval",
+         "[unit][presence][account_presence_tracker][bounds]")
+{
+    GIVEN("a tracker that has refused nothing")
+    {
+        auto tracker = AccountPresenceTracker{small_cap};
+        REQUIRE(tracker.full_refusals() == 0U);
+
+        WHEN("it refuses one change, two more within the interval, and one once the interval has passed")
+        {
+            auto const first = tracker.note_full_refusal(start_ms);
+            auto const second = tracker.note_full_refusal(start_ms + 1);
+            auto const third =
+                tracker.note_full_refusal(start_ms + AccountPresenceTracker::full_warning_interval_ms - 1);
+            auto const fourth = tracker.note_full_refusal(start_ms + AccountPresenceTracker::full_warning_interval_ms);
+
+            THEN("the first and the fourth are due a warning, the fourth standing for the three since the first")
+            {
+                REQUIRE(first == std::optional<std::uint64_t>{1U});
+                REQUIRE_FALSE(second.has_value());
+                REQUIRE_FALSE(third.has_value());
+                REQUIRE(fourth == std::optional<std::uint64_t>{3U});
+                REQUIRE(tracker.full_refusals() == 4U);
+            }
+        }
+    }
+}

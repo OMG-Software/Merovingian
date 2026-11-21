@@ -50,6 +50,9 @@ public:
     // Accounts with a device that asked for online within the last five minutes, or a window open: the account cap a
     // tracker has unless it is made with another.
     static constexpr auto max_accounts = std::size_t{65'536U};
+    // At most one warning that the table is full in this time, so a flood of refused changes costs one warning a
+    // minute, which counts what it stands for.
+    static constexpr auto full_warning_interval_ms = std::int64_t{60'000};
 
     AccountPresenceTracker() = default;
     // A tracker holding at most `account_cap` accounts (at least one), so a test can fill the table without
@@ -91,6 +94,14 @@ public:
 
     // The most accounts the table holds.
     [[nodiscard]] auto account_cap() const noexcept -> std::size_t;
+
+    // Counts a change refused at `now_ms` because the table is full (`is_full_for`). When a warning is due (the first
+    // refusal, or the first at least `full_warning_interval_ms` after the last warning), the number refused since the
+    // last warning, this one included; otherwise nullopt.
+    [[nodiscard]] auto note_full_refusal(std::int64_t now_ms) -> std::optional<std::uint64_t>;
+
+    // Changes refused because the table was full, since the table was made.
+    [[nodiscard]] auto full_refusals() const noexcept -> std::uint64_t;
 
 private:
     struct Device final
@@ -141,6 +152,10 @@ private:
     std::set<FiledKey> m_closed{};
     std::uint64_t m_accounts_examined{0U};
     std::size_t m_account_cap{max_accounts};
+    std::uint64_t m_full_refusals{0U};
+    // `m_full_refusals` when the last warning was due, and when that was.
+    std::uint64_t m_full_refusals_warned{0U};
+    std::optional<std::int64_t> m_full_warned_at_ms{};
 };
 
 } // namespace merovingian::homeserver

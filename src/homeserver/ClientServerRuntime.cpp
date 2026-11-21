@@ -25427,8 +25427,12 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
     {
         // The account's own window, or a full table's soonest one: never longer than the window.
         auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, AccountPresenceTracker::change_window_ms);
-        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms),
-                             tracker.is_full_for(state.user_id, clock_ms)};
+        auto const tracker_full = tracker.is_full_for(state.user_id, clock_ms);
+        if (tracker_full)
+        {
+            note_presence_tracker_full(runtime.homeserver, clock_ms);
+        }
+        return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms), tracker_full};
     }
     if (!record_presence(runtime.homeserver, state))
     {

@@ -1388,7 +1388,9 @@ without that check ignores `presence.enabled=false`. Rules:
   with the write, and keep the first change, never the last. The idle sweep and the profile propagation are not
   limited. A new path that changes a local user's presence state is limited the same way. A parked poll's rerun
   (`ClientServerDispatchOptions::sync_rerun`) never applies `set_presence` again, or a dropped change would be kept
-  once the window ends. Tests move the clock with `test_presence_clock_advance_ms`, never with a sleep.
+  once the window ends. Tests move the clock with `test_presence_clock_advance_ms`, never with a sleep. A change
+  refused because the tracker is full (`is_full_for`) calls `note_presence_tracker_full`, which counts it and logs the
+  rate-limited `presence.tracker.full` warning; a new refusal site does too.
 - A classic `/sync` whose only news is the caller's own presence row waits on (`only_own_presence_since`, ADR-0873):
   never wake a poll for what its response does not send.
 - `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
