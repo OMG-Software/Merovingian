@@ -139,9 +139,10 @@ is full.
   for either reason (fields `actor`, `device_id`, `presence`, `cause`, `retry_after_ms`), and a `/sync` asking for
   `unavailable` while another device of the account holds it online and the account is not already `unavailable`
   (`cause` `device_online`, no `retry_after_ms`; ADR-0871).
-  `presence.tracker.full` (warning, logger `presence`) fires when a change is refused because the presence tracker
-  has no room (`cause` `tracker_full` above), at most once a minute, with the number refused since the last warning
-  (fields `refused`, `accounts`, `limit`; never a user ID; ADR-0872).
+  `presence.tracker.full` (warning, logger `presence`) fires when the presence tracker refused a change because it
+  had no room (`cause` `tracker_full` above) or evicted an account to make room, at most once a minute, with the
+  number of each since the last warning (fields `refused`, `evicted`, `accounts`, `limit`; never a user ID; ADR-0871,
+  ADR-0872).
   `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
   has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
   is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger

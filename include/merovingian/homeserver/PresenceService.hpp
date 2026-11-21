@@ -65,10 +65,11 @@ inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 // back, plus `test_presence_clock_advance_ms`. Not a point in calendar time.
 [[nodiscard]] auto presence_limit_clock_ms(HomeserverRuntime const& runtime) -> std::int64_t;
 
-// A change of presence refused at `clock_ms` because the presence tracker is full: counts it and, at most once every
-// `AccountPresenceTracker::full_warning_interval_ms`, logs `presence.tracker.full` at warning level with the number
-// refused since the last one (ADR-0872). The caller holds `runtime.mutex`.
-auto note_presence_tracker_full(HomeserverRuntime& runtime, std::int64_t clock_ms) -> void;
+// Logs `presence.tracker.full` at warning level when the presence tracker refused a change or evicted an account since
+// the last report, at most once every `AccountPresenceTracker::full_warning_interval_ms` (ADR-0872). Called after
+// every use of the tracker that may refuse or evict; O(1) when there is nothing to report. The caller holds
+// `runtime.mutex`.
+auto report_presence_tracker_saturation(HomeserverRuntime& runtime, std::int64_t clock_ms) -> void;
 
 // "The last active time must be up to date whenever the server gives a presence event to the
 // client": the stored value plus the time since it was true. Never negative.

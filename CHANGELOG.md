@@ -79,8 +79,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   no longer continue another's connection (ADR-0866).
 * An account's presence changes at most once every 5 s (a later sync's change is dropped, `PUT /presence` is 429), so a
   flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0871, ADR-0872).
-* Presence changes refused because the presence tracker is full are logged at warning level as `presence.tracker.full`,
-  at most once a minute and with the number refused, so an operator sees the table saturate (ADR-0872).
+* A full presence tracker's refused changes and evicted accounts are logged at warning level as
+  `presence.tracker.full`, at most once a minute with how many of each, so an operator sees it saturate (ADR-0872).
 
 ## Bug fixes
 

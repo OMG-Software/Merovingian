@@ -45,10 +45,12 @@ Chosen option: 1.
   shut others out. Only when every account in it has an open window is a change of an account it does not hold refused
   (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself. The
   refusal's `retry_after_ms` is the rest of the soonest window (at most `change_window_ms`), and its log line's `cause`
-  is `tracker_full`, not `window`. Such a refusal also counts towards `presence.tracker.full`, a warning logged at
-  most once a minute (`full_warning_interval_ms`) with the number refused since the last one and no user IDs: a user
-  who did nothing wrong is refused only here, so an operator must see it without debug logging, and one warning per
-  refusal would let the flood that fills the table flood the log too.
+  is `tracker_full`, not `window`. Such a refusal, and every eviction a full table makes (ADR-0871), counts towards
+  `presence.tracker.full`, a warning logged at most once a minute (`full_warning_interval_ms`) with the number of
+  each since the last one and no user IDs. A user who did nothing wrong is refused only here, and an evicted account
+  loses its devices' holds, so an operator must see both without debug logging; one warning per refusal or eviction
+  would let the flood that fills the table flood the log too. The report is asked for after each use of the table
+  (`take_saturation_report`, O(1)), so what a quiet minute leaves is reported by the next sync or `PUT`.
 * A dropped change is never kept later: a parked `/sync` or sliding sync is run again after a wake-up or its timeout
   (`rerun_waiting_sync`, `ClientServerDispatchOptions::sync_rerun`), and that rerun does not apply its `set_presence`
   again, so a change dropped in the window is not stored once the window has ended.

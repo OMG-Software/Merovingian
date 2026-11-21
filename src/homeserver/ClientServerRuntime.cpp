@@ -25432,8 +25432,9 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
         auto const tracker_full = tracker.is_full_for(state.user_id, clock_ms);
         if (tracker_full)
         {
-            note_presence_tracker_full(runtime.homeserver, clock_ms);
+            tracker.note_full_refusal();
         }
+        report_presence_tracker_saturation(runtime.homeserver, clock_ms);
         return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms), tracker_full};
     }
     if (!record_presence(runtime.homeserver, state))
@@ -25441,6 +25442,8 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
         return PresenceWrite{PresenceWriteStatus::failed, 0U};
     }
     tracker.note_change(state.user_id, clock_ms);
+    // The change may have evicted an account to make room (ADR-0871).
+    report_presence_tracker_saturation(runtime.homeserver, clock_ms);
     std::ignore = ensure_sync_notifier(runtime);
     // The servers that share a room with the user are told; the row is as stored just now.
     broadcast_presence_edu(runtime.homeserver, state);

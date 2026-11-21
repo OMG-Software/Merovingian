@@ -109,6 +109,7 @@ auto AccountPresenceTracker::account_for(std::string_view user, std::int64_t now
         // The account whose devices go stale soonest loses their holds; it has no window to lose.
         auto const evicted = m_closed.begin();
         ++m_accounts_examined;
+        ++m_evictions;
         m_accounts.erase(evicted->second);
         m_closed.erase(evicted);
     }
@@ -241,22 +242,33 @@ auto AccountPresenceTracker::account_cap() const noexcept -> std::size_t
     return m_account_cap;
 }
 
-auto AccountPresenceTracker::note_full_refusal(std::int64_t now_ms) -> std::optional<std::uint64_t>
+auto AccountPresenceTracker::note_full_refusal() noexcept -> void
 {
     ++m_full_refusals;
-    if (m_full_warned_at_ms.has_value() && now_ms - m_full_warned_at_ms.value() < full_warning_interval_ms)
-    {
-        return std::nullopt;
-    }
-    auto const since_last_warning = m_full_refusals - m_full_refusals_warned;
-    m_full_refusals_warned = m_full_refusals;
-    m_full_warned_at_ms = now_ms;
-    return since_last_warning;
 }
 
 auto AccountPresenceTracker::full_refusals() const noexcept -> std::uint64_t
 {
     return m_full_refusals;
+}
+
+auto AccountPresenceTracker::evictions() const noexcept -> std::uint64_t
+{
+    return m_evictions;
+}
+
+auto AccountPresenceTracker::take_saturation_report(std::int64_t now_ms) -> std::optional<SaturationReport>
+{
+    auto const report = SaturationReport{m_full_refusals - m_reported_refusals, m_evictions - m_reported_evictions};
+    if ((report.refused == 0U && report.evicted == 0U) ||
+        (m_reported_at_ms.has_value() && now_ms - m_reported_at_ms.value() < full_warning_interval_ms))
+    {
+        return std::nullopt;
+    }
+    m_reported_refusals = m_full_refusals;
+    m_reported_evictions = m_evictions;
+    m_reported_at_ms = now_ms;
+    return report;
 }
 
 } // namespace merovingian::homeserver

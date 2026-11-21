@@ -50,9 +50,20 @@ public:
     // Accounts with a device that asked for online within the last five minutes, or a window open: the account cap a
     // tracker has unless it is made with another.
     static constexpr auto max_accounts = std::size_t{65'536U};
-    // At most one warning that the table is full in this time, so a flood of refused changes costs one warning a
-    // minute, which counts what it stands for.
+    // At most one report of what a full table cost in this time, so a flood of refusals or evictions costs one warning
+    // a minute, which counts what it stands for.
     static constexpr auto full_warning_interval_ms = std::int64_t{60'000};
+
+    // What a full table did since the last report.
+    struct SaturationReport final
+    {
+        // Changes refused because the table had no room (`note_full_refusal`).
+        std::uint64_t refused{0U};
+        // Accounts evicted to make room, which lost their devices' holds.
+        std::uint64_t evicted{0U};
+
+        [[nodiscard]] auto operator==(SaturationReport const&) const -> bool = default;
+    };
 
     AccountPresenceTracker() = default;
     // A tracker holding at most `account_cap` accounts (at least one), so a test can fill the table without
@@ -96,13 +107,19 @@ public:
     // The most accounts the table holds.
     [[nodiscard]] auto account_cap() const noexcept -> std::size_t;
 
-    // Counts a change refused at `now_ms` because the table is full (`is_full_for`). When a warning is due (the first
-    // refusal, or the first at least `full_warning_interval_ms` after the last warning), the number refused since the
-    // last warning, this one included; otherwise nullopt.
-    [[nodiscard]] auto note_full_refusal(std::int64_t now_ms) -> std::optional<std::uint64_t>;
+    // Counts a change refused because the table is full (`is_full_for`).
+    auto note_full_refusal() noexcept -> void;
 
     // Changes refused because the table was full, since the table was made.
     [[nodiscard]] auto full_refusals() const noexcept -> std::uint64_t;
+
+    // Accounts a full table evicted to make room, since the table was made.
+    [[nodiscard]] auto evictions() const noexcept -> std::uint64_t;
+
+    // What the table refused and evicted since the last report, when it did either and no report was taken in the
+    // `full_warning_interval_ms` before `now_ms`; the report is then taken as of `now_ms`. Otherwise nullopt. O(1), so
+    // a caller may ask after every use of the table.
+    [[nodiscard]] auto take_saturation_report(std::int64_t now_ms) -> std::optional<SaturationReport>;
 
 private:
     struct Device final
@@ -154,9 +171,11 @@ private:
     std::uint64_t m_accounts_examined{0U};
     std::size_t m_account_cap{max_accounts};
     std::uint64_t m_full_refusals{0U};
-    // `m_full_refusals` when the last warning was due, and when that was.
-    std::uint64_t m_full_refusals_warned{0U};
-    std::optional<std::int64_t> m_full_warned_at_ms{};
+    std::uint64_t m_evictions{0U};
+    // The two counts when the last report was taken, and when that was.
+    std::uint64_t m_reported_refusals{0U};
+    std::uint64_t m_reported_evictions{0U};
+    std::optional<std::int64_t> m_reported_at_ms{};
 };
 
 } // namespace merovingian::homeserver

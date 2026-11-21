@@ -29,6 +29,17 @@ constexpr auto desktop = std::string_view{"DESKTOP"};
 // is the same code at any size.
 constexpr auto small_cap = std::size_t{8U};
 
+// Fills a tracker of `small_cap` with accounts each held online by a desktop and none with a window open. @user0 synced
+// at start_ms and the rest a millisecond later, so @user0's hold goes stale first and is the one a full table evicts.
+auto fill_held_online(AccountPresenceTracker& tracker) -> void
+{
+    std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
+    for (auto index = std::size_t{1U}; index < small_cap; ++index)
+    {
+        std::ignore = tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
+    }
+}
+
 } // namespace
 
 SCENARIO("A device syncing online holds its account online against a device syncing unavailable",
@@ -244,12 +255,7 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
     GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
     {
         auto tracker = AccountPresenceTracker{small_cap};
-        std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
-        for (auto index = std::size_t{1U}; index < small_cap; ++index)
-        {
-            std::ignore =
-                tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
-        }
+        fill_held_online(tracker);
 
         WHEN("an account with no entry asks to change its presence, however recently the others synced")
         {
@@ -261,6 +267,11 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
                 REQUIRE_FALSE(blocked.has_value());
                 REQUIRE(tracker.account_count() == small_cap);
                 REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.evictions() == 1U);
+                REQUIRE(tracker.take_saturation_report(start_ms + 2) ==
+                        std::optional{
+                            AccountPresenceTracker::SaturationReport{0U, 1U}
+                });
                 REQUIRE(tracker.change_blocked_for_ms(alice, start_ms + 3).has_value());
                 REQUIRE_FALSE(tracker.note_sync("@user0:example.org", phone, false, start_ms + 3));
             }
@@ -337,12 +348,7 @@ SCENARIO("A device asking for unavailable takes no place in the tracker",
     GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
     {
         auto tracker = AccountPresenceTracker{small_cap};
-        std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
-        for (auto index = std::size_t{1U}; index < small_cap; ++index)
-        {
-            std::ignore =
-                tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
-        }
+        fill_held_online(tracker);
 
         WHEN("an account with no entry syncs asking for unavailable")
         {
@@ -377,31 +383,46 @@ SCENARIO("A tracker holds max_accounts accounts unless it is made with another c
     }
 }
 
-// ADR-0872: a change refused because the table is full is counted, and a warning is due at most once every
-// full_warning_interval_ms, carrying how many it stands for, so a flood of refusals costs one warning a minute.
-SCENARIO("Changes refused by a full tracker are counted and warned about at most once an interval",
+// ADR-0872: a full table's refusals and evictions are counted, and a report of them is due at most once every
+// full_warning_interval_ms, carrying what it stands for, so a flood costs one warning a minute. Nothing to report is
+// never a report.
+SCENARIO("A full tracker's refusals and evictions are reported at most once an interval",
          "[unit][presence][account_presence_tracker][bounds]")
 {
-    GIVEN("a tracker that has refused nothing")
+    GIVEN("a tracker that has refused and evicted nothing")
     {
         auto tracker = AccountPresenceTracker{small_cap};
         REQUIRE(tracker.full_refusals() == 0U);
+        REQUIRE(tracker.evictions() == 0U);
+        REQUIRE_FALSE(tracker.take_saturation_report(start_ms).has_value());
 
-        WHEN("it refuses one change, two more within the interval, and one once the interval has passed")
+        WHEN("it refuses one change, then two more within the interval, and is asked after each")
         {
-            auto const first = tracker.note_full_refusal(start_ms);
-            auto const second = tracker.note_full_refusal(start_ms + 1);
+            using Report = AccountPresenceTracker::SaturationReport;
+            tracker.note_full_refusal();
+            auto const first = tracker.take_saturation_report(start_ms);
+            tracker.note_full_refusal();
+            auto const second = tracker.take_saturation_report(start_ms + 1);
+            tracker.note_full_refusal();
             auto const third =
-                tracker.note_full_refusal(start_ms + AccountPresenceTracker::full_warning_interval_ms - 1);
-            auto const fourth = tracker.note_full_refusal(start_ms + AccountPresenceTracker::full_warning_interval_ms);
+                tracker.take_saturation_report(start_ms + AccountPresenceTracker::full_warning_interval_ms - 1);
+            auto const after_interval =
+                tracker.take_saturation_report(start_ms + AccountPresenceTracker::full_warning_interval_ms);
+            auto const nothing_new =
+                tracker.take_saturation_report(start_ms + 2 * AccountPresenceTracker::full_warning_interval_ms);
 
-            THEN("the first and the fourth are due a warning, the fourth standing for the three since the first")
+            THEN("the first is reported, the next two wait for the interval, and nothing new is never reported")
             {
-                REQUIRE(first == std::optional<std::uint64_t>{1U});
+                REQUIRE(first == std::optional{
+                                     Report{1U, 0U}
+                });
                 REQUIRE_FALSE(second.has_value());
                 REQUIRE_FALSE(third.has_value());
-                REQUIRE(fourth == std::optional<std::uint64_t>{3U});
-                REQUIRE(tracker.full_refusals() == 4U);
+                REQUIRE(after_interval == std::optional{
+                                              Report{2U, 0U}
+                });
+                REQUIRE_FALSE(nothing_new.has_value());
+                REQUIRE(tracker.full_refusals() == 3U);
             }
         }
     }
