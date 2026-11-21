@@ -21502,7 +21502,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& turn = rt.homeserver.config.server().turn;
         if (turn.server.empty() && turn.uris.empty())
         {
-            log_turn_diagnostic("turn.not_configured",
+            // The coverage markers below drop only GCC's cleanup of the braced field list, which runs when building a
+            // field throws and so no test reaches (ADR-0874).
+            log_turn_diagnostic("turn.not_configured", // GCOVR_EXCL_BR_LINE
                                 {
                                     {"user_id", *user, false}
             },
@@ -21526,10 +21528,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
             if (!credentials.has_value())
             {
-                log_turn_diagnostic(
+                // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+                log_turn_diagnostic( // GCOVR_EXCL_BR_LINE
                     "turn.credentials_unavailable",
                     {
+                        // GCOVR_EXCL_START
                         {"user_id", *user,                                    false},
+                        // GCOVR_EXCL_STOP
                         {"reason",  "shared secret file unreadable or empty", false}
                 },
                     observability::LogEventSeverity::error);
@@ -21559,9 +21564,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
-        log_turn_diagnostic("turn.credentials_issued",
+        // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+        log_turn_diagnostic("turn.credentials_issued", // GCOVR_EXCL_BR_LINE
                             {
+                                // GCOVR_EXCL_START
                                 {"user_id",     *user,                                                        false},
+                                // GCOVR_EXCL_STOP
                                 {"credential",  turn.shared_secret_file.empty() ? "static" : "shared_secret", false},
                                 {"ttl_seconds", std::to_string(turn.ttl_seconds),                             false},
                                 {"uri_count",   std::to_string(uri_count),                                    false},

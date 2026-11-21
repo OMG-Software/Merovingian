@@ -458,7 +458,9 @@ label those edges), so the coverage job alone builds with `gcc-14` and reads its
 `gcov-14`; every other job builds with clang. Every decision branch still counts, so a partial line means a condition
 went one way only. Cover it with a test of the other outcome, not an exclusion marker;
 `LCOV_EXCL`/`GCOVR_EXCL` are for code that is genuinely unreachable, with the reason
-beside them.
+beside them. One such case is GCC's cleanup of a braced list of log fields, which gcov labels a decision branch: a call
+may mark it as the TURN log calls in `ClientServerRuntime.cpp` do, with no decision on the marked lines
+([ADR-0874](adr/0874-a-braced-log-field-list-may-mark-gcc-s-cleanup-branches-excluded-from-coverage.md)).
 
 ## CI job order
 

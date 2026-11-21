@@ -746,3 +746,4 @@
 * [0870 - A ranges algorithm takes a typed value, never a bare string literal](0870-a-ranges-algorithm-takes-a-typed-value-never-a-bare-string-literal.md)
 * [0871 - TURN credential requests log under their own `turn` module, and never log a credential](0871-turn-credential-requests-log-under-their-own-turn-module.md)
 * [0872 - The example configs list every log module, and a tooling test reads the modules from the sources](0872-the-example-configs-list-every-log-module-and-a-tooling-test-reads-the-modules-from-the-sources.md)
+* [0874 - A braced log-field list may mark GCC's cleanup branches excluded from coverage](0874-a-braced-log-field-list-may-mark-gcc-s-cleanup-branches-excluded-from-coverage.md)

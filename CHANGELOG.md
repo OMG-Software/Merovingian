@@ -183,6 +183,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
 * The example configurations list every module a structured logger call names (twelve were missing, `token` is
   gone), and a tooling test fails when that list and the modules the sources name differ (ADR-0872).
+* The TURN log calls mark GCC's cleanup of their braced field lists excluded from coverage, a compiler path no test
+  can reach; the testing standards say when such a marker is allowed (ADR-0874).
 
 ## Release notes
 
