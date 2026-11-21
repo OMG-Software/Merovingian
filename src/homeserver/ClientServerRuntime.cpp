@@ -8697,6 +8697,17 @@ namespace
         return false;
     }
 
+    // A token from this stream epoch and not ahead of the live watermarks (ADR-0592): the only kind a sliding sync
+    // serves. The dispatcher asks it too, before it applies `set_presence`, so a request this refuses changes nothing.
+    [[nodiscard]] auto sliding_sync_token_is_current(HomeserverRuntime const& runtime,
+                                                     sync::StreamToken const& token) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const event_watermark = visible_stream_position(runtime.database);
+        return token.epoch == store.stream_token_epoch && token.event_ordering <= event_watermark &&
+               token.membership_ordering <= event_watermark && token.sync_stream_id <= store.next_sync_stream_id;
+    }
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
                                          std::optional<sync::SlidingSyncPos> const& request_pos,
@@ -8739,8 +8750,7 @@ namespace
         {
             auto const event_watermark = visible_stream_position(rt.homeserver.database);
             auto const sync_watermark = store.next_sync_stream_id;
-            if (pos->epoch != store.stream_token_epoch || pos->event_ordering > event_watermark ||
-                pos->membership_ordering > event_watermark || pos->sync_stream_id > sync_watermark)
+            if (!sliding_sync_token_is_current(rt.homeserver, *pos))
             {
                 // Drop the connection state: the client restarts with no pos
                 // and must receive a full initial snapshot.
@@ -22444,11 +22454,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_POS", "unknown sliding sync position");
             }
         }
-        // ADR-0872: on the request's first run only, as for /sync, and only once `pos` is accepted, so a refused
-        // request changes no presence and opens no window.
-        if (auto const changed = dispatch_options.sync_rerun ? std::nullopt
-                                                             : apply_sync_presence(rt.homeserver, *user, device_id_4186,
-                                                                                   *sliding_presence_mode);
+        // ADR-0872: on the request's first run only, as for /sync, and only for a `pos` that is bound and current (the
+        // check `sliding_sync_json` refuses with M_UNKNOWN_POS), so a refused request changes no presence and opens no
+        // window.
+        auto const pos_is_current = !pos.has_value() || sliding_sync_token_is_current(rt.homeserver, pos->token);
+        if (auto const changed =
+                dispatch_options.sync_rerun || !pos_is_current
+                    ? std::nullopt
+                    : apply_sync_presence(rt.homeserver, *user, device_id_4186, *sliding_presence_mode);
             changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
