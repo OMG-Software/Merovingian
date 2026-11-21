@@ -393,7 +393,7 @@ as `core::CopyableMutex` has. No production code copies a store; only tests do.
 `device_list_observer_index` (device-list changes by observer), `filter_user_index` (stored filters by user) and
 `presence_user_index` (presence rows by user) follow the row-index rule above: trusted only while built for the vector's
 current row count, rebuilt by their writer when found out of step and by `rebuild_key_indexes` after hydration. Read through
-`for_each_observer_device_list_change`, `for_each_user_filter`, `find_filter` and `find_presence_state`, never by looping the
-vector in a request. `record_device_list_changes` replaces a pair's row by erasing it (the last row moves into the gap, so the
+`for_each_observer_device_list_change`, `for_each_user_filter`, `find_filter` and `find_presence_state` (`find_mutable_presence_state`
+for a change in place: never turn the const accessor's pointer back into a position), never by looping the vector in a request. `record_device_list_changes` replaces a pair's row by erasing it (the last row moves into the gap, so the
 vector has no order) and appending the new one. Tests prove cost with `device_list_rows_examined`, `filter_rows_examined`
 and `presence_rows_examined`.

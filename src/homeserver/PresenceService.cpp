@@ -84,18 +84,6 @@ namespace
         });
     }
 
-    // The user's row, through the presence index (ADR-0659), for a change in place; nullptr when there is none.
-    [[nodiscard]] auto find_mutable_row(database::PersistentStore& store, std::string_view user_id)
-        -> database::PersistentPresence*
-    {
-        auto const* const row = database::find_presence_state(store, user_id);
-        if (row == nullptr)
-        {
-            return nullptr;
-        }
-        return &store.presence_states[static_cast<std::size_t>(row - store.presence_states.data())];
-    }
-
     [[nodiscard]] auto joined_rooms_of(database::PersistentStore const& store, std::string_view user)
         -> std::unordered_set<std::string_view>
     {
@@ -358,7 +346,7 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
     auto& store = runtime.database.persistent_store;
     auto const now_ms = presence_now_ms();
     auto const desired = asks_online ? std::string_view{"online"} : std::string_view{"unavailable"};
-    auto* const existing = find_mutable_row(store, user);
+    auto* const existing = database::find_mutable_presence_state(store, user);
     if (existing != nullptr && existing->presence == desired)
     {
         if (asks_online)

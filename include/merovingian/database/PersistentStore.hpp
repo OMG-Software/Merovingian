@@ -1586,6 +1586,8 @@ auto for_each_user_filter(PersistentStore const& store, std::string_view user_id
 // The presence row of `user_id`, or nullptr, through the user index (ADR-0659).
 [[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
     -> PersistentPresence const*;
+// The same row for a change in place, or nullptr. A change must keep `user_id`: the index is keyed on it.
+[[nodiscard]] auto find_mutable_presence_state(PersistentStore& store, std::string_view user_id) -> PersistentPresence*;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;

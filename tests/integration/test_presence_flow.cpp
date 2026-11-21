@@ -1167,6 +1167,103 @@ SCENARIO("A parked sync run again does not apply its set_presence a second time"
     }
 }
 
+namespace
+{
+
+constexpr auto sliding_sync_target = std::string_view{"/_matrix/client/unstable/org.matrix.msc4186/sync"};
+
+// The `pos` of a sliding sync that answers at once and leaves alice's presence alone.
+[[nodiscard]] auto sliding_sync_pos(ClientServerRuntime& runtime, std::string const& token) -> std::string
+{
+    auto const synced = call(runtime, "POST", std::string{sliding_sync_target}, token, R"({"set_presence":"offline"})");
+    REQUIRE(synced.status == 200U);
+    auto const body = parse_object(synced.body);
+    auto const* pos = string_member(body, "pos");
+    REQUIRE(pos != nullptr);
+    return *pos;
+}
+
+} // namespace
+
+SCENARIO("A parked sliding sync run again does not apply its set_presence a second time",
+         "[integration][presence][sliding-sync][long_poll]")
+{
+    GIVEN("alice shares a room with bob on another server, set herself online, and holds a sliding sync pos")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        REQUIRE(put_alice_presence(runtime, token, R"({"presence":"online"})").status == 200U);
+        auto const pos = sliding_sync_pos(runtime, token);
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+
+        WHEN("she long-polls asking for unavailable inside the window, and the poll is run again once it has ended")
+        {
+            auto const long_poll = merovingian::homeserver::LocalHttpRequest{
+                "POST", std::string{sliding_sync_target} + "?timeout=30000&pos=" + pos, token,
+                R"({"set_presence":"unavailable"})"};
+            auto const first = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+            REQUIRE(first.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            let_presence_window_end(runtime);
+            auto const rerun = merovingian::homeserver::handle_client_server_request(
+                runtime, long_poll,
+                merovingian::homeserver::ClientServerDispatchOptions{
+                    .can_wait = false, .rate_limit_admitted = true, .sync_rerun = true});
+
+            THEN("the dropped change stays dropped: she is still online and bob's server is told nothing more")
+            {
+                REQUIRE(rerun.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0871: a device is one device whichever sync API it uses, so the hold one transport takes is released by the
+// other's set_presence=offline.
+SCENARIO("A device's hold taken through sliding sync is released by its classic sync",
+         "[integration][presence][sliding-sync][devices]")
+{
+    GIVEN("alice's desktop sliding-synced online and she has a phone too")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const desktop = register_alice(runtime);
+        auto const phone = log_alice_in_on(runtime, "PHONE");
+        REQUIRE(call(runtime, "POST", std::string{sliding_sync_target}, desktop, "{}").status == 200U);
+        REQUIRE(alice_presence_state(runtime) == "online");
+        let_presence_window_end(runtime);
+
+        WHEN("the phone syncs asking for unavailable while the desktop holds the account")
+        {
+            sync_once(runtime, phone, "unavailable");
+
+            THEN("she stays online")
+            {
+                REQUIRE(alice_presence_state(runtime) == "online");
+            }
+        }
+
+        WHEN("the desktop's classic sync says offline, and then the phone asks for unavailable")
+        {
+            sync_once(runtime, desktop, "offline");
+            sync_once(runtime, phone, "unavailable");
+
+            THEN("the desktop no longer holds the account, so she becomes unavailable")
+            {
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+            }
+        }
+    }
+}
+
 // ADR-0872: at its cap, with every account in its window, the presence tracker refuses a change of an account it does
 // not hold (fails closed), so a flood of accounts cannot lift the limit for itself. The refusal says so and waits for
 // the soonest window to end.

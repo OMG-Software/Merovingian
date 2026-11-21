@@ -8744,6 +8744,40 @@ auto for_each_observer_device_list_change(PersistentStore const& store, std::str
     return record_device_list_changes(store, std::move(batch));
 }
 
+namespace
+{
+
+    // The position in `store.presence_states` of `user_id`'s row, or nullopt, through the user index (ADR-0659). The
+    // const and the mutable lookup both answer from it, so neither turns the other's pointer back into a position.
+    [[nodiscard]] auto presence_position(PersistentStore const& store,
+                                         std::string_view user_id) -> std::optional<std::size_t>
+    {
+        if (store.presence_user_index.in_step(store.presence_states.size()))
+        {
+            store.presence_rows_examined.add(1U);
+            auto const position = store.presence_user_index.find(std::string{user_id});
+            if (!position.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*position < store.presence_states.size() && store.presence_states[*position].user_id == user_id)
+            {
+                return *position;
+            }
+        }
+        store.presence_rows_examined.add(store.presence_states.size());
+        auto const found = std::ranges::find_if(store.presence_states, [user_id](PersistentPresence const& row) {
+            return row.user_id == user_id;
+        });
+        if (found == store.presence_states.end())
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(std::ranges::distance(store.presence_states.begin(), found));
+    }
+
+} // namespace
+
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool
 {
     if (state.user_id.empty() || state.presence.empty())
@@ -8765,9 +8799,9 @@ auto for_each_observer_device_list_change(PersistentStore const& store, std::str
         return false;
     }
     sync_presence_index(store);
-    if (auto const* current = find_presence_state(store, state.user_id); current != nullptr)
+    if (auto* const current = find_mutable_presence_state(store, state.user_id); current != nullptr)
     {
-        store.presence_states[static_cast<std::size_t>(current - store.presence_states.data())] = std::move(state);
+        *current = std::move(state);
         return true;
     }
     store.presence_states.push_back(std::move(state));
@@ -8778,28 +8812,14 @@ auto for_each_observer_device_list_change(PersistentStore const& store, std::str
 [[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
     -> PersistentPresence const*
 {
-    if (store.presence_user_index.in_step(store.presence_states.size()))
-    {
-        store.presence_rows_examined.add(1U);
-        auto const position = store.presence_user_index.find(std::string{user_id});
-        if (!position.has_value())
-        {
-            return nullptr;
-        }
-        if (*position < store.presence_states.size() && store.presence_states[*position].user_id == user_id)
-        {
-            return &store.presence_states[*position];
-        }
-    }
-    store.presence_rows_examined.add(store.presence_states.size());
-    for (auto const& row : store.presence_states)
-    {
-        if (row.user_id == user_id)
-        {
-            return &row;
-        }
-    }
-    return nullptr;
+    auto const position = presence_position(store, user_id);
+    return position.has_value() ? &store.presence_states[*position] : nullptr;
+}
+
+[[nodiscard]] auto find_mutable_presence_state(PersistentStore& store, std::string_view user_id) -> PersistentPresence*
+{
+    auto const position = presence_position(store, user_id);
+    return position.has_value() ? &store.presence_states[*position] : nullptr;
 }
 
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool
