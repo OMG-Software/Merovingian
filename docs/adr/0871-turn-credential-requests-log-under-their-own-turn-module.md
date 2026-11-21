@@ -39,7 +39,9 @@ of its own and would have moved forty lines of unrelated JSON building with it.
   token is refused with 401 before it, and logged as `request.auth.rejected` (debug) under `client_server`, so look
   there for authentication failures. `turn.not_configured` is a debug line, which reaches the console only when the
   server also runs with `--debug`.
-* The logging tests run with `client_server` silenced, so a line moved back under `client_server` fails them.
+* Each logging test asserts that the line's module tag is `turn`, so a line moved back under `client_server` fails
+  it. The issued-credential and unreadable-secret scenarios also silence `client_server`, so no client-server line
+  can stand in for the TURN one either way.
 
 ### Negative Consequences
 

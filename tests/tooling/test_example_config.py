@@ -358,18 +358,21 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
                 unresolved.add(f"{label}: cannot read the module of `{excerpt}`")
                 continue
             literal, identifier = read.group(1), read.group(2) or ""
-            short = identifier.split("::")[-1]
             # A constant the file defines comes first, whatever it is called: the forwarding names
             # are skipped only when no constant of that name exists, so they skip by role, not name.
             if literal:
                 modules.add(literal)
-            elif len(constants.get(short, ())) == 1:
-                modules.update(constants[short])
-            elif short in constants:
-                unresolved.add(f"{label}: {identifier} (given {sorted(constants[short])} in this file)")
+            elif "::" in identifier:
+                # A qualified name such as `shared::module` names a constant in some namespace, and
+                # the scan knows no scopes: a constant of this file that shares its last segment may
+                # be another one, so it is reported, never resolved and never skipped.
+                unresolved.add(f"{label}: {identifier}")
+            elif len(constants.get(identifier, ())) == 1:
+                modules.update(constants[identifier])
+            elif identifier in constants:
+                unresolved.add(f"{label}: {identifier} (given {sorted(constants[identifier])} in this file)")
             elif identifier in FORWARDED_MODULE_PARAMETERS:
-                # Only a bare parameter forwards its caller's module. A qualified name such as
-                # `shared::module` names a constant defined elsewhere, which the scan cannot read.
+                # Only a bare parameter forwards its caller's module.
                 continue
             else:
                 unresolved.add(f"{label}: {identifier}")
@@ -575,6 +578,23 @@ class ExampleLogModuleListTests(unittest.TestCase):
         # THEN only the bare parameter is skipped: the qualified name is reported.
         self.assertEqual(modules, set())
         self.assertEqual(unresolved, {"f.cpp: shared::module"})
+
+    def test_a_qualified_name_is_not_resolved_to_a_constant_sharing_its_last_segment(self) -> None:
+        # GIVEN a file that defines its own `kModule` constant and also names `hs::kModule`, a
+        # constant of another namespace that only shares the last segment.
+        source = (
+            'constexpr auto kModule = std::string_view{"rooms"};\n'
+            'observability::log_diagnostic(kModule, "event", fields, severity);\n'
+            'observability::log_diagnostic(hs::kModule, "event", fields, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN the bare name resolves to this file's constant and the qualified one is reported,
+        # not taken for `rooms`.
+        self.assertEqual(modules, {"rooms"})
+        self.assertEqual(unresolved, {"f.cpp: hs::kModule"})
 
     def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
         # GIVEN a file that defines a module constant called `module`, and another file whose
