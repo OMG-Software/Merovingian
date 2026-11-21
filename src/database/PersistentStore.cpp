@@ -8762,7 +8762,7 @@ namespace
             }
             if (*position < store.presence_states.size() && store.presence_states[*position].user_id == user_id)
             {
-                return *position;
+                return position;
             }
         }
         store.presence_rows_examined.add(store.presence_states.size());
