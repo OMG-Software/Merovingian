@@ -149,8 +149,21 @@ private:
     return std::nullopt;
 }
 
-// The value of the ` key=value` field in a diagnostic line, up to the next space; nullopt when the line has no such
-// field. Matching the whole value keeps `uri_count=1` from passing for `uri_count=10`.
+// Whether a ` name=` field opens at `position` of a diagnostic line: a space, then a field name, then `=`.
+[[nodiscard]] auto field_opens_at(std::string const& line, std::size_t position) -> bool
+{
+    auto const is_name_char = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    auto name_end = position + 1U;
+    while (name_end < line.size() && is_name_char(line[name_end]))
+    {
+        ++name_end;
+    }
+    return line[position] == ' ' && name_end > position + 1U && name_end < line.size() && line[name_end] == '=';
+}
+
+// The value of the ` key=value` field in a diagnostic line, up to where the next ` name=` field opens or the line
+// ends, so a value holding spaces (`reason=shared secret file unreadable or empty`) is read whole; nullopt when the
+// line has no such field. Matching the whole value keeps `uri_count=1` from passing for `uri_count=10`.
 [[nodiscard]] auto field_value(std::string const& line, std::string_view key) -> std::optional<std::string>
 {
     auto const marker = " " + std::string{key} + "=";
@@ -160,7 +173,11 @@ private:
         return std::nullopt;
     }
     auto const value_start = start + marker.size();
-    auto const value_end = line.find(' ', value_start);
+    auto value_end = line.find(' ', value_start);
+    while (value_end != std::string::npos && !field_opens_at(line, value_end))
+    {
+        value_end = line.find(' ', value_end + 1U);
+    }
     return line.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
 }
 
@@ -405,7 +422,7 @@ SCENARIO("The turn log names an unreadable shared secret as an error under its o
                 REQUIRE(line.has_value());
                 CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
                 // The reason holds spaces, so it is matched whole rather than through field_value.
-                CHECK(line.value().find(" reason=shared secret file unreadable or empty") != std::string::npos);
+                CHECK(field_value(line.value(), "reason") == "shared secret file unreadable or empty");
             }
         }
     }
