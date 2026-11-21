@@ -398,12 +398,14 @@ SCENARIO("The turn log names an unreadable shared secret as an error under its o
             auto const response = turn_server(runtime, alice);
             auto const text = capture.text();
 
-            THEN("the answer is 500 and an error line under turn names the event and alice")
+            THEN("the answer is 500 and an error line under turn names the event, alice and the fixed reason")
             {
                 REQUIRE(response.status == 500U);
                 auto const line = module_line(text, "ERROR", "turn", "turn.credentials_unavailable");
                 REQUIRE(line.has_value());
-                CHECK(line->find("@alice:example.org") != std::string::npos);
+                CHECK(field_value(*line, "user_id") == "@alice:example.org");
+                // The reason holds spaces, so it is matched whole rather than through field_value.
+                CHECK(line->find(" reason=shared secret file unreadable or empty") != std::string::npos);
             }
         }
     }

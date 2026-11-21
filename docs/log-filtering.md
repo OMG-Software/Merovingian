@@ -103,7 +103,8 @@ A malformed `category=` value returns 400 with
 The `log_modules.<name>` keys accept any string — the bootstrap
 forwards the name to `SingleLog::set_module_log_level(name, level)`
 without a registry. The example configurations (`config/merovingian.conf.example` and
-`config/merovingian.conf.bsd.example`) list every module the server logs under; keep both in step when a module is
+`config/merovingian.conf.bsd.example`) list every module a structured logger call names (not the function names the
+legacy `LOG_*` macros log under, see below); keep both in step when a module is
 added or removed. `tests/tooling/test_example_config.py` scans `src/` and `include/` for the modules the logger calls
 name and fails when either example lists a different set, or when a call names its module through anything but a
 literal or a string constant in the same file (one the file gives no other value). The one exception is a parameter that forwards its caller's module

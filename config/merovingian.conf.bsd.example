@@ -911,7 +911,9 @@ appservice.max_queued_events=100000
 # every other module sees. Restart is required for changes to take effect.
 # Merovingian needs to run with the --debug parameter to enable debug logging.
 # — see docs/log-filtering.md.
-# Every module the server logs under:
+# Every module a structured logger call names. The legacy LOG_* lines log
+# under the calling function's name instead (for example `main`), and a
+# function name is a valid key that this list leaves out:
 # log_modules.appservice=info
 # log_modules.auth=info
 # log_modules.client_server=info

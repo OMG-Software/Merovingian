@@ -267,10 +267,13 @@ LEVEL_LOG_CALL = re.compile(
     r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
 )
 # The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
-# Its first argument is the `LocalDatabase` (`runtime.database`, `rt.homeserver.database`), which
-# tells it apart from a file-local wrapper whose first two arguments are the event and its fields.
+# It is told apart by its shape, never by what the database is called (`runtime.database`, or an
+# alias such as `db`): any call not qualified with `observability::` whose first argument is a name
+# or member expression, not a literal. A file-local wrapper takes the event first, as a literal, so it
+# never has that shape; the qualified `observability::` form is QUALIFIED_LOG_CALL's.
 DATABASE_AUDIT_CALL = re.compile(
-    r'\blog_diagnostic_audit\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:\.|->)\s*)*database\s*,\s*'
+    r'(?<!observability::)\blog_diagnostic_audit\s*\(\s*'
+    r'\*?\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.|->)\s*[A-Za-z_][A-Za-z0-9_]*)*\s*,\s*'
     r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))'
 )
 # A module named once in a constant: `auto log_module = std::string_view{"livekit"};` or `name{"livekit"};`.
@@ -382,23 +385,41 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertEqual(found[DATABASE_AUDIT_CALL.pattern], {"audit"})
 
     def test_a_database_audit_call_resolves_its_module_like_the_other_call_forms(self) -> None:
-        # GIVEN database audit calls that name their module through a constant, an unknown
-        # identifier and a forwarding parameter, beside a wrapper whose first argument is no database.
+        # GIVEN database audit calls through the database, an alias for it and a pointer, naming their
+        # module with a literal, a constant, an unknown identifier and a forwarding parameter, beside a
+        # wrapper called with a literal event and a qualified `observability::` call.
         source = (
             'constexpr auto audit_module = std::string_view{"audited"};\n'
             'log_diagnostic_audit(runtime.database, audit_module, "x", fields);\n'
+            'auto& db = rt.database;\n'
+            'log_diagnostic_audit(db, "through_alias", "x", fields);\n'
+            'log_diagnostic_audit(*database_ptr, "through_pointer", "x", fields);\n'
             'log_diagnostic_audit(rt.homeserver.database, unknown_module, "x", fields);\n'
             'log_diagnostic_audit(database, logger, "x", fields);\n'
-            'log_diagnostic_audit(event_name, field_list, severity);\n'
+            'log_diagnostic_audit("event.name", {{"k", "v", false}}, severity);\n'
+            'observability::log_diagnostic_audit(logger, event, fields, severity);\n'
         )
 
         # WHEN the source is scanned.
         modules, unresolved = scan_log_modules(source, "f.cpp")
 
-        # THEN the constant resolves, the unknown identifier is reported, and neither the forwarding
-        # parameter nor the wrapper's arguments are taken for a module.
-        self.assertEqual(modules, {"audited"})
+        # THEN every call of the database overload is read whatever the database is called, the
+        # constant resolves, the unknown identifier is reported, and neither the forwarding parameter,
+        # the wrapper's event nor the qualified call's event is taken for a module.
+        self.assertEqual(modules, {"audited", "through_alias", "through_pointer"})
         self.assertEqual(unresolved, {"f.cpp: unknown_module"})
+
+    def test_a_wrapper_called_with_a_variable_event_is_reported_not_skipped(self) -> None:
+        # GIVEN a file-local wrapper called with its event in a variable: the database overload's shape.
+        source = 'log_diagnostic_audit(event_name, field_list, severity);\n'
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN it is reported, never silently skipped: the scan cannot tell it from a database call
+        # (ADR-0872), and a wrapper is called with a literal event.
+        self.assertEqual(modules, set())
+        self.assertEqual(unresolved, {"f.cpp: field_list"})
 
     def test_a_constant_given_two_values_in_one_file_is_reported_not_guessed(self) -> None:
         # GIVEN two functions in one file, each with its own `log_module`.

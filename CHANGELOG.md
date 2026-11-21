@@ -181,8 +181,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The Fedora 44 and 45 RPMs build again: GCC 16 refused `std::ranges::find` with a bare string literal under C++26,
   and `reject-unsafe.sh` now rejects that form in code and tests (ADR-0870).
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
-* The example configurations list every `log_modules` module the server logs under (twelve were missing, `token` is
-  gone), and a tooling test fails when that list and the modules the sources log under differ (ADR-0872).
+* The example configurations list every module a structured logger call names (twelve were missing, `token` is
+  gone), and a tooling test fails when that list and the modules the sources name differ (ADR-0872).
 
 ## Release notes
 

@@ -61,7 +61,12 @@ to it, for a list that exists to be documented.
   see it.
 * To share a module constant across files, or to log through a new call form, extend `source_log_modules` in the test
   in the same change. Never relax or delete the assertion to get past it.
-* The examples list every module the server logs under, not a selection of common ones. Do not trim the list.
+* The examples list every module a structured logger call names, not a selection of common ones, and say that the
+  legacy `LOG_*` macros' function names are left out. Do not trim the list.
+* The homeserver's `log_diagnostic_audit(database, module, ...)` is recognised by its shape (an unqualified call whose
+  first argument is a name or member expression), never by what the database is called, so an alias such as `db` is
+  read. Call a file-local wrapper with its event as a literal: one called with a variable event has the same shape and
+  is reported as unresolved.
 
 ## Links
 
