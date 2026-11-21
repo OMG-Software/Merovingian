@@ -114,7 +114,14 @@ auto AccountPresenceTracker::account_for(std::string_view user, std::int64_t now
 auto AccountPresenceTracker::note_sync(std::string_view user, std::string_view device, bool online, std::int64_t now_ms)
     -> bool
 {
-    auto const entry = account_for(user, now_ms);
+    // A device asking for unavailable holds nothing, so an account the table does not hold takes no place for it and
+    // never evicts another account's hold to make one.
+    auto const tracked = m_accounts.find(user);
+    if (tracked == m_accounts.end() && !online)
+    {
+        return false;
+    }
+    auto const entry = tracked != m_accounts.end() ? tracked : account_for(user, now_ms);
     if (entry == m_accounts.end())
     {
         return online;

@@ -310,3 +310,47 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
         }
     }
 }
+
+SCENARIO("A device asking for unavailable takes no place in the tracker",
+         "[unit][presence][account_presence_tracker][bounds]")
+{
+    GIVEN("an account the tracker does not hold")
+    {
+        auto tracker = AccountPresenceTracker{};
+
+        WHEN("its device syncs asking for unavailable")
+        {
+            auto const any_online = tracker.note_sync(bob, phone, false, start_ms);
+
+            THEN("no device asks for online and the account is not held")
+            {
+                REQUIRE_FALSE(any_online);
+                REQUIRE(tracker.account_count() == 0U);
+            }
+        }
+    }
+
+    GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
+    {
+        auto tracker = AccountPresenceTracker{};
+        std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
+        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
+        {
+            std::ignore =
+                tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
+        }
+
+        WHEN("an account with no entry syncs asking for unavailable")
+        {
+            auto const any_online = tracker.note_sync(alice, phone, false, start_ms + 2);
+
+            THEN("nothing is evicted: the account whose device goes stale soonest keeps its hold")
+            {
+                REQUIRE_FALSE(any_online);
+                REQUIRE(tracker.accounts_examined() == 0U);
+                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.note_sync("@user0:example.org", phone, false, start_ms + 3));
+            }
+        }
+    }
+}

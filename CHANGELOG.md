@@ -78,7 +78,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A sliding sync `pos` is bound to the user and device it was issued to; any other is `M_UNKNOWN_POS`, so one user can
   no longer continue another's connection (ADR-0866).
 * An account's presence changes at most once every 5 s (a later sync's change is dropped, `PUT /presence` is 429), so a
-  flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0872).
+  flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0871, ADR-0872).
 
 ## Bug fixes
 

@@ -47,7 +47,14 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
   window. Only when every account has an open window does a sync of an account the table does not hold have its device
   ignored and its change refused (ADR-0872), at most until the soonest window ends.
 * The asks are in memory only: after a restart each device's next sync puts its ask back.
-* The clock is the steady clock (`presence_limit_clock_ms`), which never goes back.
+* The clock is the steady clock (`presence_limit_clock_ms`), which never goes back. The idle sweep measures activity on
+  the wall clock (`observed_at_ms`), so after a wall-clock step the hold and the sweep disagree by the step until the
+  device syncs again: after a backward step a background device's `unavailable` can win while the sweep still counts the
+  user active, and after a forward step the sweep can set the account unavailable while a hold stands. Accepted: either
+  is one change, limited by ADR-0872, never a loop. Judging the hold on the wall clock instead would let one clock step
+  lift or extend every hold at once, and the `static_assert` keeps only the two durations equal.
+* An account the table does not hold takes no place for a device asking for `unavailable`, so such a sync never evicts
+  another account's hold.
 
 ### Positive Consequences
 
