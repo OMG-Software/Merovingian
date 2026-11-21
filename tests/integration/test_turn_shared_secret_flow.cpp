@@ -453,7 +453,8 @@ SCENARIO("The turn log files configured static credentials under its own module 
                 REQUIRE(response.status == 200U);
                 auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
                 REQUIRE(line.has_value());
-                CHECK(line.value().find("credential=static") != std::string::npos);
+                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
+                CHECK(field_value(line.value(), "credential") == "static");
                 CHECK(text.find("static-turn-user") == std::string::npos);
                 CHECK(text.find("static-turn-password") == std::string::npos);
             }
@@ -485,7 +486,7 @@ SCENARIO("The turn log says at debug level that no TURN server is configured", "
                 REQUIRE(response.body == "{}");
                 auto const line = module_line(text, "DEBUG", "turn", "turn.not_configured");
                 REQUIRE(line.has_value());
-                CHECK(line.value().find("@alice:example.org") != std::string::npos);
+                CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
             }
         }
     }

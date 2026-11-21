@@ -110,9 +110,12 @@ name and fails when either example lists a different set, or when a call names i
 literal or a string constant in the same file (one the file gives no other value). The one exception is a string parameter that forwards its caller's module
 (`module`, `mod`, `logger`, declared as a parameter in that file or copied from one there), and `__func__`, which the legacy macros pass (see below): the scan skips them, and a
 function name is not listed in the examples. A level method (`info`, `warning`, ...) is read only on
-`SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872). This is a non-exhaustive list of common module names
-used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`
-(`rate_limit` is used only with `log_diagnostic_audit`):
+`SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872).
+
+The table below describes the common modules, the first argument to `observability::log_diagnostic` and
+`log_diagnostic_audit` in `src/` (`rate_limit` is used only with `log_diagnostic_audit`). It is not complete and no test
+checks it: the complete list is the one in the example configurations, which the tooling test keeps in step with the
+sources.
 
 | Module | What it logs |
 |--------|--------------|
