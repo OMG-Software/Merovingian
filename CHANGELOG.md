@@ -50,6 +50,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   which `/versions` lists (ADR-0865).
 * The account_data extension follows its `lists` and `rooms` scope, whatever the user's membership; receipts send a
   room's initial receipts on entering scope and those on a new timeline (MSC4548, MSC4551, ADR-0865).
+* `GET /voip/turnServer` logs under its own `turn` module, set with `log_modules.turn`: credentials issued (info),
+  unavailable (error) and no TURN configured (debug), with the user ID and never a credential (ADR-0871).
+* Tests set a log module's level through one shared helper, `tests/support/ModuleLogLevel.hpp`, instead of a copy per
+  file; the security coding rules state the TURN logging rule and why the username is withheld.
 
 ## Security Fixes
 
@@ -177,6 +181,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The Fedora 44 and 45 RPMs build again: GCC 16 refused `std::ranges::find` with a bare string literal under C++26,
   and `reject-unsafe.sh` now rejects that form in code and tests (ADR-0870).
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
+* The example configurations list every module a structured logger call names (twelve were missing, `token` is
+  gone), and a tooling test fails when that list and the modules the sources name differ (ADR-0872).
+* The TURN log calls mark GCC's cleanup of their braced field lists excluded from coverage, a compiler path no test
+  can reach; the testing standards say when such a marker is allowed (ADR-0874).
 
 ## Release notes
 

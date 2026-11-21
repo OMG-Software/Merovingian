@@ -259,6 +259,16 @@ namespace
         observability::log_diagnostic("client_server", event, fields, severity);
     }
 
+    // `GET /voip/turnServer` logs under its own module, so `log_modules.turn` sets its level apart from every other
+    // client-server line (ADR-0871). No field may carry credential text: never the username, the password or the
+    // shared secret. Today's fields are `user_id` on every line, `credential`, `ttl_seconds` and `uri_count` on the
+    // issued line, and a fixed `reason` on the unavailable one.
+    auto log_turn_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> const& fields,
+                             observability::LogEventSeverity severity) -> void
+    {
+        observability::log_diagnostic("turn", event, fields, severity);
+    }
+
     [[nodiscard]] auto starts_with(std::string_view v, std::string_view p) noexcept -> bool
     {
         return v.size() >= p.size() && v.substr(0U, p.size()) == p;
@@ -21492,6 +21502,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& turn = rt.homeserver.config.server().turn;
         if (turn.server.empty() && turn.uris.empty())
         {
+            // The coverage markers below drop only GCC's cleanup of the braced field list, which runs when building a
+            // field throws and so no test reaches (ADR-0874).
+            log_turn_diagnostic("turn.not_configured", // GCOVR_EXCL_BR_LINE
+                                {
+                                    {"user_id", *user, false}
+            },
+                                observability::LogEventSeverity::debug);
             return dispatch_resp(req, rt, 200U, "{}");
         }
         auto username = turn.username;
@@ -21511,11 +21528,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
             if (!credentials.has_value())
             {
-                log_diagnostic("turn.credentials_unavailable",
-                               {
-                                   {"reason", "shared secret file unreadable or empty", false}
+                // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+                log_turn_diagnostic( // GCOVR_EXCL_BR_LINE
+                    "turn.credentials_unavailable",
+                    {
+                        // GCOVR_EXCL_START
+                        {"user_id", *user,                                    false},
+                        // GCOVR_EXCL_STOP
+                        {"reason",  "shared secret file unreadable or empty", false}
                 },
-                               observability::LogEventSeverity::error);
+                    observability::LogEventSeverity::error);
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "TURN credentials are unavailable");
             }
             username = std::move(credentials->username);
@@ -21535,12 +21557,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uris.push_back(json_str(uri));
             }
         }
+        auto const uri_count = uris.size();
         auto const body = json_serialize(json_obj({
             json_member("username", json_str(username)),
             json_member("password", json_str(password)),
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
+        // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+        log_turn_diagnostic("turn.credentials_issued", // GCOVR_EXCL_BR_LINE
+                            {
+                                // GCOVR_EXCL_START
+                                {"user_id",     *user,                                                        false},
+                                // GCOVR_EXCL_STOP
+                                {"credential",  turn.shared_secret_file.empty() ? "static" : "shared_secret", false},
+                                {"ttl_seconds", std::to_string(turn.ttl_seconds),                             false},
+                                {"uri_count",   std::to_string(uri_count),                                    false},
+        },
+                            observability::LogEventSeverity::info);
         return dispatch_resp(req, rt, 200U, body);
     }
 

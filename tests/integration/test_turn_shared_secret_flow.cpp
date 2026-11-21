@@ -4,9 +4,11 @@
 // TURN shared-secret credentials (the coturn REST API, `use-auth-secret`): HMAC-SHA1, the credential format,
 // the config rules and GET /voip/turnServer. A choice of this server (ADR-0480), so a unit test.
 
+#include "../support/ConsoleLogCapture.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/ModuleLogLevel.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -21,20 +23,27 @@
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/DispatchResult.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/TurnCredentials.hpp"
+#include "merovingian/observability/LogLevel.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -119,6 +128,69 @@ private:
     auto const* token = string_member(body, "access_token");
     REQUIRE(token != nullptr);
     return *token;
+}
+
+// The first captured line at `level` (the logger's name for it, such as "INFO"), filed under `module`, that names
+// `event`; empty when there is none. A string rather than an optional, so the scenarios read it after
+// `REQUIRE_FALSE(line.empty())` with no access clang-tidy's optional-access check cannot see guarded.
+[[nodiscard]] auto module_line(std::string const& text, std::string_view level, std::string_view module,
+                               std::string_view event) -> std::string
+{
+    auto const level_tag = "<" + std::string{level} + ">";
+    auto const module_tag = "  " + std::string{module} + ":  ";
+    auto const event_tag = "event=" + std::string{event};
+    auto lines = std::istringstream{text};
+    for (auto line = std::string{}; std::getline(lines, line);)
+    {
+        if (line.find(level_tag) != std::string::npos && line.find(module_tag) != std::string::npos &&
+            line.find(event_tag) != std::string::npos)
+        {
+            return line;
+        }
+    }
+    return {};
+}
+
+// Whether a ` name=` field opens at `position` of a diagnostic line: a space, then a field name, then `=`.
+[[nodiscard]] auto field_opens_at(std::string const& line, std::size_t position) -> bool
+{
+    auto const is_name_char = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    auto name_end = position + 1U;
+    while (name_end < line.size() && is_name_char(line[name_end]))
+    {
+        ++name_end;
+    }
+    return line[position] == ' ' && name_end > position + 1U && name_end < line.size() && line[name_end] == '=';
+}
+
+// The value of the ` key=value` field in a diagnostic line, up to where the next ` name=` field opens or the line
+// ends, so a value holding spaces (`reason=shared secret file unreadable or empty`) is read whole; nullopt when the
+// line has no such field. Matching the whole value keeps `uri_count=1` from passing for `uri_count=10`.
+[[nodiscard]] auto field_value(std::string const& line, std::string_view key) -> std::optional<std::string>
+{
+    auto const marker = " " + std::string{key} + "=";
+    auto const start = line.find(marker);
+    if (start == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    auto const value_start = start + marker.size();
+    auto value_end = line.find(' ', value_start);
+    while (value_end != std::string::npos && !field_opens_at(line, value_end))
+    {
+        value_end = line.find(' ', value_end + 1U);
+    }
+    return line.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
+}
+
+// Asks for TURN credentials as the user `token` belongs to, through the client-server dispatcher, and returns the
+// HTTP response.
+[[nodiscard]] auto turn_server(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> merovingian::homeserver::LocalHttpResponse
+{
+    return merovingian::homeserver::handle_client_server_request(
+               runtime, {"GET", "/_matrix/client/v3/voip/turnServer", token, {}})
+        .response;
 }
 
 } // namespace
@@ -231,6 +303,192 @@ SCENARIO("GET /voip/turnServer lists every server.turn.uris entry in order with 
                 REQUIRE(second != nullptr);
                 REQUIRE(*first == "turn:turn.example.org:3478?transport=udp");
                 REQUIRE(*second == "turns:turn.example.org:5349");
+            }
+        }
+    }
+}
+
+SCENARIO("The turn log files an issued credential under its own module, naming the user and never a credential",
+         "[homeserver][turn][logging]")
+{
+    GIVEN("a server whose TURN shared secret is in an owner-only file, and alice")
+    {
+        auto const secret = SecretFile{"north-turn-secret\n"};
+        auto started = merovingian::homeserver::start_client_server(secret_turn_config(secret.path(), 3600U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice is issued credentials with the client_server module silenced and the log captured")
+        {
+            auto const quiet_client_server =
+                ModuleLogLevel{"client_server", merovingian::observability::LogLevel::critical};
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("an info line under turn names the event, alice, the kind of credential, the ttl and the one URI")
+            {
+                REQUIRE(response.status == 200U);
+                auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
+                CHECK(field_value(line, "credential") == "shared_secret");
+                CHECK(field_value(line, "ttl_seconds") == "3600");
+                CHECK(field_value(line, "uri_count") == "1");
+            }
+
+            THEN("the log holds neither the username, the password nor the shared secret")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                auto const* username = string_member(body, "username");
+                auto const* password = string_member(body, "password");
+                REQUIRE((username != nullptr && password != nullptr));
+                CHECK(text.find(*username) == std::string::npos);
+                CHECK(text.find(*password) == std::string::npos);
+                CHECK(text.find("north-turn-secret") == std::string::npos);
+            }
+        }
+
+        WHEN("alice is issued credentials with the turn module set to error and the log captured")
+        {
+            auto const quiet_turn = ModuleLogLevel{"turn", merovingian::observability::LogLevel::error};
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("the credentials are issued and the turn module's level keeps the info line out")
+            {
+                REQUIRE(response.status == 200U);
+                CHECK(text.find("turn.credentials_issued") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a server with two server.turn.uris entries and a shared secret file, and alice")
+    {
+        auto const secret = SecretFile{"north-turn-secret\n"};
+        auto config = secret_turn_config(secret.path(), 3600U);
+        config.server().turn.server.clear();
+        config.server().turn.uris = {"turn:turn.example.org:3478?transport=udp", "turns:turn.example.org:5349"};
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice is issued credentials with the log captured")
+        {
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("the info line counts the two URIs the answer lists")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                auto const* uris = object_member_as_array(body, "uris");
+                REQUIRE(uris != nullptr);
+                REQUIRE(uris->size() == 2U);
+                auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "uri_count") == "2");
+            }
+        }
+    }
+}
+
+SCENARIO("The turn log names an unreadable shared secret as an error under its own module",
+         "[homeserver][turn][logging]")
+{
+    GIVEN("a shared secret path that does not exist, and alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(
+            secret_turn_config("/nonexistent/merovingian-turn-secret", 3600U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice asks for credentials with the client_server module silenced and the log captured")
+        {
+            auto const quiet_client_server =
+                ModuleLogLevel{"client_server", merovingian::observability::LogLevel::critical};
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("the answer is 500 and an error line under turn names the event, alice and the fixed reason")
+            {
+                REQUIRE(response.status == 500U);
+                auto const line = module_line(text, "ERROR", "turn", "turn.credentials_unavailable");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
+                // field_value stops only where the next ` name=` field opens, so the reason, which holds spaces, is
+                // read whole.
+                CHECK(field_value(line, "reason") == "shared secret file unreadable or empty");
+            }
+        }
+    }
+}
+
+SCENARIO("The turn log files configured static credentials under its own module and never the password",
+         "[homeserver][turn][logging]")
+{
+    GIVEN("a server with a static TURN username and password, and alice")
+    {
+        auto config = secret_turn_config({}, 86400U);
+        config.server().turn.username = "static-turn-user";
+        config.server().turn.password = "static-turn-password";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice is issued credentials with the log captured")
+        {
+            auto const capture = ConsoleLogCapture{};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("an info line under turn names the static credential, and the log holds neither part of it")
+            {
+                REQUIRE(response.status == 200U);
+                auto const line = module_line(text, "INFO", "turn", "turn.credentials_issued");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
+                CHECK(field_value(line, "credential") == "static");
+                CHECK(text.find("static-turn-user") == std::string::npos);
+                CHECK(text.find("static-turn-password") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("The turn log says at debug level that no TURN server is configured", "[homeserver][turn][logging]")
+{
+    GIVEN("a server with no TURN server configured, and alice")
+    {
+        auto config = secret_turn_config({}, 3600U);
+        config.server().turn.server.clear();
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("alice asks for credentials with the turn module at debug and the log captured")
+        {
+            auto const verbose_turn = ModuleLogLevel{"turn", merovingian::observability::LogLevel::debug};
+            auto const capture = ConsoleLogCapture{merovingian::observability::LogLevel::debug};
+            auto const response = turn_server(runtime, alice);
+            auto const text = capture.text();
+
+            THEN("the answer is the empty object and a debug line under turn names the event and alice")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == "{}");
+                auto const line = module_line(text, "DEBUG", "turn", "turn.not_configured");
+                REQUIRE_FALSE(line.empty());
+                CHECK(field_value(line, "user_id") == "@alice:example.org");
             }
         }
     }

@@ -655,6 +655,17 @@ The process entry point, not the `delayed_events` module, writes one start-up wa
 `delayed_events.rows_skipped_at_load:` when the loader skipped rows, with the count only: the loader skips a row it
 cannot read and never repairs it (ADR-0824).
 
+## TURN credential diagnostics (ADR-0871)
+
+`GET /_matrix/client/v3/voip/turnServer` logs under the `turn` module, never `client_server`, each line with
+`user_id`: `turn.credentials_issued` (info, with `credential` (`static` or `shared_secret`), `ttl_seconds` and
+`uri_count`), `turn.credentials_unavailable` (error, with `reason`: the shared secret file is unreadable or empty, and
+the request is answered 500) and `turn.not_configured` (debug: no TURN URI is configured and the answer is `{}`). The
+username, the password and the shared secret are never logged. The password is the secret; the username is withheld
+because static credentials are one configured pair shared by every user, and so that no line ever holds credential
+text. With a shared secret the username can be rebuilt from `user_id`, `ttl_seconds` and the line's timestamp, which is
+accepted: without the password it grants nothing (ADR-0871).
+
 ## Registration token file diagnostics
 
 When `security.registration.token_file` is set but yields no token hash, every `POST /register` that needs the token
