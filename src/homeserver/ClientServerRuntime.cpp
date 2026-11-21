@@ -7148,10 +7148,12 @@ namespace
                 since_token.has_value() && only_own_presence_since(store, user, since_sync_stream_id);
             if (!has_timeline_advance && (!has_sync_advance || only_own_presence))
             {
+                // Only the caller's own presence row moves the cursor; otherwise it stays at `since`, never behind it.
+                auto const wait_sync_stream_id = only_own_presence ? store.next_sync_stream_id : since_sync_stream_id;
                 return DispatchResult{
                     DispatchResult::Status::needs_wait,
                     {},
-                    {since_ordering, store.next_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
+                    {since_ordering, wait_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
                                           std::string{user}, std::string{device_id}}
                 };
             }

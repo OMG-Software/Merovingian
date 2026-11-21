@@ -1123,6 +1123,65 @@ SCENARIO("Only the first presence change in a window is kept", "[integration][pr
     }
 }
 
+// ADR-0872: at its cap, with no account expired, the presence tracker refuses a change of an account it does not hold
+// (fails closed), so a flood of accounts cannot lift the limit for itself. The refusal says so and waits for an account
+// to expire, not for a window the account never opened.
+SCENARIO("A presence change is refused while the presence tracker is full", "[integration][presence][rate_limit]")
+{
+    GIVEN("alice shares a room with bob on another server, and the tracker is full of other accounts held online")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        using merovingian::homeserver::AccountPresenceTracker;
+        auto& tracker = runtime.homeserver.presence_tracker;
+        auto const now_ms = merovingian::homeserver::presence_limit_clock_ms(runtime.homeserver);
+        for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
+        {
+            std::ignore = tracker.note_sync("@user" + std::to_string(index) + ":other.example", "D", true, now_ms);
+        }
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto const watermark = store.next_sync_stream_id;
+
+        WHEN("she sets her presence")
+        {
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"online"})");
+
+            THEN("it is 429 naming the full tracker, told to wait for an account to expire, and nothing is kept")
+            {
+                REQUIRE(put.status == 429U);
+                auto const body = parse_object(put.body);
+                auto const* error = string_member(body, "error");
+                REQUIRE(error != nullptr);
+                REQUIRE(*error == "too many accounts are changing presence");
+                auto const* retry_after_ms = int_member(body, "retry_after_ms");
+                REQUIRE(retry_after_ms != nullptr);
+                REQUIRE(*retry_after_ms > AccountPresenceTracker::change_window_ms);
+                REQUIRE(*retry_after_ms <= AccountPresenceTracker::device_fresh_ms);
+                REQUIRE(alice_presence_state(runtime) == "none");
+                REQUIRE(store.next_sync_stream_id == watermark);
+                REQUIRE(queued_presence_edus(runtime).empty());
+            }
+        }
+
+        WHEN("she syncs, which asks for online")
+        {
+            sync_once(runtime, token, "online");
+
+            THEN("the change is dropped: nothing is stored or sent, and the tracker does not grow")
+            {
+                REQUIRE(alice_presence_state(runtime) == "none");
+                REQUIRE(queued_presence_edus(runtime).empty());
+                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+            }
+        }
+    }
+}
+
 // ADR-0873: a /sync never sends the caller their own presence, so a long-poll whose only news is the caller's own
 // presence row would be answered with nothing, and its client would sync again at once. It keeps waiting instead, as
 // sliding sync does for what its response does not send (ADR-0869).
