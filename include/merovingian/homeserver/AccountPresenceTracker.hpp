@@ -50,7 +50,10 @@ public:
     static constexpr auto max_accounts = std::size_t{65'536U};
 
     // Notes that `device` of `user` synced asking for `online` (true) or `unavailable` (false) at `now_ms`. True when a
-    // device of the account, this one included, asked for online within `device_fresh_ms`.
+    // device the table holds for the account, this one included, asked for online within `device_fresh_ms`. Records
+    // nothing and answers false for an account the table does not hold when the ask is `unavailable` (it needs no
+    // place) or when the table has no room for it (fails closed; room is made only by a prune or an eviction, and
+    // `is_full_for` tells the caller a change is refused).
     [[nodiscard]] auto note_sync(std::string_view user, std::string_view device, bool online, std::int64_t now_ms)
         -> bool;
 
@@ -66,7 +69,8 @@ public:
     // open window), not because of the account's own window.
     [[nodiscard]] auto is_full_for(std::string_view user, std::int64_t now_ms) const -> bool;
 
-    // Starts the window of `user` at `now_ms`: a change was just kept.
+    // Starts the window of `user` at `now_ms`: a change was just kept. Does nothing for an account the table has no
+    // room for, which `change_blocked_for_ms` refused a change of first.
     auto note_change(std::string_view user, std::int64_t now_ms) -> void;
 
     // Removes every account whose online devices are all stale and whose window ended by `now_ms`.

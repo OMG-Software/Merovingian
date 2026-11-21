@@ -124,7 +124,8 @@ auto AccountPresenceTracker::note_sync(std::string_view user, std::string_view d
     auto const entry = tracked != m_accounts.end() ? tracked : account_for(user, now_ms);
     if (entry == m_accounts.end())
     {
-        return online;
+        // No room (fails closed): nothing is recorded, so no device the table holds asks for anything.
+        return false;
     }
     auto& devices = entry->second.devices;
     // A stale device speaks for nothing; dropping it here keeps an account that keeps syncing from holding them.

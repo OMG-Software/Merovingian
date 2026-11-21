@@ -220,9 +220,9 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
         {
             auto const any_online = tracker.note_sync(alice, desktop, true, start_ms + 1);
 
-            THEN("its own ask is answered, as without the table")
+            THEN("nothing is recorded, so no device the table holds asks for online, and the table does not grow")
             {
-                REQUIRE(any_online);
+                REQUIRE_FALSE(any_online);
                 REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
             }
         }
