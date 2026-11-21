@@ -57,7 +57,10 @@ to it, for a list that exists to be documented.
   given no other value there: the scan does not know scopes, so a name two functions each define with a different value
   is reported as ambiguous. The database audit overload's module argument follows the same rule. A parameter
   that only forwards a caller's module is named `logger`, `mod` or `module`, which the scan skips, but only when the
-  file defines no string constant of that name: a constant always resolves first, so the skip goes by role. So is `__func__`:
+  file defines no string constant of that name (a constant always resolves first) and declares the name as a string
+  parameter or gives it a value only by copying one (`auto const mod = std::string{logger};`). So the skip goes by
+  role: a local holding a computed module (`module = module_for(kind)`), or a name the file never declares, is
+  reported. `__func__` is skipped on its name alone:
   the legacy `LOG_*` macros log under the calling function's name, which is no module and is not listed in the
   examples. These four identifiers are the only first arguments the scan skips; say so wherever the test is described.
 * Call a level method (`info`, `warning`, ...) directly only on `SingleLog::instance()` or on a reference named `log`

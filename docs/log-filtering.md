@@ -107,8 +107,8 @@ without a registry. The example configurations (`config/merovingian.conf.example
 legacy `LOG_*` macros log under, see below); keep both in step when a module is
 added or removed. `tests/tooling/test_example_config.py` scans `src/` and `include/` for the modules the logger calls
 name and fails when either example lists a different set, or when a call names its module through anything but a
-literal or a string constant in the same file (one the file gives no other value). The one exception is a parameter that forwards its caller's module
-(`module`, `mod`, `logger`), and `__func__`, which the legacy macros pass (see below): the scan skips them, and a
+literal or a string constant in the same file (one the file gives no other value). The one exception is a string parameter that forwards its caller's module
+(`module`, `mod`, `logger`, declared as a parameter in that file or copied from one there), and `__func__`, which the legacy macros pass (see below): the scan skips them, and a
 function name is not listed in the examples. A level method (`info`, `warning`, ...) is read only on
 `SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872). This is a non-exhaustive list of common module names
 used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`

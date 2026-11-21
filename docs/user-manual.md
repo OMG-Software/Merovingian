@@ -802,7 +802,7 @@ Application-service connect timeout must not exceed its total timeout. Byte size
 VoIP clients request TURN relay credentials through
 `GET /_matrix/client/v3/voip/turnServer`. When no TURN server is configured the
 endpoint returns an empty JSON object so clients gracefully disable relay
-support. Each request is logged under the `turn` module (`log_modules.turn`): an
+support. Each answer the handler writes is logged under the `turn` module (`log_modules.turn`): an
 issued credential at info, an unreadable shared secret file at error, and a
 request answered `{}` at debug, naming the user and never a credential. The debug
 line needs `--debug` as well as `log_modules.turn=debug`. A request refused for a

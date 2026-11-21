@@ -294,8 +294,37 @@ MODULE_CONSTANT = re.compile(
     r'\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:std::string_view\s*\{\s*|std::string\s*\{\s*)?"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}?\s*;'
 )
 MODULE_CONSTANT_INIT = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}\s*;')
-# Identifiers that forward a caller's module rather than name one.
+# Identifiers that may forward a caller's module rather than name one. Only `__func__` is
+# skipped on its name alone; the others only where `forwards_callers_module` finds them to be
+# a string parameter, or a local copied straight from one.
 FORWARDED_MODULE_PARAMETERS = {"__func__", "mod", "logger", "module"}
+# A string parameter of that name: `std::string_view logger,` or `std::string const& module)`.
+STRING_PARAMETER = r"\b(?:std::)?string(?:_view)?\s*(?:const\s*)?&?\s*\b{name}\s*[,)]"
+# Where a name is given a value: `name = ...` or `name{...}`, never a comparison.
+NAME_INITIALISED = r"\b{name}\s*(?:=(?!=)|\{{)"
+# What a local that only copies a name is given, up to its `;`: `logger`, `std::string{logger}`,
+# `std::string(logger)`, or for `mod{logger};` the `logger}` after the brace.
+COPY_OF_NAME = re.compile(r"\s*(?:(?:std::)?string(?:_view)?\s*[{(]\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*[})]?\s*\}?\s*")
+
+
+def forwards_callers_module(name: str, code: str) -> bool:
+    """Whether `name` in this file only carries the module its caller passed.
+
+    True for `__func__`, and for a name the file declares as a string parameter or gives a value
+    only by copying such a parameter (`auto const mod = std::string{logger};`). A name given any
+    other value, or declared nowhere in the file, is not: the scan cannot read what it holds.
+    `code` is the file without comments and with every literal's contents blanked.
+    """
+    if name == "__func__":
+        return True
+    initialised = list(re.finditer(NAME_INITIALISED.format(name=re.escape(name)), code))
+    for found in initialised:
+        statement_end = code.find(";", found.end())
+        copied = COPY_OF_NAME.fullmatch(code, found.end(), statement_end if statement_end >= 0 else len(code))
+        source = copied.group(1) if copied else ""
+        if not source or source == name or not re.search(STRING_PARAMETER.format(name=re.escape(source)), code):
+            return False
+    return bool(initialised) or re.search(STRING_PARAMETER.format(name=re.escape(name)), code) is not None
 EXAMPLE_LOG_MODULE_LINE = re.compile(r"^# log_modules\.([A-Za-z0-9_]+)=", re.MULTILINE)
 # A C++ comment, or a literal a comment marker may appear inside: raw strings first, since
 # their bodies may hold quotes, then ordinary string and character literals.
@@ -371,8 +400,9 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
                 modules.update(constants[identifier])
             elif identifier in constants:
                 unresolved.add(f"{label}: {identifier} (given {sorted(constants[identifier])} in this file)")
-            elif identifier in FORWARDED_MODULE_PARAMETERS:
-                # Only a bare parameter forwards its caller's module.
+            elif identifier in FORWARDED_MODULE_PARAMETERS and forwards_callers_module(identifier, code):
+                # Only a parameter, or a local copied straight from one, forwards its caller's
+                # module; a local such as `module = module_for(kind)` holds a module of its own.
                 continue
             else:
                 unresolved.add(f"{label}: {identifier}")
@@ -458,6 +488,7 @@ class ExampleLogModuleListTests(unittest.TestCase):
         # module with a literal, a constant, an unknown identifier and a forwarding parameter, beside a
         # wrapper called with a literal event and a qualified `observability::` call.
         source = (
+            "auto audit_line(std::string_view logger, std::string_view event) -> void;\n"
             'constexpr auto audit_module = std::string_view{"audited"};\n'
             'log_diagnostic_audit(runtime.database, audit_module, "x", fields);\n'
             'auto& db = rt.database;\n'
@@ -595,6 +626,40 @@ class ExampleLogModuleListTests(unittest.TestCase):
         # not taken for `rooms`.
         self.assertEqual(modules, {"rooms"})
         self.assertEqual(unresolved, {"f.cpp: hs::kModule"})
+
+    def test_a_forwarding_name_given_a_computed_value_is_reported(self) -> None:
+        # GIVEN a file whose `module` is a local holding a computed module, not a parameter.
+        source = (
+            "std::string_view const module = module_for(kind);\n"
+            'observability::log_diagnostic(module, "event", fields, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN it is reported: the scan cannot read what the local holds.
+        self.assertEqual(modules, set())
+        self.assertEqual(unresolved, {"f.cpp: module"})
+
+    def test_a_local_copied_from_a_forwarding_parameter_is_skipped(self) -> None:
+        # GIVEN a function that copies its `logger` parameter into `mod` and logs through it,
+        # and a file that names `logger` without ever declaring it.
+        forwarding = (
+            "auto log_line(std::string_view logger, std::string_view event) -> void\n"
+            "{\n"
+            "    auto const mod = std::string{logger};\n"
+            "    SingleLog::instance().debug(mod, std::string{event});\n"
+            "}\n"
+        )
+        undeclared = 'observability::log_diagnostic(logger, "event", fields, severity);\n'
+
+        # WHEN both are scanned.
+        forwarded, forwarded_unresolved = scan_log_modules(forwarding, "a.hpp")
+        stray, stray_unresolved = scan_log_modules(undeclared, "b.cpp")
+
+        # THEN the copy forwards its caller's module and names none; the undeclared name is reported.
+        self.assertEqual((forwarded, forwarded_unresolved), (set(), set()))
+        self.assertEqual((stray, stray_unresolved), (set(), {"b.cpp: logger"}))
 
     def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
         # GIVEN a file that defines a module constant called `module`, and another file whose
