@@ -53,8 +53,9 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
   user active, and after a forward step the sweep can set the account unavailable while a hold stands. Accepted: either
   is one change, limited by ADR-0872, never a loop. Judging the hold on the wall clock instead would let one clock step
   lift or extend every hold at once, and the `static_assert` keeps only the two durations equal.
-* An account the table does not hold takes no place for a device asking for `unavailable`, so such a sync never evicts
-  another account's hold.
+* An account the table does not hold takes no place for a device asking for `unavailable`: the ask alone never evicts
+  another account's hold. If that sync changes the stored state, the change still opens a window (ADR-0872) and may
+  evict a closed account to make room, as any kept change does.
 
 ### Positive Consequences
 
