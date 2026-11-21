@@ -49,6 +49,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/PresenceWriteStatus.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -3104,7 +3105,8 @@ SCENARIO("GET /sync returns the full top-level v1.19 sync envelope", "[conforman
         REQUIRE(merovingian::homeserver::record_device_list_change(started.runtime,
                                                                    {0U, user_id, "@carol:example.org", "left"}));
         REQUIRE(merovingian::homeserver::set_presence(started.runtime,
-                                                      {0U, "@dave:example.org", "online", "Coding!", 1000U, true}));
+                                                      {0U, "@dave:example.org", "online", "Coding!", 1000U, true})
+                    .status == merovingian::homeserver::PresenceWriteStatus::stored);
         REQUIRE(
             merovingian::database::store_one_time_key(started.runtime.homeserver.database.persistent_store,
                                                       {user_id, "DEVICE1", "signed_curve25519:AAA", R"({"key":"x"})"}));

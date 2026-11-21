@@ -744,3 +744,6 @@
 * [0868 - The typing and receipts extensions keep their event wrapper](0868-the-typing-and-receipts-extensions-keep-their-event-wrapper.md)
 * [0869 - A sliding sync long poll wakes only for what its response sends, and a room is sent again when its summary changes](0869-a-sliding-sync-long-poll-wakes-only-for-what-its-response-sends.md)
 * [0870 - A ranges algorithm takes a typed value, never a bare string literal](0870-a-ranges-algorithm-takes-a-typed-value-never-a-bare-string-literal.md)
+* [0871 - A device syncing online holds its account online against another device syncing unavailable](0871-a-device-syncing-online-holds-its-account-online.md)
+* [0872 - The first presence change in a five-second window is kept, and every other one in it is dropped](0872-the-first-presence-change-in-a-five-second-window-is-kept.md)
+* [0873 - A classic /sync whose only news is the caller's own presence keeps waiting](0873-a-classic-sync-whose-only-news-is-its-own-presence-keeps-waiting.md)

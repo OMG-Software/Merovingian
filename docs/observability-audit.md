@@ -130,8 +130,19 @@ is full.
   covered by `server.sso.redirect_url_allowlist` — see `docs/threat-model.md`
   ("Open redirect and login-token exfiltration via SSO redirectUrl").
 - `presence.set` (debug, logger `client_server`) records a `PUT /presence/{userId}/status`
-  (fields `actor`, `presence`; never the status message). `presence.sync.set` (debug, logger
-  `presence`) records a `/sync` that changed the caller's state (fields `actor`, `presence`).
+  (fields `actor`, `presence`; never the status message). `presence.set.limited` (debug, logger
+  `client_server`) records one refused with 429 because the account's presence changed less than
+  5 s before (`cause` `window`) or the presence tracker had no room for the account (`cause`
+  `tracker_full`) (fields `actor`, `presence`, `cause`, `retry_after_ms`; ADR-0872). `presence.sync.set` (debug,
+  logger `client_server`) records a `/sync` that changed the caller's state (fields `actor`,
+  `presence`). `presence.change.limited` (debug, logger `presence`) records a `/sync` change dropped
+  for either reason (fields `actor`, `device_id`, `presence`, `cause`, `retry_after_ms`), and a `/sync` asking for
+  `unavailable` while another device of the account holds it online and the account is not already `unavailable`
+  (`cause` `device_online`, no `retry_after_ms`; ADR-0871).
+  `presence.tracker.full` (warning, logger `presence`) fires when the presence tracker refused a change because it
+  had no room (`cause` `tracker_full` above) or evicted an account to make room, at most once a minute, with the
+  number of each since the last warning (fields `refused`, `evicted`, `accounts`, `limit`; never a user ID; ADR-0871,
+  ADR-0872).
   `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
   has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
   is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger

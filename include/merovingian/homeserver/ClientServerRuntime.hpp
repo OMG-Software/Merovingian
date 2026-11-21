@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LoginTokenStore.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PresenceWrite.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
 #include "merovingian/homeserver/SafetyReportIndex.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
@@ -139,7 +140,12 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
                                               std::vector<database::PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
     -> bool;
-[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool;
+// Stores a presence the user set (`PUT /presence`), wakes syncs and tells the servers that share a room with them.
+// `limited` when the account's presence changed less than `AccountPresenceTracker::change_window_ms` ago, or, with
+// `PresenceWrite::tracker_full`, when the tracker has no room for the account (ADR-0872): nothing is stored.
+// Takes runtime.mutex.
+[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state)
+    -> PresenceWrite;
 // One pass of the "presence-idle" job (CS API "Presence", "Idle timeout"; ADR-0492): every local user whose
 // presence is `online` and whose last active time is over `presence_idle_timeout_ms` is set to `unavailable`,
 // told to the servers that share a room with them, and long-polling syncs are woken. Takes runtime.mutex for

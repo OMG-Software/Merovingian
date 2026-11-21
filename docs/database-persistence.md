@@ -646,7 +646,9 @@ value. Test fixtures that do not exercise persistence select it through
   (256) rows with a thread root as `thread_id` in one room; a new one is committed with the
   delete of that user's own oldest (ADR-0737). The device-list change, stored filter and presence tables are read through
   standing indexes by observer, user and user (`for_each_observer_device_list_change`, `for_each_user_filter`,
-  `find_presence_state`; ADR-0659). `store_receipts` commits an inbound `m.receipt`
+  `find_presence_state`; ADR-0659). A presence row is changed in place only through `find_mutable_presence_state`, which
+  answers from the same position lookup, and the change keeps the row's `user_id`, the key of `presence_user_index`.
+  `store_receipts` commits an inbound `m.receipt`
   EDU's accepted rows in one transaction and, past `max_inbound_receipt_entries`, deletes the oldest
   remote rows in it, taken from the ordered `receipt_remote_by_stream` index (ADR-0652).
 - The v1 schema's media tables carry the upload names and pending uploads.

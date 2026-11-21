@@ -323,6 +323,7 @@ shell = find_program('sh')
       'unit/test_resolved_state_memo.cpp',
       'unit/test_room_power.cpp',
       'unit/test_stored_room_version.cpp',
+      'unit/test_account_presence_tracker.cpp',
       'unit/test_appservice_client.cpp',
       'unit/test_appservice_ephemeral.cpp',
       'unit/test_periodic_job.cpp',

@@ -53,6 +53,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/DispatchResult.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/PresenceWriteStatus.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/sync/StreamToken.hpp"
@@ -256,8 +257,8 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
         REQUIRE(merovingian::homeserver::push_to_device_message(
             rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"session":"abc"})"}));
         REQUIRE(merovingian::homeserver::record_device_list_change(rt, {0U, alice_id, "@bob:example.org", "changed"}));
-        REQUIRE(
-            merovingian::homeserver::set_presence(rt, {0U, "@charlie:example.org", "online", "Coding!", 1000, true}));
+        REQUIRE(merovingian::homeserver::set_presence(rt, {0U, "@charlie:example.org", "online", "Coding!", 1000, true})
+                    .status == merovingian::homeserver::PresenceWriteStatus::stored);
         REQUIRE(merovingian::database::store_one_time_key(
             store, {alice_id, device_id, "signed_curve25519:AAA", R"({"key":"x"})"}));
         REQUIRE(merovingian::database::store_one_time_key(
