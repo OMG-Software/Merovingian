@@ -310,21 +310,33 @@ COPY_OF_NAME = re.compile(r"\s*(?:(?:std::)?string(?:_view)?\s*[{(]\s*)?([A-Za-z
 def forwards_callers_module(name: str, code: str) -> bool:
     """Whether `name` in this file only carries the module its caller passed.
 
-    True for `__func__`, and for a name the file declares as a string parameter or gives a value
-    only by copying such a parameter (`auto const mod = std::string{logger};`). A name given any
-    other value, or declared nowhere in the file, is not: the scan cannot read what it holds.
+    True for `__func__`, and for a name the file declares as a string parameter it never gives a
+    value, or gives a value only by copying such a parameter (`auto const mod = std::string{logger};`).
+    A name given any other value, a copy of a parameter the file reassigns (`logger = module_for(kind);`),
+    or a name declared nowhere in the file is not: the scan cannot read what it holds.
     `code` is the file without comments and with every literal's contents blanked.
     """
     if name == "__func__":
         return True
+
+    def unchanged_string_parameter(parameter: str) -> bool:
+        # A parameter declaration ends in `,` or `)`, so it never matches NAME_INITIALISED: any
+        # match is a statement giving the parameter another value.
+        escaped = re.escape(parameter)
+        return re.search(STRING_PARAMETER.format(name=escaped), code) is not None and not re.search(
+            NAME_INITIALISED.format(name=escaped), code
+        )
+
     initialised = list(re.finditer(NAME_INITIALISED.format(name=re.escape(name)), code))
     for found in initialised:
         statement_end = code.find(";", found.end())
         copied = COPY_OF_NAME.fullmatch(code, found.end(), statement_end if statement_end >= 0 else len(code))
         source = copied.group(1) if copied else ""
-        if not source or source == name or not re.search(STRING_PARAMETER.format(name=re.escape(source)), code):
+        if not source or source == name or not unchanged_string_parameter(source):
             return False
-    return bool(initialised) or re.search(STRING_PARAMETER.format(name=re.escape(name)), code) is not None
+    return bool(initialised) or unchanged_string_parameter(name)
+
+
 EXAMPLE_LOG_MODULE_LINE = re.compile(r"^# log_modules\.([A-Za-z0-9_]+)=", re.MULTILINE)
 # A C++ comment, or a literal a comment marker may appear inside: raw strings first, since
 # their bodies may hold quotes, then ordinary string and character literals.
@@ -686,14 +698,26 @@ class ExampleLogModuleListTests(unittest.TestCase):
             "}\n"
         )
         undeclared = 'observability::log_diagnostic(logger, "event", fields, severity);\n'
+        # AND a function that reassigns its `logger` parameter before copying it.
+        reassigned = (
+            "auto log_line(std::string_view logger, std::string_view event) -> void\n"
+            "{\n"
+            "    logger = module_for(kind);\n"
+            "    auto const mod = std::string{logger};\n"
+            "    SingleLog::instance().debug(mod, std::string{event});\n"
+            "}\n"
+        )
 
-        # WHEN both are scanned.
+        # WHEN each is scanned.
         forwarded, forwarded_unresolved = scan_log_modules(forwarding, "a.hpp")
         stray, stray_unresolved = scan_log_modules(undeclared, "b.cpp")
+        computed, computed_unresolved = scan_log_modules(reassigned, "c.hpp")
 
-        # THEN the copy forwards its caller's module and names none; the undeclared name is reported.
+        # THEN the copy forwards its caller's module and names none; the undeclared name, and the
+        # copy of a parameter the function reassigns, are reported.
         self.assertEqual((forwarded, forwarded_unresolved), (set(), set()))
         self.assertEqual((stray, stray_unresolved), (set(), {"b.cpp: logger"}))
+        self.assertEqual((computed, computed_unresolved), (set(), {"c.hpp: mod"}))
 
     def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
         # GIVEN a file that defines a module constant called `module`, and another file whose
