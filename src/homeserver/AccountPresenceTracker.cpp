@@ -34,6 +34,11 @@ namespace
 
 } // namespace
 
+AccountPresenceTracker::AccountPresenceTracker(std::size_t account_cap) noexcept
+    : m_account_cap{std::max(account_cap, std::size_t{1U})}
+{
+}
+
 auto AccountPresenceTracker::refile(Accounts::iterator entry, std::int64_t now_ms) -> void
 {
     auto& account = entry->second;
@@ -78,7 +83,7 @@ auto AccountPresenceTracker::close_ended_windows(std::int64_t now_ms) -> void
 
 auto AccountPresenceTracker::has_room(std::int64_t now_ms) const noexcept -> bool
 {
-    return m_accounts.size() < max_accounts || !m_closed.empty() ||
+    return m_accounts.size() < m_account_cap || !m_closed.empty() ||
            (!m_open_windows.empty() && m_open_windows.begin()->first <= now_ms);
 }
 
@@ -88,11 +93,11 @@ auto AccountPresenceTracker::account_for(std::string_view user, std::int64_t now
     {
         return found;
     }
-    if (m_accounts.size() >= max_accounts)
+    if (m_accounts.size() >= m_account_cap)
     {
         prune(now_ms);
     }
-    if (m_accounts.size() >= max_accounts)
+    if (m_accounts.size() >= m_account_cap)
     {
         if (m_closed.empty())
         {
@@ -227,6 +232,11 @@ auto AccountPresenceTracker::account_count() const noexcept -> std::size_t
 auto AccountPresenceTracker::accounts_examined() const noexcept -> std::uint64_t
 {
     return m_accounts_examined;
+}
+
+auto AccountPresenceTracker::account_cap() const noexcept -> std::size_t
+{
+    return m_account_cap;
 }
 
 } // namespace merovingian::homeserver

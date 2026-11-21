@@ -25,6 +25,9 @@ constexpr auto alice = std::string_view{"@alice:example.org"};
 constexpr auto bob = std::string_view{"@bob:example.org"};
 constexpr auto phone = std::string_view{"PHONE"};
 constexpr auto desktop = std::string_view{"DESKTOP"};
+// The account cap of the trackers the bound scenarios fill: small, so a full table costs a handful of accounts. The cap
+// is the same code at any size.
+constexpr auto small_cap = std::size_t{8U};
 
 } // namespace
 
@@ -197,12 +200,12 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
 
     GIVEN("a table holding as many accounts as the cap, each inside its window")
     {
-        auto tracker = AccountPresenceTracker{};
-        for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
+        auto tracker = AccountPresenceTracker{small_cap};
+        for (auto index = std::size_t{0U}; index < small_cap; ++index)
         {
             tracker.note_change("@user" + std::to_string(index) + ":example.org", start_ms);
         }
-        REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+        REQUIRE(tracker.account_count() == small_cap);
 
         WHEN("an account with no entry asks to change its presence")
         {
@@ -212,7 +215,7 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             THEN("it is refused and the table does not grow: a flood of accounts cannot lift the limit")
             {
                 REQUIRE(blocked.has_value());
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
             }
         }
 
@@ -223,7 +226,7 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             THEN("nothing is recorded, so no device the table holds asks for online, and the table does not grow")
             {
                 REQUIRE_FALSE(any_online);
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
             }
         }
 
@@ -240,9 +243,9 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
 
     GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
     {
-        auto tracker = AccountPresenceTracker{};
+        auto tracker = AccountPresenceTracker{small_cap};
         std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
-        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
+        for (auto index = std::size_t{1U}; index < small_cap; ++index)
         {
             std::ignore =
                 tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
@@ -256,7 +259,7 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
             THEN("it is allowed, and the account whose device goes stale soonest gives up its place")
             {
                 REQUIRE_FALSE(blocked.has_value());
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
                 REQUIRE(tracker.accounts_examined() == 1U);
                 REQUIRE(tracker.change_blocked_for_ms(alice, start_ms + 3).has_value());
                 REQUIRE_FALSE(tracker.note_sync("@user0:example.org", phone, false, start_ms + 3));
@@ -270,14 +273,14 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
 {
     GIVEN("a full table in which one account's window ended as the others' began")
     {
-        auto tracker = AccountPresenceTracker{};
+        auto tracker = AccountPresenceTracker{small_cap};
         tracker.note_change("@early:example.org", start_ms);
         auto const later_ms = start_ms + AccountPresenceTracker::change_window_ms;
-        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
+        for (auto index = std::size_t{1U}; index < small_cap; ++index)
         {
             tracker.note_change("@user" + std::to_string(index) + ":example.org", later_ms);
         }
-        REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+        REQUIRE(tracker.account_count() == small_cap);
 
         WHEN("an account with no entry asks to change its presence")
         {
@@ -287,7 +290,7 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
             THEN("it is allowed and takes the expired account's place, the one account a prune looked at")
             {
                 REQUIRE_FALSE(blocked.has_value());
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
                 REQUIRE(tracker.accounts_examined() == 1U);
                 REQUIRE(tracker.change_blocked_for_ms(alice, later_ms + 2).has_value());
             }
@@ -305,7 +308,7 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
             THEN("no request looks at the table, since no account has expired")
             {
                 REQUIRE(tracker.accounts_examined() == 1U);
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
             }
         }
     }
@@ -332,9 +335,9 @@ SCENARIO("A device asking for unavailable takes no place in the tracker",
 
     GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
     {
-        auto tracker = AccountPresenceTracker{};
+        auto tracker = AccountPresenceTracker{small_cap};
         std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
-        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
+        for (auto index = std::size_t{1U}; index < small_cap; ++index)
         {
             std::ignore =
                 tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
@@ -348,9 +351,27 @@ SCENARIO("A device asking for unavailable takes no place in the tracker",
             {
                 REQUIRE_FALSE(any_online);
                 REQUIRE(tracker.accounts_examined() == 0U);
-                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.account_count() == small_cap);
                 REQUIRE(tracker.note_sync("@user0:example.org", phone, false, start_ms + 3));
             }
+        }
+    }
+}
+
+SCENARIO("A tracker holds max_accounts accounts unless it is made with another cap",
+         "[unit][presence][account_presence_tracker][bounds]")
+{
+    GIVEN("a tracker made as the server makes it, and two made with a cap")
+    {
+        auto const server = AccountPresenceTracker{};
+        auto const small = AccountPresenceTracker{small_cap};
+        auto const zero = AccountPresenceTracker{0U};
+
+        THEN("the server's holds max_accounts, the small one its cap, and a cap of zero holds one account")
+        {
+            REQUIRE(server.account_cap() == AccountPresenceTracker::max_accounts);
+            REQUIRE(small.account_cap() == small_cap);
+            REQUIRE(zero.account_cap() == 1U);
         }
     }
 }

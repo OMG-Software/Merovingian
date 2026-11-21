@@ -28,15 +28,16 @@ namespace merovingian::homeserver
 // change asked for in the window is dropped (a sync) or refused with 429 (`PUT /presence`). The first one asked for is
 // the one kept, never the last.
 //
-// Bounded: at most `max_accounts` accounts of `max_devices_per_account` devices each. A new device past the device cap
-// replaces the account's least recently seen one. An account with an open window is filed under the window's end; any
-// other under the time its last online device goes stale, and an account moves from the first to the second when its
-// window ends. A prune removes only the accounts whose time has passed, never visiting the table. When the table is
-// full after a prune, the account with no open window whose devices go stale soonest makes room: it loses only its
-// devices' holds, never a window, so the limit holds. Only when every account has an open window is there no room: a
-// newcomer's devices are ignored and its change refused until the soonest window ends (at most `change_window_ms`), so
-// a flood of accounts cannot lift the limit for itself. Every operation does O(log n) work per account it moves or
-// removes. Not thread-safe: `runtime.mutex` serialises every use (`HomeserverRuntime::presence_tracker`).
+// Bounded: at most `max_accounts` accounts (the account cap, which a test may set lower) of `max_devices_per_account`
+// devices each. A new device past the device cap replaces the account's least recently seen one. An account with an
+// open window is filed under the window's end; any other under the time its last online device goes stale, and an
+// account moves from the first to the second when its window ends. A prune removes only the accounts whose time has
+// passed, never visiting the table. When the table is full after a prune, the account with no open window whose devices
+// go stale soonest makes room: it loses only its devices' holds, never a window, so the limit holds. Only when every
+// account has an open window is there no room: a newcomer's devices are ignored and its change refused until the
+// soonest window ends (at most `change_window_ms`), so a flood of accounts cannot lift the limit for itself. Every
+// operation does O(log n) work per account it moves or removes. Not thread-safe: `runtime.mutex` serialises every use
+// (`HomeserverRuntime::presence_tracker`).
 class AccountPresenceTracker final
 {
 public:
@@ -46,8 +47,14 @@ public:
     static constexpr auto device_fresh_ms = std::int64_t{5 * 60 * 1000};
     // Far more devices than one person syncs from at once; each is a device ID and two integers.
     static constexpr auto max_devices_per_account = std::size_t{64U};
-    // Accounts with a device that asked for online within the last five minutes, or a window open.
+    // Accounts with a device that asked for online within the last five minutes, or a window open: the account cap a
+    // tracker has unless it is made with another.
     static constexpr auto max_accounts = std::size_t{65'536U};
+
+    AccountPresenceTracker() = default;
+    // A tracker holding at most `account_cap` accounts (at least one), so a test can fill the table without
+    // `max_accounts` of them. The server's tracker is made with the default.
+    explicit AccountPresenceTracker(std::size_t account_cap) noexcept;
 
     // Notes that `device` of `user` synced asking for `online` (true) or `unavailable` (false) at `now_ms`. True when a
     // device the table holds for the account, this one included, asked for online within `device_fresh_ms`. Records
@@ -81,6 +88,9 @@ public:
 
     // Accounts a prune removed or a full table evicted since the table was made, for tests that prove the cost.
     [[nodiscard]] auto accounts_examined() const noexcept -> std::uint64_t;
+
+    // The most accounts the table holds.
+    [[nodiscard]] auto account_cap() const noexcept -> std::size_t;
 
 private:
     struct Device final
@@ -130,6 +140,7 @@ private:
     // table evicts.
     std::set<FiledKey> m_closed{};
     std::uint64_t m_accounts_examined{0U};
+    std::size_t m_account_cap{max_accounts};
 };
 
 } // namespace merovingian::homeserver
