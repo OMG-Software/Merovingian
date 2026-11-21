@@ -258,25 +258,36 @@ class BsdExampleConfigTests(unittest.TestCase):
 # type's `.warning("text", ...)` is not taken for a module. The lookbehind keeps `log` or
 # `logger` a name of its own: a member reached through another object (`ctx->logger->info`,
 # `self.log.info`) is not the reference the rule names, and is not read.
-QUALIFIED_LOG_CALL = re.compile(
-    r'observability::log_diagnostic(?:_audit)?\s*\(\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_:]*))'
-)
-LEVEL_LOG_CALL = re.compile(
+#
+# Each call form has an opening, which finds every call of that form whatever its arguments,
+# and the full pattern, which reads the module from it. A call whose opening is found and whose
+# arguments the full pattern cannot read (`(kModule)`, `module_of(rt)`, `database_of(rt)`) is
+# reported, never skipped (ADR-0872).
+MODULE_ARGUMENT = r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
+QUALIFIED_LOG_OPENING = re.compile(r'observability::log_diagnostic(?:_audit)?\s*\(')
+QUALIFIED_LOG_CALL = re.compile(QUALIFIED_LOG_OPENING.pattern + r'\s*' + MODULE_ARGUMENT)
+LEVEL_LOG_OPENING = re.compile(
     r'(?:\bSingleLog::instance\(\)|(?<![A-Za-z0-9_:.>])(?:log|logger))\s*(?:\.|->)\s*'
-    r'(?:trace|debug|info|notice|warning|error|critical)\s*\(\s*'
-    r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))\s*,'
+    r'(?:trace|debug|info|notice|warning|error|critical)\s*\('
 )
+LEVEL_LOG_CALL = re.compile(LEVEL_LOG_OPENING.pattern + r'\s*' + MODULE_ARGUMENT)
 # The homeserver's `log_diagnostic_audit(database, "module", "event", ...)` takes the module second.
 # It is told apart by its shape, never by what the database is called (`runtime.database`, or an
-# alias such as `db`): any call not qualified with `observability::` whose first argument is a name
-# or member expression, not a literal. A file-local wrapper takes the event first, as a literal, so it
-# never has that shape; the qualified `observability::` form is QUALIFIED_LOG_CALL's. A first
-# argument the shape cannot parse, such as `(db)` or a call (`database_of(rt)`), is skipped, not
-# reported: pass the database as a name, a member or `*pointer` (ADR-0872).
+# alias such as `db`): any call not qualified with `observability::` and not opening with a literal.
+# A file-local wrapper takes the event first, as a literal, so it never has that shape; the
+# qualified `observability::` form is QUALIFIED_LOG_CALL's; a declaration (`auto log_diagnostic_audit(`)
+# is no call. The database is read as a name, a member expression or `*pointer`; any other first
+# argument is reported (ADR-0872).
+DATABASE_AUDIT_OPENING = re.compile(r'(?<!observability::)(?<!auto )\blog_diagnostic_audit\s*\((?!\s*")')
 DATABASE_AUDIT_CALL = re.compile(
-    r'(?<!observability::)\blog_diagnostic_audit\s*\(\s*'
-    r'\*?\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.|->)\s*[A-Za-z_][A-Za-z0-9_]*)*\s*,\s*'
-    r'(?:"([A-Za-z0-9_]+)"(?:sv|s)?|([A-Za-z_][A-Za-z0-9_:]*))'
+    DATABASE_AUDIT_OPENING.pattern
+    + r'\s*\*?\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.|->)\s*[A-Za-z_][A-Za-z0-9_]*)*\s*,\s*'
+    + MODULE_ARGUMENT
+)
+CALL_FORMS = (
+    (QUALIFIED_LOG_OPENING, QUALIFIED_LOG_CALL),
+    (LEVEL_LOG_OPENING, LEVEL_LOG_CALL),
+    (DATABASE_AUDIT_OPENING, DATABASE_AUDIT_CALL),
 )
 # A module named once in a constant: `auto log_module = std::string_view{"livekit"};` or `name{"livekit"};`.
 MODULE_CONSTANT = re.compile(
@@ -317,8 +328,14 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
     for regex in (MODULE_CONSTANT, MODULE_CONSTANT_INIT):
         for name, value in regex.findall(text):
             constants.setdefault(name, set()).add(value)
-    for regex in (QUALIFIED_LOG_CALL, LEVEL_LOG_CALL, DATABASE_AUDIT_CALL):
-        for literal, identifier in regex.findall(text):
+    for opening, call in CALL_FORMS:
+        for found in opening.finditer(text):
+            read = call.match(text, found.start())
+            if read is None:
+                excerpt = " ".join(text[found.start() : found.end() + 40].split())
+                unresolved.add(f"{label}: cannot read the module of `{excerpt}`")
+                continue
+            literal, identifier = read.group(1), read.group(2) or ""
             short = identifier.split("::")[-1]
             # A constant the file defines comes first, whatever it is called: the forwarding names
             # are skipped only when no constant of that name exists, so they skip by role, not name.
@@ -462,6 +479,43 @@ class ExampleLogModuleListTests(unittest.TestCase):
         # until each function names its module with a literal or a name of its own.
         self.assertEqual(modules, set())
         self.assertEqual(unresolved, {"f.cpp: log_module (given ['first', 'second'] in this file)"})
+
+    def test_a_call_whose_module_argument_cannot_be_read_is_reported_not_skipped(self) -> None:
+        # GIVEN one call of each form whose module, or the audit overload's database, is an
+        # argument the scan cannot read: parenthesised, or a call.
+        source = (
+            'observability::log_diagnostic((kTurnModule), "x", fields, severity);\n'
+            'observability::log_diagnostic(module_of(rt), "x", fields, severity);\n'
+            'SingleLog::instance().info(module_name(), "x");\n'
+            'log_diagnostic_audit(database_of(rt), "audited", "x", fields);\n'
+            'log_diagnostic_audit((db), "audited", "x", fields);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN no module is read from them, and each one is reported, quoting the call, so the
+        # failure points at the call rather than at the example configurations.
+        self.assertEqual(modules, set())
+        self.assertEqual(len(unresolved), 5, sorted(unresolved))
+        for excerpt in ("(kTurnModule)", "module_of(rt)", "module_name()", "database_of(rt)", "(db)"):
+            with self.subTest(excerpt=excerpt):
+                self.assertTrue(any(excerpt in entry for entry in unresolved), sorted(unresolved))
+
+    def test_a_declaration_of_the_audit_overload_is_not_taken_for_a_call(self) -> None:
+        # GIVEN the overload's declarations and a literal-event wrapper call.
+        source = (
+            'auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std::string_view event,\n'
+            '                          std::vector<StructuredLogField> fields) -> void;\n'
+            'inline auto log_diagnostic_audit(std::string_view logger, std::string_view event) -> void;\n'
+            'log_diagnostic_audit("event.name", {{"k", "v", false}}, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.hpp")
+
+        # THEN nothing is read and nothing is reported.
+        self.assertEqual((modules, unresolved), (set(), set()))
 
     def test_a_constant_named_like_a_forwarding_parameter_still_resolves(self) -> None:
         # GIVEN a file that defines a module constant called `module`, and another file whose

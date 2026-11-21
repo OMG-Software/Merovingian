@@ -37,7 +37,10 @@ to it, for a list that exists to be documented.
 
 * A new module fails the test, with its name, until both examples list it; a module nothing logs under any more fails
   until it is dropped.
-* A first argument the scan cannot resolve fails the test instead of shrinking the expected set.
+* A first argument the scan cannot resolve fails the test instead of shrinking the expected set, and so does a call
+  of a known form whose arguments it cannot read (`(kModule)`, `module_of(rt)`, `database_of(rt)`): each form has an
+  opening pattern that finds every call of that form, and an opening the full pattern cannot read is reported with
+  the call quoted.
 
 ### Negative Consequences
 
@@ -64,10 +67,12 @@ to it, for a list that exists to be documented.
   in the same change. Never relax or delete the assertion to get past it.
 * The examples list every module a structured logger call names, not a selection of common ones, and say that the
   legacy `LOG_*` macros' function names are left out. Do not trim the list.
-* The homeserver's `log_diagnostic_audit(database, module, ...)` is recognised by its shape (an unqualified call whose
-  first argument is a name or member expression), never by what the database is called, so an alias such as `db` is
-  read. Call a file-local wrapper with its event as a literal: one called with a variable event has the same shape and
-  is reported as unresolved.
+* The homeserver's `log_diagnostic_audit(database, module, ...)` is recognised by its shape (an unqualified call that
+  is not a declaration and does not open with a literal), never by what the database is called, so an alias such as
+  `db` is read. Pass the database as a name, a member expression or `*pointer`; any other first argument (`(db)`,
+  `database_of(rt)`) is reported, and so is the module argument of any call when it is neither a literal nor a name.
+  Call a file-local wrapper with its event as a literal: one called with a variable event has the same shape and is
+  reported as unresolved.
 
 ## Links
 
