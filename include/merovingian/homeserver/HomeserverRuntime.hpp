@@ -262,8 +262,8 @@ struct HomeserverRuntime final
     // Test-only: added to the wall clock by `oauth_device_clock_ms`, so a test moves the device grant's time (expiry,
     // polling interval, the wrong-code window) without sleeping. Always 0 in production.
     std::uint64_t test_device_grant_clock_advance_ms{0U};
-    // What each local account's devices last asked of its presence, and when its presence last changed (ADR-0871,
-    // ADR-0872). In memory only, bounded. Guarded by `mutex`. Takes its time from `presence_limit_clock_ms`.
+    // What each local account's devices last asked of its presence, and when its presence last changed (ADR-0875,
+    // ADR-0876). In memory only, bounded. Guarded by `mutex`. Takes its time from `presence_limit_clock_ms`.
     AccountPresenceTracker presence_tracker{};
     // Test-only: added to the steady clock by `presence_limit_clock_ms`, so a test moves past a presence change window
     // or a device's freshness without sleeping. Always 0 in production.

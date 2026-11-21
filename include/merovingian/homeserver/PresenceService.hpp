@@ -61,12 +61,12 @@ inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 // Wall-clock milliseconds since the Unix epoch.
 [[nodiscard]] auto presence_now_ms() -> std::int64_t;
 
-// The clock of `HomeserverRuntime::presence_tracker` (ADR-0871, ADR-0872): steady-clock milliseconds, which never go
+// The clock of `HomeserverRuntime::presence_tracker` (ADR-0875, ADR-0876): steady-clock milliseconds, which never go
 // back, plus `test_presence_clock_advance_ms`. Not a point in calendar time.
 [[nodiscard]] auto presence_limit_clock_ms(HomeserverRuntime const& runtime) -> std::int64_t;
 
 // Logs `presence.tracker.full` at warning level when the presence tracker refused a change or evicted an account since
-// the last report, at most once every `AccountPresenceTracker::full_warning_interval_ms` (ADR-0872). Called after
+// the last report, at most once every `AccountPresenceTracker::full_warning_interval_ms` (ADR-0876). Called after
 // every use of the tracker that may refuse or evict; O(1) when there is nothing to report. The caller holds
 // `runtime.mutex`.
 auto report_presence_tracker_saturation(HomeserverRuntime& runtime, std::int64_t clock_ms) -> void;
@@ -130,9 +130,9 @@ auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view us
 // memory. The device's ask is noted in `runtime.presence_tracker`:
 //  * `offline` stores nothing and the device no longer holds the account online;
 //  * `unavailable` changes nothing while another device of the account asked for `online` within
-//    `AccountPresenceTracker::device_fresh_ms` (ADR-0871);
+//    `AccountPresenceTracker::device_fresh_ms` (ADR-0875);
 //  * a change within `AccountPresenceTracker::change_window_ms` of the account's last one is dropped, and so is a
-//    change of an account the tracker has no room for (`is_full_for`, ADR-0872).
+//    change of an account the tracker has no room for (`is_full_for`, ADR-0876).
 // The caller holds runtime.mutex. Returns the new row when the state changed, so the caller can send it to other
 // servers and wake long-polling syncs.
 [[nodiscard]] auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std::string_view device,

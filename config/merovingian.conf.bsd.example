@@ -911,8 +911,15 @@ appservice.max_queued_events=100000
 # every other module sees. Restart is required for changes to take effect.
 # Merovingian needs to run with the --debug parameter to enable debug logging.
 # — see docs/log-filtering.md.
+# Every module a structured logger call names. The legacy LOG_* lines log
+# under the calling function's name instead (for example `main`), and a
+# function name is a valid key that this list leaves out:
+# log_modules.appservice=info
 # log_modules.auth=info
 # log_modules.client_server=info
+# log_modules.connection_parker=info
+# log_modules.crypto=info
+# log_modules.delayed_events=info
 # log_modules.dispatch_worker=info
 # log_modules.event=info
 # log_modules.event_auth=info
@@ -920,12 +927,14 @@ appservice.max_queued_events=100000
 # log_modules.event_signer=info
 # log_modules.federation=info
 # log_modules.federation_policy=info
+# log_modules.federation_proxy=info
 # log_modules.federation_security=info
 # log_modules.hardening_self_check=info
 # log_modules.http_server=info
 # log_modules.identity=info
 # log_modules.inbound_ingestion=info
 # log_modules.key_query=info
+# log_modules.livekit=info
 # log_modules.local_router=info
 # log_modules.local_services=info
 # log_modules.media_repository=info
@@ -933,12 +942,15 @@ appservice.max_queued_events=100000
 # log_modules.media_service=info
 # log_modules.membership_endpoints=info
 # log_modules.migration=info
+# log_modules.oauth=info
 # log_modules.outbound_client=info
 # log_modules.outbound_transaction=info
 # log_modules.persistent_store=info
 # log_modules.policy_engine=info
 # log_modules.postgresql_store=info
+# log_modules.presence=info
 # log_modules.rate_limit=info
+# log_modules.redaction=info
 # log_modules.remote_key_resolver=info
 # log_modules.rooms=info
 # log_modules.runtime=info
@@ -948,12 +960,14 @@ appservice.max_queued_events=100000
 # log_modules.signing_service=info
 # log_modules.sqlite_store=info
 # log_modules.state_resolution=info
+# log_modules.stream_token_epoch=info
 # log_modules.sync_filter=info
 # log_modules.sync_notifier=info
 # log_modules.thread_pool=info
 # log_modules.tls=info
-# log_modules.token=info
 # log_modules.transactions=info
+# log_modules.turn=info
+# log_modules.worker_pool=info
 
 # All log module config
 # Setting this to debug on a live server will open the floodgates

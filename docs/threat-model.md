@@ -2795,8 +2795,8 @@ nothing, all from trusting the worker's view or the hook's transport.
   presence queues an `m.presence` EDU for every server in their rooms. Two clients of one account
   fighting over `set_presence` changed it many times a second and filled the dispatch queue, so
   every other federation send was refused. A device that synced online holds the account online
-  for 5 minutes (ADR-0871), a classic `/sync` no longer wakes for its own presence (ADR-0873), and
-  an account's presence changes at most once every 5 s, the first change kept (ADR-0872). The
+  for 5 minutes (ADR-0875), a classic `/sync` no longer wakes for its own presence (ADR-0873), and
+  an account's presence changes at most once every 5 s, the first change kept (ADR-0876). The
   tracker behind both is bounded and fails closed when full. **Residual risk:** one change every
   5 s per account still costs an EDU per remote server; many accounts at once are bounded only by
   the dispatch queue's own shares. A profile change stores the user's presence row again (so local

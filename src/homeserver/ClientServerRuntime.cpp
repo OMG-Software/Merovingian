@@ -262,6 +262,16 @@ namespace
         observability::log_diagnostic("client_server", event, fields, severity);
     }
 
+    // `GET /voip/turnServer` logs under its own module, so `log_modules.turn` sets its level apart from every other
+    // client-server line (ADR-0871). No field may carry credential text: never the username, the password or the
+    // shared secret. Today's fields are `user_id` on every line, `credential`, `ttl_seconds` and `uri_count` on the
+    // issued line, and a fixed `reason` on the unavailable one.
+    auto log_turn_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> const& fields,
+                             observability::LogEventSeverity severity) -> void
+    {
+        observability::log_diagnostic("turn", event, fields, severity);
+    }
+
     [[nodiscard]] auto starts_with(std::string_view v, std::string_view p) noexcept -> bool
     {
         return v.size() >= p.size() && v.substr(0U, p.size()) == p;
@@ -21527,6 +21537,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& turn = rt.homeserver.config.server().turn;
         if (turn.server.empty() && turn.uris.empty())
         {
+            // The coverage markers below drop only GCC's cleanup of the braced field list, which runs when building a
+            // field throws and so no test reaches (ADR-0874).
+            log_turn_diagnostic("turn.not_configured", // GCOVR_EXCL_BR_LINE
+                                {
+                                    {"user_id", *user, false}
+            },
+                                observability::LogEventSeverity::debug);
             return dispatch_resp(req, rt, 200U, "{}");
         }
         auto username = turn.username;
@@ -21546,11 +21563,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
             if (!credentials.has_value())
             {
-                log_diagnostic("turn.credentials_unavailable",
-                               {
-                                   {"reason", "shared secret file unreadable or empty", false}
+                // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+                log_turn_diagnostic( // GCOVR_EXCL_BR_LINE
+                    "turn.credentials_unavailable",
+                    {
+                        // GCOVR_EXCL_START
+                        {"user_id", *user,                                    false},
+                        // GCOVR_EXCL_STOP
+                        {"reason",  "shared secret file unreadable or empty", false}
                 },
-                               observability::LogEventSeverity::error);
+                    observability::LogEventSeverity::error);
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "TURN credentials are unavailable");
             }
             username = std::move(credentials->username);
@@ -21570,12 +21592,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uris.push_back(json_str(uri));
             }
         }
+        auto const uri_count = uris.size();
         auto const body = json_serialize(json_obj({
             json_member("username", json_str(username)),
             json_member("password", json_str(password)),
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
+        // GCC's cleanup of the braced field list is unreachable by any test (ADR-0874).
+        log_turn_diagnostic("turn.credentials_issued", // GCOVR_EXCL_BR_LINE
+                            {
+                                // GCOVR_EXCL_START
+                                {"user_id",     *user,                                                        false},
+                                // GCOVR_EXCL_STOP
+                                {"credential",  turn.shared_secret_file.empty() ? "static" : "shared_secret", false},
+                                {"ttl_seconds", std::to_string(turn.ttl_seconds),                             false},
+                                {"uri_count",   std::to_string(uri_count),                                    false},
+        },
+                            observability::LogEventSeverity::info);
         return dispatch_resp(req, rt, 200U, body);
     }
 
@@ -22361,7 +22395,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        // ADR-0872: applied on the request's first run only. A rerun of a parked poll is the same request, and a
+        // ADR-0876: applied on the request's first run only. A rerun of a parked poll is the same request, and a
         // change the window dropped stays dropped, never kept once the window has ended. Every refusal of a /sync is
         // above this line: `sync_json` serves any `since` (one it cannot use as no `since`, ADR-0315) and filter it is
         // given, so a refused request never changes presence. Keep any new refusal above it.
@@ -22456,7 +22490,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_POS", "unknown sliding sync position");
             }
         }
-        // ADR-0872: on the request's first run only, as for /sync, and only for a `pos` that is bound and current (the
+        // ADR-0876: on the request's first run only, as for /sync, and only for a `pos` that is bound and current (the
         // check `sliding_sync_json` refuses with M_UNKNOWN_POS), so a refused request changes no presence and opens no
         // window.
         auto const pos_is_current = !pos.has_value() || sliding_sync_token_is_current(rt.homeserver, pos->token);
@@ -24406,7 +24440,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const written = set_presence(rt, state);
             if (written.status == PresenceWriteStatus::limited)
             {
-                // ADR-0872: the spec's 429 for this endpoint. The change is refused, not kept for later.
+                // ADR-0876: the spec's 429 for this endpoint. The change is refused, not kept for later.
                 log_diagnostic("presence.set.limited",
                                {
                                    {"actor",          *user,                                            false},
@@ -25424,7 +25458,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
     }
     auto& tracker = runtime.homeserver.presence_tracker;
     auto const clock_ms = presence_limit_clock_ms(runtime.homeserver);
-    // ADR-0872: judged and noted under the same lock as the write, so two requests at once cannot both be first.
+    // ADR-0876: judged and noted under the same lock as the write, so two requests at once cannot both be first.
     if (auto const blocked = tracker.change_blocked_for_ms(state.user_id, clock_ms); blocked.has_value())
     {
         // The account's own window, or a full table's soonest one: never longer than the window.
@@ -25442,7 +25476,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
         return PresenceWrite{PresenceWriteStatus::failed, 0U};
     }
     tracker.note_change(state.user_id, clock_ms);
-    // The change may have evicted an account to make room (ADR-0871).
+    // The change may have evicted an account to make room (ADR-0875).
     report_presence_tracker_saturation(runtime.homeserver, clock_ms);
     std::ignore = ensure_sync_notifier(runtime);
     // The servers that share a room with the user are told; the row is as stored just now.

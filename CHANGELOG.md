@@ -50,6 +50,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   which `/versions` lists (ADR-0865).
 * The account_data extension follows its `lists` and `rooms` scope, whatever the user's membership; receipts send a
   room's initial receipts on entering scope and those on a new timeline (MSC4548, MSC4551, ADR-0865).
+* `GET /voip/turnServer` logs under its own `turn` module, set with `log_modules.turn`: credentials issued (info),
+  unavailable (error) and no TURN configured (debug), with the user ID and never a credential (ADR-0871).
+* Tests set a log module's level through one shared helper, `tests/support/ModuleLogLevel.hpp`, instead of a copy per
+  file; the security coding rules state the TURN logging rule and why the username is withheld.
 
 ## Security Fixes
 
@@ -78,9 +82,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A sliding sync `pos` is bound to the user and device it was issued to; any other is `M_UNKNOWN_POS`, so one user can
   no longer continue another's connection (ADR-0866).
 * An account's presence changes at most once every 5 s (a later sync's change is dropped, `PUT /presence` is 429), so a
-  flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0871, ADR-0872).
+  flip loop no longer fills the federation queue; a prune visits only expired accounts (ADR-0875, ADR-0876).
 * A full presence tracker's refused changes and evicted accounts are logged at warning level as
-  `presence.tracker.full`, at most once a minute with how many of each, so an operator sees it saturate (ADR-0872).
+  `presence.tracker.full`, at most once a minute with how many of each, so an operator sees it saturate (ADR-0876).
 
 ## Bug fixes
 
@@ -182,13 +186,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   and `reject-unsafe.sh` now rejects that form in code and tests (ADR-0870).
 * The AlmaLinux and openSUSE CI suites install diffutils, which the integration shard check needs for `cmp` and `diff`.
 * Two clients of one account, one syncing online and one `unavailable`, no longer flip its presence on every sync: an
-  online device holds the account online for 5 minutes (ADR-0871).
+  online device holds the account online for 5 minutes (ADR-0875).
 * A classic `/sync` whose only news is the caller's own presence keeps waiting instead of answering nothing (ADR-0873).
 * A classic `/sync` with `full_state=true` is answered at once, whatever its `timeout`, as the spec says; it waited
   like any other long poll (ADR-0873).
 * A sliding sync refused with `M_UNKNOWN_POS` no longer changes the caller's presence: `set_presence` is applied
-  only once the `pos` is accepted (ADR-0872).
+  only once the `pos` is accepted (ADR-0876).
 * `docs/observability-audit.md` named the wrong logger for `presence.sync.set`; it is `client_server`.
+* The example configurations list every module a structured logger call names (twelve were missing, `token` is
+  gone), and a tooling test fails when that list and the modules the sources name differ (ADR-0872).
+* The TURN log calls mark GCC's cleanup of their braced field lists excluded from coverage, a compiler path no test
+  can reach; the testing standards say when such a marker is allowed (ADR-0874).
 
 ## Release notes
 

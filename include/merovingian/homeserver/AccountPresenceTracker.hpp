@@ -20,11 +20,11 @@ namespace merovingian::homeserver
 // presence last changed. In memory only; every operation takes the time in milliseconds of a clock that never goes back
 // (`presence_limit_clock_ms`).
 //
-// Devices (ADR-0871): a device that syncs `online` holds its account online for `device_fresh_ms`, so another device
+// Devices (ADR-0875): a device that syncs `online` holds its account online for `device_fresh_ms`, so another device
 // syncing `unavailable` in that time does not set the account unavailable. Two clients of one account, one in the
 // foreground and one in the background, otherwise set the presence back and forth on every sync.
 //
-// Changes (ADR-0872): the first change of an account's presence starts a window of `change_window_ms`; every other
+// Changes (ADR-0876): the first change of an account's presence starts a window of `change_window_ms`; every other
 // change asked for in the window is dropped (a sync) or refused with 429 (`PUT /presence`). The first one asked for is
 // the one kept, never the last.
 //
@@ -164,7 +164,7 @@ private:
     // Makes a place in a full `devices` for a new device asking for `online` (true) or `unavailable`: the least
     // recently seen device that asked for unavailable gives up its place, or, for an online newcomer when every device
     // asked for online, the least recently seen of them. False when there is none to give: an unavailable newcomer
-    // holds nothing, so it never ends another device's online hold (ADR-0871).
+    // holds nothing, so it never ends another device's online hold (ADR-0875).
     [[nodiscard]] static auto make_device_place(std::vector<Device>& devices, bool online) -> bool;
 
     // True when the table can hold another account at `now_ms`: it is not full, or an account in it has no open window.

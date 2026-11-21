@@ -38,6 +38,18 @@ service function: starting a runtime wires config, the store, the signing key an
 `tests/unit/` names one of those functions (ADR-0593). The directory guides, `tests/unit/AGENTS.md` and
 `tests/integration/AGENTS.md`, have the rest of the split.
 
+## Tooling tests that read the sources
+
+A list that documents something in the code (the example configurations' `log_modules` lines, for one) is checked by a
+tooling test that reads the code, never against a second list kept by hand in the test. Such a test fails on an argument
+it finds but cannot resolve rather than skipping it, and it ignores comments. A form it does not recognise at all is
+missed, not failed (ADR-0872), so a change that adds a new form adds it to the scan too; a green run never proves a form
+the test does not name was checked. What it skips on purpose it names, in the test and in the documents that describe it.
+`ExampleLogModuleListTests` in `tests/tooling/test_example_config.py` is the model: a logger call names its module with
+a literal or a string constant in the same file; the only identifiers it skips are `module`, `mod` and `logger` where the
+file declares them as string parameters (or copies one into them), and `__func__`; a level method is read only on `SingleLog::instance()` or a reference named `log`
+or `logger`; and a new call form or a shared constant is added to the scan in the same change (ADR-0872).
+
 ## Concurrency and locking tests
 
 Assert on what a thread holding none of the resource can observe, not on what a
@@ -446,7 +458,9 @@ label those edges), so the coverage job alone builds with `gcc-14` and reads its
 `gcov-14`; every other job builds with clang. Every decision branch still counts, so a partial line means a condition
 went one way only. Cover it with a test of the other outcome, not an exclusion marker;
 `LCOV_EXCL`/`GCOVR_EXCL` are for code that is genuinely unreachable, with the reason
-beside them.
+beside them. One such case is GCC's cleanup of a braced list of log fields, which gcov labels a decision branch: a call
+may mark it as the TURN log calls in `ClientServerRuntime.cpp` do, with no decision on the marked lines
+([ADR-0874](adr/0874-a-braced-log-field-list-may-mark-gcc-s-cleanup-branches-excluded-from-coverage.md)).
 
 ## CI job order
 

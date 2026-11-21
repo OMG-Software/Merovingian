@@ -142,7 +142,7 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
     -> bool;
 // Stores a presence the user set (`PUT /presence`), wakes syncs and tells the servers that share a room with them.
 // `limited` when the account's presence changed less than `AccountPresenceTracker::change_window_ms` ago, or, with
-// `PresenceWrite::tracker_full`, when the tracker has no room for the account (ADR-0872): nothing is stored.
+// `PresenceWrite::tracker_full`, when the tracker has no room for the account (ADR-0876): nothing is stored.
 // Takes runtime.mutex.
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state)
     -> PresenceWrite;

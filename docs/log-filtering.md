@@ -102,9 +102,20 @@ A malformed `category=` value returns 400 with
 
 The `log_modules.<name>` keys accept any string — the bootstrap
 forwards the name to `SingleLog::set_module_log_level(name, level)`
-without a registry. This is a non-exhaustive list of common module names
-used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`
-(`rate_limit` is used only with `log_diagnostic_audit`):
+without a registry. The example configurations (`config/merovingian.conf.example` and
+`config/merovingian.conf.bsd.example`) list every module a structured logger call names (not the function names the
+legacy `LOG_*` macros log under, see below); keep both in step when a module is
+added or removed. `tests/tooling/test_example_config.py` scans `src/` and `include/` for the modules the logger calls
+name and fails when either example lists a different set, or when a call names its module through anything but a
+literal or a string constant in the same file (one the file gives no other value). The one exception is a string parameter that forwards its caller's module
+(`module`, `mod`, `logger`, declared as a parameter in that file or copied from one there), and `__func__`, which the legacy macros pass (see below): the scan skips them, and a
+function name is not listed in the examples. A level method (`info`, `warning`, ...) is read only on
+`SingleLog::instance()` or a reference named `log` or `logger` (ADR-0872).
+
+The table below describes the common modules, the first argument to `observability::log_diagnostic` and
+`log_diagnostic_audit` in `src/` (`rate_limit` is used only with `log_diagnostic_audit`). It is not complete and no test
+checks it: the complete list is the one in the example configurations, which the tooling test keeps in step with the
+sources.
 
 | Module | What it logs |
 |--------|--------------|
@@ -133,6 +144,7 @@ used as the first argument to `observability::log_diagnostic` and `log_diagnosti
 | `stream_token_epoch` | The database's sync token epoch: created at first start, replaced by `--after-restore`, or refused |
 | `tls` | TLS context set-up and handshake accept or reject |
 | `oauth` | OAuth 2.0 client registration, eviction at the cap, and stored metadata that no longer validates |
+| `turn` | `GET /voip/turnServer` (ADR-0871): `turn.credentials_issued` (info, with `credential` `static` or `shared_secret`, `ttl_seconds` and `uri_count`), `turn.credentials_unavailable` (error: the shared secret file is unreadable or empty) and `turn.not_configured` (debug: the answer was `{}`). Each names the user; never the username, the password or the shared secret |
 | `delayed_events` | Delayed events: scheduled, restarted, cancelled, sent, failed, a failed outcome write and a failed prune; never event content or a state key. The count of rows skipped at load is a start-up warning from the process entry point, not this module |
 | `livekit` | The built-in LiveKit token service: a token issued or refused, to a local user, to another server's user, or relayed from another server; a failed `CreateRoom` call and an unreadable API secret; a delegated delayed leave stored, refused, dropped, sent or failing to restart or send (`livekit.delegation.*`); a refused webhook (`livekit.webhook.refused`, warning, with the reason only) and one that prompted a check (`livekit.webhook.prompted`). Each names the user and room (and the server, for federation); never the token, the API secret, the device or member ID, the slot or the delay ID |
 

@@ -33,7 +33,7 @@
 namespace merovingian::homeserver
 {
 
-// ADR-0871: a device's online ask goes stale exactly when the idle sweep would set its account unavailable. With the
+// ADR-0875: a device's online ask goes stale exactly when the idle sweep would set its account unavailable. With the
 // two apart, a background device's `unavailable` would win while the sweep still counts the user active, or a closed
 // client would hold the account online past the sweep. This keeps the durations equal; the hold runs on the steady
 // clock and the sweep on the wall clock, so a wall-clock step still moves them apart by the step (accepted in the ADR).
@@ -234,7 +234,7 @@ auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms, std::
     {
         return changed;
     }
-    // The pass also drops the devices and change windows that no longer speak for an account (ADR-0871). Its own
+    // The pass also drops the devices and change windows that no longer speak for an account (ADR-0875). Its own
     // changes are neither limited nor noted: the server sets an account idle at most once per idle period, and a user
     // who comes back at once is marked online at once.
     runtime.presence_tracker.prune(presence_limit_clock_ms(runtime));
@@ -362,7 +362,7 @@ namespace
         auto const any_device_online = tracker.note_sync(user, device, asks_online, clock_ms);
         if (!asks_online && any_device_online)
         {
-            // ADR-0871: another device of the account asked for online in the freshness time; online beats unavailable.
+            // ADR-0875: another device of the account asked for online in the freshness time; online beats unavailable.
             // Logged only when the ask would have changed the stored state: an account already unavailable loses
             // nothing.
             if (auto const* const row = database::find_presence_state(runtime.database.persistent_store, user);
@@ -394,7 +394,7 @@ namespace
         }
         if (auto const blocked = tracker.change_blocked_for_ms(user, clock_ms); blocked.has_value())
         {
-            // ADR-0872: the first change in the window was kept, or the tracker has no room for the account; this one
+            // ADR-0876: the first change in the window was kept, or the tracker has no room for the account; this one
             // is dropped, not kept for later.
             auto const tracker_full = tracker.is_full_for(user, clock_ms);
             if (tracker_full)
@@ -432,7 +432,7 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
                          SyncPresenceMode mode) -> std::optional<database::PersistentPresence>
 {
     auto changed = judge_sync_presence(runtime, user, device, mode);
-    // ADR-0872: an eviction (by the sync's online ask or its change) or a refusal made above is reported here.
+    // ADR-0876: an eviction (by the sync's online ask or its change) or a refusal made above is reported here.
     report_presence_tracker_saturation(runtime, presence_limit_clock_ms(runtime));
     return changed;
 }

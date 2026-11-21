@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// ADR-0871 and ADR-0872: what an account's devices last asked of its presence, and the window after a change in which
+// ADR-0875 and ADR-0876: what an account's devices last asked of its presence, and the window after a change in which
 // no other change is kept. Every operation takes the time, so no scenario sleeps.
 
 #include "merovingian/homeserver/AccountPresenceTracker.hpp"
@@ -186,7 +186,7 @@ SCENARIO("A prune removes what no longer speaks for an account", "[unit][presenc
     }
 }
 
-// ADR-0871: an account holds at most max_devices_per_account devices; at the cap a device that holds nothing gives up
+// ADR-0875: an account holds at most max_devices_per_account devices; at the cap a device that holds nothing gives up
 // its place first, and only a device asking for online takes an online device's place.
 SCENARIO("An account holds a bounded number of devices, and the cap never ends an online hold for nothing",
          "[unit][presence][account_presence_tracker][bounds]")
@@ -259,7 +259,7 @@ SCENARIO("An account holds a bounded number of devices, and the cap never ends a
     }
 }
 
-// ADR-0871, ADR-0872: the table holds at most its account cap. A full table evicts the account whose devices go stale
+// ADR-0875, ADR-0876: the table holds at most its account cap. A full table evicts the account whose devices go stale
 // soonest, and refuses (fails closed) only while every account has an open window.
 SCENARIO("The tracker holds a bounded number of accounts", "[unit][presence][account_presence_tracker][bounds]")
 {
@@ -437,7 +437,7 @@ SCENARIO("A tracker holds max_accounts accounts unless it is made with another c
     }
 }
 
-// ADR-0872: a full table's refusals and evictions are counted, and a report of them is due at most once every
+// ADR-0876: a full table's refusals and evictions are counted, and a report of them is due at most once every
 // full_warning_interval_ms, carrying what it stands for, so a flood costs one warning a minute. Nothing to report is
 // never a report.
 SCENARIO("A full tracker's refusals and evictions are reported at most once an interval",

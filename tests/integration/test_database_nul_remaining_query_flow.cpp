@@ -288,7 +288,7 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                                                                                    {"avatar_url", avatar_url}
                         }));
                     }
-                    // Each case changes the presence, so the change window of the last one is let end (ADR-0872).
+                    // Each case changes the presence, so the change window of the last one is let end (ADR-0876).
                     runtime.homeserver.test_presence_clock_advance_ms += hs::AccountPresenceTracker::change_window_ms;
                     std::ignore =
                         send_request("PUT", presence_path + with_marker("/status"),

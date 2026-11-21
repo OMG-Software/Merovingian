@@ -3,7 +3,7 @@
 * Status: accepted
 * Date: 2026-11-21
 
-Technical Story: the presence loop of ADR-0871. Even with the devices combined, anything that changes an account's
+Technical Story: the presence loop of ADR-0875. Even with the devices combined, anything that changes an account's
 presence many times a second (a buggy client, two clients fighting through `PUT /presence`) queues an EDU for every
 server in the account's rooms each time.
 
@@ -41,11 +41,11 @@ Chosen option: 1.
   (it stores the row for local syncs and appservices and sends no `m.presence` EDU), and inbound presence from other
   servers (their own server's to limit).
 * An account with an open window is never removed from `AccountPresenceTracker`, or removing it would lift its limit.
-  A full table makes room by evicting an account with no open window (ADR-0871), so accounts that keep syncing never
+  A full table makes room by evicting an account with no open window (ADR-0875), so accounts that keep syncing never
   shut others out. Only when every account in it has an open window is a change of an account it does not hold refused
   (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself. The
   refusal's `retry_after_ms` is the rest of the soonest window (at most `change_window_ms`), and its log line's `cause`
-  is `tracker_full`, not `window`. Such a refusal, and every eviction a full table makes (ADR-0871), counts towards
+  is `tracker_full`, not `window`. Such a refusal, and every eviction a full table makes (ADR-0875), counts towards
   `presence.tracker.full`, a warning logged at most once a minute (`full_warning_interval_ms`) with the number of
   each since the last one and no user IDs. A user who did nothing wrong is refused only here, and an evicted account
   loses its devices' holds, so an operator must see both without debug logging; one warning per refusal or eviction

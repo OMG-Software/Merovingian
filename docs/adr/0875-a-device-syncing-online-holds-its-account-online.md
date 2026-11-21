@@ -44,21 +44,21 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
   holds nothing: replacing by age alone let a 65th device asking for `unavailable` end the only online hold, which is
   the flip this decision prevents. At most `max_accounts`
   (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. An account with an open window
-  (ADR-0872) is filed under its end, any other under the time its latest online device goes stale (a device that last
+  (ADR-0876) is filed under its end, any other under the time its latest online device goes stale (a device that last
   asked for `unavailable` holds no place), so a prune visits only expired accounts, never the table: a flood of
   overflow requests under `runtime.mutex` costs no scan. With the table still full, the account with no open window
   whose devices go stale soonest is evicted to make room: it loses its devices' holds until it syncs again, never a
   window. Only when every account has an open window does a sync of an account the table does not hold have its device
-  ignored and its change refused (ADR-0872), at most until the soonest window ends.
+  ignored and its change refused (ADR-0876), at most until the soonest window ends.
 * The asks are in memory only: after a restart each device's next sync puts its ask back.
 * The clock is the steady clock (`presence_limit_clock_ms`), which never goes back. The idle sweep measures activity on
   the wall clock (`observed_at_ms`), so after a wall-clock step the hold and the sweep disagree by the step until the
   device syncs again: after a backward step a background device's `unavailable` can win while the sweep still counts the
   user active, and after a forward step the sweep can set the account unavailable while a hold stands. Accepted: either
-  is one change, limited by ADR-0872, never a loop. Judging the hold on the wall clock instead would let one clock step
+  is one change, limited by ADR-0876, never a loop. Judging the hold on the wall clock instead would let one clock step
   lift or extend every hold at once, and the `static_assert` keeps only the two durations equal.
 * An account the table does not hold takes no place for a device asking for `unavailable`: the ask alone never evicts
-  another account's hold. If that sync changes the stored state, the change still opens a window (ADR-0872) and may
+  another account's hold. If that sync changes the stored state, the change still opens a window (ADR-0876) and may
   evict a closed account to make room, as any kept change does.
 
 ### Positive Consequences

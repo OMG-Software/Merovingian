@@ -249,7 +249,7 @@ SCENARIO("Sync presence is visible only between users with current shared room m
         {
             REQUIRE(set_presence(runtime, localpart, token, R"({"presence":"online"})").status == 200U);
         }
-        // Each user's next change is kept, not refused inside the window this one opened (ADR-0872).
+        // Each user's next change is kept, not refused inside the window this one opened (ADR-0876).
         runtime.homeserver.test_presence_clock_advance_ms +=
             merovingian::homeserver::AccountPresenceTracker::change_window_ms;
 

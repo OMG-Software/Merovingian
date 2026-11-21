@@ -205,7 +205,7 @@ auto install_unstarted_dispatch_worker(ClientServerRuntime& runtime) -> void
            std::string{presence} + R"(","last_active_ago":5000)" + std::string{extra} + "}]}";
 }
 
-// The clock of the presence change window and of the devices' freshness moves on without a sleep (ADR-0871, ADR-0872).
+// The clock of the presence change window and of the devices' freshness moves on without a sleep (ADR-0875, ADR-0876).
 auto advance_presence_clock(ClientServerRuntime& runtime, std::int64_t by_ms) -> void
 {
     runtime.homeserver.test_presence_clock_advance_ms += by_ms;
@@ -559,7 +559,7 @@ constexpr auto minute_ms = std::int64_t{60 * 1000};
 
 // Presence rows hold when they were last observed; moving that back is the passage of time without a
 // sleep. The row is changed in place, as `record_presence` would restamp it. The clock of the change window and of
-// the devices' freshness (ADR-0871, ADR-0872) moves on by as much.
+// the devices' freshness (ADR-0875, ADR-0876) moves on by as much.
 auto age_presence(ClientServerRuntime& runtime, std::string_view user_id, std::int64_t by_ms) -> void
 {
     for (auto& row : runtime.homeserver.database.persistent_store.presence_states)
@@ -978,7 +978,7 @@ auto sync_once(ClientServerRuntime& runtime, std::string const& token, std::stri
 // Spec: Matrix Client-Server API v1.19, Presence, "Idle timeout": "Any activity that bumps the last active time on any
 // of the user's clients will cause the server to automatically set their presence to `online`."
 //
-// ADR-0871: a device that syncs online holds the account online for AccountPresenceTracker::device_fresh_ms, so another
+// ADR-0875: a device that syncs online holds the account online for AccountPresenceTracker::device_fresh_ms, so another
 // device syncing unavailable does not set it unavailable in between. Without this, a client in the foreground and one
 // in the background set the presence back and forth on every sync, each change waking the other's sync and queueing an
 // EDU for every server in the user's rooms.
@@ -1042,7 +1042,7 @@ SCENARIO("Two devices of one account syncing online and unavailable do not set i
     }
 }
 
-// ADR-0872: the first change of an account's presence opens a window of AccountPresenceTracker::change_window_ms in
+// ADR-0876: the first change of an account's presence opens a window of AccountPresenceTracker::change_window_ms in
 // which no other change is kept: a sync's is dropped, a PUT is answered 429 M_LIMIT_EXCEEDED, which the spec gives this
 // endpoint. The first change asked for is the one kept, never the last.
 //
@@ -1123,7 +1123,7 @@ SCENARIO("Only the first presence change in a window is kept", "[integration][pr
     }
 }
 
-// ADR-0872: a sync that leaves the stored presence as it is changes nothing, so it opens no window. Without this, a
+// ADR-0876: a sync that leaves the stored presence as it is changes nothing, so it opens no window. Without this, a
 // client polling /sync (an omitted set_presence asks for online) could never change its presence: every poll would
 // open a window, and PUT /presence would answer 429.
 SCENARIO("A sync that leaves the presence as it is opens no change window", "[integration][presence][rate_limit]")
@@ -1174,7 +1174,7 @@ SCENARIO("A sync that leaves the presence as it is opens no change window", "[in
     }
 }
 
-// A /sync refused with a 400 changes no presence, as a refused sliding sync does not (ADR-0872): the refusal would
+// A /sync refused with a 400 changes no presence, as a refused sliding sync does not (ADR-0876): the refusal would
 // otherwise store a change, send it to every server in the user's rooms and open the window against the user's next
 // real change. Every refusal of a /sync comes before its `set_presence` is applied.
 SCENARIO("A /sync refused for its filter changes no presence", "[integration][presence][sync]")
@@ -1207,7 +1207,7 @@ SCENARIO("A /sync refused for its filter changes no presence", "[integration][pr
     }
 }
 
-// ADR-0872: a change dropped in a window is dropped, never kept for later. A long-polling sync whose change was
+// ADR-0876: a change dropped in a window is dropped, never kept for later. A long-polling sync whose change was
 // dropped is run again after a wake-up or its timeout (`rerun_waiting_sync`); that rerun is the same request and does
 // not apply its `set_presence` again, even once the window has ended.
 SCENARIO("A parked sync run again does not apply its set_presence a second time", "[integration][presence][long_poll]")
@@ -1309,7 +1309,7 @@ SCENARIO("A parked sliding sync run again does not apply its set_presence a seco
 }
 
 // MSC4186: "Servers MUST reject a `pos` that was not issued to the requesting user and device", and a pos from another
-// stream epoch is unknown too (ADR-0592). A refused request does nothing else, so its set_presence opens no ADR-0872
+// stream epoch is unknown too (ADR-0592). A refused request does nothing else, so its set_presence opens no ADR-0876
 // window that would make a later PUT /presence 429.
 SCENARIO("A sliding sync refused for an unknown pos changes no presence", "[integration][presence][sliding-sync]")
 {
@@ -1359,7 +1359,7 @@ SCENARIO("A sliding sync refused for an unknown pos changes no presence", "[inte
     }
 }
 
-// ADR-0871: a device is one device whichever sync API it uses, so the hold one transport takes is released by the
+// ADR-0875: a device is one device whichever sync API it uses, so the hold one transport takes is released by the
 // other's set_presence=offline.
 SCENARIO("A device's hold taken through sliding sync is released by its classic sync",
          "[integration][presence][sliding-sync][devices]")
@@ -1399,7 +1399,7 @@ SCENARIO("A device's hold taken through sliding sync is released by its classic 
     }
 }
 
-// ADR-0872: at its cap, with every account in its window, the presence tracker refuses a change of an account it does
+// ADR-0876: at its cap, with every account in its window, the presence tracker refuses a change of an account it does
 // not hold (fails closed), so a flood of accounts cannot lift the limit for itself. The refusal says so and waits for
 // the soonest window to end.
 SCENARIO("A presence change is refused while the presence tracker is full", "[integration][presence][rate_limit]")

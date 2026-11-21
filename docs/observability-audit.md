@@ -133,16 +133,16 @@ is full.
   (fields `actor`, `presence`; never the status message). `presence.set.limited` (debug, logger
   `client_server`) records one refused with 429 because the account's presence changed less than
   5 s before (`cause` `window`) or the presence tracker had no room for the account (`cause`
-  `tracker_full`) (fields `actor`, `presence`, `cause`, `retry_after_ms`; ADR-0872). `presence.sync.set` (debug,
+  `tracker_full`) (fields `actor`, `presence`, `cause`, `retry_after_ms`; ADR-0876). `presence.sync.set` (debug,
   logger `client_server`) records a `/sync` that changed the caller's state (fields `actor`,
   `presence`). `presence.change.limited` (debug, logger `presence`) records a `/sync` change dropped
   for either reason (fields `actor`, `device_id`, `presence`, `cause`, `retry_after_ms`), and a `/sync` asking for
   `unavailable` while another device of the account holds it online and the account is not already `unavailable`
-  (`cause` `device_online`, no `retry_after_ms`; ADR-0871).
+  (`cause` `device_online`, no `retry_after_ms`; ADR-0875).
   `presence.tracker.full` (warning, logger `presence`) fires when the presence tracker refused a change because it
   had no room (`cause` `tracker_full` above) or evicted an account to make room, at most once a minute, with the
-  number of each since the last warning (fields `refused`, `evicted`, `accounts`, `limit`; never a user ID; ADR-0871,
-  ADR-0872).
+  number of each since the last warning (fields `refused`, `evicted`, `accounts`, `limit`; never a user ID; ADR-0875,
+  ADR-0876).
   `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
   has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
   is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger
@@ -665,6 +665,17 @@ event was sent but its row could not be recorded, so it is sent again after a re
 The process entry point, not the `delayed_events` module, writes one start-up warning beginning
 `delayed_events.rows_skipped_at_load:` when the loader skipped rows, with the count only: the loader skips a row it
 cannot read and never repairs it (ADR-0824).
+
+## TURN credential diagnostics (ADR-0871)
+
+`GET /_matrix/client/v3/voip/turnServer` logs under the `turn` module, never `client_server`, each line with
+`user_id`: `turn.credentials_issued` (info, with `credential` (`static` or `shared_secret`), `ttl_seconds` and
+`uri_count`), `turn.credentials_unavailable` (error, with `reason`: the shared secret file is unreadable or empty, and
+the request is answered 500) and `turn.not_configured` (debug: no TURN URI is configured and the answer is `{}`). The
+username, the password and the shared secret are never logged. The password is the secret; the username is withheld
+because static credentials are one configured pair shared by every user, and so that no line ever holds credential
+text. With a shared secret the username can be rebuilt from `user_id`, `ttl_seconds` and the line's timestamp, which is
+accepted: without the password it grants nothing (ADR-0871).
 
 ## Registration token file diagnostics
 

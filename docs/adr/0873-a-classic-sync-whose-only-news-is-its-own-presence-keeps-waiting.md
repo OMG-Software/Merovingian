@@ -3,7 +3,7 @@
 * Status: accepted
 * Date: 2026-11-21
 
-Technical Story: the presence loop of ADR-0871. A classic `/sync` long-poll returned at once whenever the sync stream
+Technical Story: the presence loop of ADR-0875. A classic `/sync` long-poll returned at once whenever the sync stream
 moved past its `since`, even when the only new row was the caller's own presence, which `/sync` never sends to its own
 user. Each presence change of an account answered every waiting sync of that account with nothing, and each client
 synced again at once.
@@ -46,6 +46,6 @@ account's other devices, and a request's own `set_presence` waking itself.
 
 ### Negative Consequences
 
-* Two of the caller's own presence changes in a row (at least 5 s apart, ADR-0872) answer the second with nothing, as
+* Two of the caller's own presence changes in a row (at least 5 s apart, ADR-0876) answer the second with nothing, as
   before this decision.
 * Option 3 changes what clients are sent; the spec's presence events are for other users.

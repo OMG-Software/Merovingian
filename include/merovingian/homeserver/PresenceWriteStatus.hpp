@@ -12,7 +12,7 @@ enum class PresenceWriteStatus : std::uint8_t
 {
     // Stored and sent, or accepted and dropped because presence is off.
     stored,
-    // Not stored: refused by `AccountPresenceTracker` (ADR-0872). The account's presence changed less than
+    // Not stored: refused by `AccountPresenceTracker` (ADR-0876). The account's presence changed less than
     // `AccountPresenceTracker::change_window_ms` ago, or, when `PresenceWrite::tracker_full` is set, the table had no
     // room for the account, whose presence need not have changed at all.
     limited,

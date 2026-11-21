@@ -19,7 +19,7 @@ struct ClientServerDispatchOptions final
     bool rate_limit_admitted{false};
     // A parked /sync or sliding sync run again after a wake-up or its timeout (`rerun_waiting_sync`). Its
     // `set_presence` was applied on its first run and is not applied again, so a change the window dropped stays
-    // dropped (ADR-0872).
+    // dropped (ADR-0876).
     bool sync_rerun{false};
 };
 

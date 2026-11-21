@@ -176,6 +176,23 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`, `src/observability/AGENTS.md`,
   `security/coding-rules.md`.
 
+- **`GET /voip/turnServer` never logs the TURN username, the password or the shared secret,
+  at any level.** No field of its lines carries credential text. It logs through
+  `log_turn_diagnostic` under the `turn` module: `user_id` on every line, `credential`,
+  `ttl_seconds` and `uri_count` on `turn.credentials_issued`, and a fixed `reason` on
+  `turn.credentials_unavailable`.
+  Why: the password is the secret, and the shared secret would let a log reader mint
+  credentials for any user (CWE-532). The username is withheld too because with static
+  credentials it is a configured value nothing else reveals, shared by every user, and one
+  of the two halves of a credential the whole server relays with. One rule for both kinds
+  keeps every line free of credential text, so a log is safe to paste into an issue. With
+  a shared secret the username (`<expiry>:<user_id>`) can be rebuilt from `user_id`,
+  `ttl_seconds` and the line's timestamp, and is useless without the password; that is
+  accepted, and is no reason to log it.
+  Source: `src/homeserver/AGENTS.md`;
+  [ADR-0871](adr/0871-turn-credential-requests-log-under-their-own-turn-module.md),
+  [ADR-0480](adr/0480-turn-credentials-come-from-a-coturn-shared-secret-file-through-an-openssl-hmac-sha1.md).
+
 - **Write log records only through `SingleLog`, and never remove the control-character
   escaping in `SingleLog::make_log_line`.** Every line is passed through
   `escape_log_controls`, so `\n`, `\r`, other C0 controls, DEL and UTF-8 C1 controls in a
@@ -2067,7 +2084,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
 | `src/oauth/AGENTS.md` | OAuth 2.0 API |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync; Delayed events |
+| `src/homeserver/AGENTS.md` | Secrets and logging; Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync; Delayed events |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | OAuth 2.0 API; Database; Delayed events |
 | `migrations/AGENTS.md` | Database |
