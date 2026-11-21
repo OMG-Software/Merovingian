@@ -148,19 +148,37 @@ auto AccountPresenceTracker::note_sync(std::string_view user, std::string_view d
         held->seen_at_ms = now_ms;
         held->online = online;
     }
-    else
+    else if (devices.size() < max_devices_per_account || make_device_place(devices, online))
     {
-        if (devices.size() >= max_devices_per_account)
-        {
-            auto const oldest = std::ranges::min_element(devices, std::ranges::less{}, &Device::seen_at_ms);
-            devices.erase(oldest);
-        }
         devices.push_back(Device{std::string{device}, now_ms, online});
     }
     refile(entry, now_ms);
     return std::ranges::any_of(devices, [](Device const& held) {
         return held.online;
     });
+}
+
+auto AccountPresenceTracker::make_device_place(std::vector<Device>& devices, bool online) -> bool
+{
+    auto victim = devices.end();
+    for (auto held = devices.begin(); held != devices.end(); ++held)
+    {
+        if (!held->online && (victim == devices.end() || held->seen_at_ms < victim->seen_at_ms))
+        {
+            victim = held;
+        }
+    }
+    if (victim == devices.end() && online)
+    {
+        // Every device asked for online: the newcomer holds the account online as well as the one it replaces.
+        victim = std::ranges::min_element(devices, std::ranges::less{}, &Device::seen_at_ms);
+    }
+    if (victim == devices.end())
+    {
+        return false;
+    }
+    devices.erase(victim);
+    return true;
 }
 
 auto AccountPresenceTracker::forget_device(std::string_view user, std::string_view device, std::int64_t now_ms) -> void

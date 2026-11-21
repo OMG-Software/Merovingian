@@ -45,7 +45,9 @@ public:
     // The idle timeout (`presence_idle_timeout_ms`): a device holds the account online for as long as the idle sweep
     // would leave it online after that device's last sync. `PresenceService.cpp` asserts the two are equal.
     static constexpr auto device_fresh_ms = std::int64_t{5 * 60 * 1000};
-    // Far more devices than one person syncs from at once; each is a device ID and two integers.
+    // Far more devices than one person syncs from at once; each is a device ID and two integers. At the cap a new
+    // device takes the place of one that asked for unavailable first, and only one asking for online takes an online
+    // device's place (`make_device_place`).
     static constexpr auto max_devices_per_account = std::size_t{64U};
     // Accounts with a device that asked for online within the last five minutes, or a window open: the account cap a
     // tracker has unless it is made with another.
@@ -158,6 +160,12 @@ private:
 
     // Moves every account whose window ended by `now_ms` from `m_open_windows` to `m_closed`.
     auto close_ended_windows(std::int64_t now_ms) -> void;
+
+    // Makes a place in a full `devices` for a new device asking for `online` (true) or `unavailable`: the least
+    // recently seen device that asked for unavailable gives up its place, or, for an online newcomer when every device
+    // asked for online, the least recently seen of them. False when there is none to give: an unavailable newcomer
+    // holds nothing, so it never ends another device's online hold (ADR-0871).
+    [[nodiscard]] static auto make_device_place(std::vector<Device>& devices, bool online) -> bool;
 
     // True when the table can hold another account at `now_ms`: it is not full, or an account in it has no open window.
     [[nodiscard]] auto has_room(std::int64_t now_ms) const noexcept -> bool;

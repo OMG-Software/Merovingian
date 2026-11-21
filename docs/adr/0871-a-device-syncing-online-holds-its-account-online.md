@@ -38,7 +38,11 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
 * The freshness time is the idle timeout, so a closed client holds the account online exactly as long as the idle
   sweep would leave it online after that client's last sync; a `static_assert` in `PresenceService.cpp` keeps the
   two equal.
-* At most `max_devices_per_account` (64) devices per account, the least recently seen replaced; at most `max_accounts`
+* At most `max_devices_per_account` (64) devices per account. At the cap a new device takes the place of the least
+  recently seen device that asked for `unavailable`; only a device asking for `online` takes the place of an online
+  one (the least recently seen), and a device asking for `unavailable` with no such place is not recorded, since it
+  holds nothing: replacing by age alone let a 65th device asking for `unavailable` end the only online hold, which is
+  the flip this decision prevents. At most `max_accounts`
   (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. An account with an open window
   (ADR-0872) is filed under its end, any other under the time its latest online device goes stale (a device that last
   asked for `unavailable` holds no place), so a prune visits only expired accounts, never the table: a flood of

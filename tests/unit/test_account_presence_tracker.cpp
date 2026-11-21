@@ -202,9 +202,49 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
         {
             auto const any_online = tracker.note_sync(alice, "NEWEST", false, start_ms + 1'000);
 
-            THEN("it replaces the least recently seen device, so none asks for online")
+            THEN("it takes the place of the least recently seen device that asked for unavailable, and the online hold "
+                 "stays")
             {
-                REQUIRE_FALSE(any_online);
+                REQUIRE(any_online);
+                REQUIRE(tracker.note_sync(alice, "NEWEST", false, start_ms + 1'001));
+            }
+        }
+    }
+
+    GIVEN("an account with as many devices as the cap, every one of them asking for online")
+    {
+        auto tracker = AccountPresenceTracker{};
+        for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_devices_per_account; ++index)
+        {
+            std::ignore = tracker.note_sync(alice, "D" + std::to_string(index), true,
+                                            start_ms + static_cast<std::int64_t>(index));
+        }
+
+        WHEN("one more device syncs asking for unavailable")
+        {
+            auto const any_online = tracker.note_sync(alice, "NEWEST", false, start_ms + 1'000);
+
+            THEN("it is not recorded, since it holds nothing, and every online hold stays")
+            {
+                REQUIRE(any_online);
+                REQUIRE(tracker.note_sync(alice, "D0", true, start_ms + 1'001));
+            }
+        }
+
+        WHEN("one more device syncs asking for online")
+        {
+            auto const any_online = tracker.note_sync(alice, "NEWEST", true, start_ms + 1'000);
+            // Forgetting every device but D0 leaves the account held online only if D0 kept its place.
+            tracker.forget_device(alice, "NEWEST", start_ms + 1'001);
+            for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_devices_per_account; ++index)
+            {
+                tracker.forget_device(alice, "D" + std::to_string(index), start_ms + 1'001);
+            }
+
+            THEN("it takes the place of the least recently seen online device, D0")
+            {
+                REQUIRE(any_online);
+                REQUIRE_FALSE(tracker.note_sync(alice, "PROBE", false, start_ms + 1'002));
             }
         }
     }
