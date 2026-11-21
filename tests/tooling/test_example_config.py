@@ -282,7 +282,7 @@ DATABASE_AUDIT_CALL = re.compile(
 MODULE_CONSTANT = re.compile(
     r'\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:std::string_view\s*\{\s*|std::string\s*\{\s*)?"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}?\s*;'
 )
-MODULE_CONSTANT_INIT = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([A-Za-z0-9_]+)"(?:sv)?\s*\}\s*;')
+MODULE_CONSTANT_INIT = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([A-Za-z0-9_]+)"(?:sv|s)?\s*\}\s*;')
 # Identifiers that forward a caller's module rather than name one.
 FORWARDED_MODULE_PARAMETERS = {"__func__", "mod", "logger", "module"}
 EXAMPLE_LOG_MODULE_LINE = re.compile(r"^# log_modules\.([A-Za-z0-9_]+)=", re.MULTILINE)
@@ -385,6 +385,27 @@ class ExampleLogModuleListTests(unittest.TestCase):
         self.assertEqual(found[QUALIFIED_LOG_CALL.pattern], {"qualified"})
         self.assertEqual(found[LEVEL_LOG_CALL.pattern], {"level", "level_s"})
         self.assertEqual(found[DATABASE_AUDIT_CALL.pattern], {"audit"})
+
+    def test_a_module_constant_with_a_string_suffix_resolves_in_both_forms(self) -> None:
+        # GIVEN module constants written with an `s` or `sv` suffix, by assignment and by brace
+        # initialisation, each used by a call.
+        source = (
+            'auto const assigned_s = "assigned_s"s;\n'
+            'constexpr auto assigned_sv = std::string_view{"assigned_sv"sv};\n'
+            'constexpr std::string_view braced_sv{"braced_sv"sv};\n'
+            'std::string const braced_s{"braced_s"s};\n'
+            'observability::log_diagnostic(assigned_s, "x", fields, severity);\n'
+            'observability::log_diagnostic(assigned_sv, "x", fields, severity);\n'
+            'observability::log_diagnostic(braced_sv, "x", fields, severity);\n'
+            'observability::log_diagnostic(braced_s, "x", fields, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN every constant resolves, so a suffix never sends a well-named module to `unresolved`.
+        self.assertEqual(modules, {"assigned_s", "assigned_sv", "braced_sv", "braced_s"})
+        self.assertEqual(unresolved, set())
 
     def test_a_database_audit_call_resolves_its_module_like_the_other_call_forms(self) -> None:
         # GIVEN database audit calls through the database, an alias for it and a pointer, naming their
