@@ -421,7 +421,8 @@ SCENARIO("The turn log names an unreadable shared secret as an error under its o
                 auto const line = module_line(text, "ERROR", "turn", "turn.credentials_unavailable");
                 REQUIRE(line.has_value());
                 CHECK(field_value(line.value(), "user_id") == "@alice:example.org");
-                // The reason holds spaces, so it is matched whole rather than through field_value.
+                // field_value stops only where the next ` name=` field opens, so the reason, which holds spaces, is
+                // read whole.
                 CHECK(field_value(line.value(), "reason") == "shared secret file unreadable or empty");
             }
         }

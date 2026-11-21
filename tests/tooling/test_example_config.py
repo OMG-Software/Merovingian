@@ -373,12 +373,24 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
     # given two values (say, a `log_module` in each of two functions) is ambiguous, never
     # silently resolved to whichever definition came last.
     constants: dict[str, set[str]] = {}
+    # Where each constant is defined, so a name also given some other value is told apart.
+    defined_at: dict[str, set[int]] = {}
     for regex in (MODULE_CONSTANT, MODULE_CONSTANT_INIT):
         for found in regex.finditer(text):
             # Its value is a literal, so it is matched in `text`; its name must be code, not the
             # inside of some other literal, where `code` holds a blank instead.
             if code[found.start()] == text[found.start()]:
                 constants.setdefault(found.group(1), set()).add(found.group(2))
+                defined_at.setdefault(found.group(1), set()).add(found.start())
+
+    def given_another_value(name: str) -> bool:
+        # A constant reassigned anything but a literal (`log_module = federation_module(kind);`)
+        # may hold a module the scan cannot read, so it is reported rather than resolved.
+        return any(
+            found.start() not in defined_at[name]
+            for found in re.finditer(NAME_INITIALISED.format(name=re.escape(name)), code)
+        )
+
     for opening, call in CALL_FORMS:
         for found in opening.finditer(code):
             read = call.match(text, found.start())
@@ -396,6 +408,8 @@ def scan_log_modules(source: str, label: str) -> tuple[set[str], set[str]]:
                 # the scan knows no scopes: a constant of this file that shares its last segment may
                 # be another one, so it is reported, never resolved and never skipped.
                 unresolved.add(f"{label}: {identifier}")
+            elif identifier in constants and given_another_value(identifier):
+                unresolved.add(f"{label}: {identifier} (also given a value that is not a literal in this file)")
             elif len(constants.get(identifier, ())) == 1:
                 modules.update(constants[identifier])
             elif identifier in constants:
@@ -640,6 +654,26 @@ class ExampleLogModuleListTests(unittest.TestCase):
         # THEN it is reported: the scan cannot read what the local holds.
         self.assertEqual(modules, set())
         self.assertEqual(unresolved, {"f.cpp: module"})
+
+    def test_a_constant_also_given_a_computed_value_is_reported(self) -> None:
+        # GIVEN a module constant that one branch reassigns from a call, beside one compared only.
+        source = (
+            'auto log_module = std::string_view{"rate_limit"};\n'
+            "if (fed) { log_module = federation_module(kind); }\n"
+            'observability::log_diagnostic(log_module, "event", fields, severity);\n'
+            'constexpr auto kept_module = std::string_view{"kept"};\n'
+            "if (kept_module == other) { }\n"
+            'observability::log_diagnostic(kept_module, "event", fields, severity);\n'
+        )
+
+        # WHEN the source is scanned.
+        modules, unresolved = scan_log_modules(source, "f.cpp")
+
+        # THEN the reassigned one is reported, not taken for `rate_limit`; a comparison is no value.
+        self.assertEqual(modules, {"kept"})
+        self.assertEqual(
+            unresolved, {"f.cpp: log_module (also given a value that is not a literal in this file)"}
+        )
 
     def test_a_local_copied_from_a_forwarding_parameter_is_skipped(self) -> None:
         # GIVEN a function that copies its `logger` parameter into `mod` and logs through it,
