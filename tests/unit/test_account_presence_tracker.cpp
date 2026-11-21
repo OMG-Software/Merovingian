@@ -287,11 +287,12 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
             auto const blocked = tracker.change_blocked_for_ms(alice, later_ms + 1);
             tracker.note_change(alice, later_ms + 1);
 
-            THEN("it is allowed and takes the expired account's place, the one account a prune looked at")
+            THEN("it is allowed and takes the expired account's place: a prune re-filed that one account as its window "
+                 "ended, then removed it, and looked at no other")
             {
                 REQUIRE_FALSE(blocked.has_value());
                 REQUIRE(tracker.account_count() == small_cap);
-                REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.accounts_examined() == 2U);
                 REQUIRE(tracker.change_blocked_for_ms(alice, later_ms + 2).has_value());
             }
         }
@@ -307,7 +308,7 @@ SCENARIO("A prune of a full table looks only at the accounts that have expired",
 
             THEN("no request looks at the table, since no account has expired")
             {
-                REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.accounts_examined() == 2U);
                 REQUIRE(tracker.account_count() == small_cap);
             }
         }

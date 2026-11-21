@@ -89,7 +89,8 @@ public:
     // Accounts held, ones a prune would remove included.
     [[nodiscard]] auto account_count() const noexcept -> std::size_t;
 
-    // Accounts a prune removed or a full table evicted since the table was made, for tests that prove the cost.
+    // Accounts a prune re-filed when their window ended or removed, or a full table evicted, since the table was made,
+    // for tests that prove the cost.
     [[nodiscard]] auto accounts_examined() const noexcept -> std::uint64_t;
 
     // The most accounts the table holds.

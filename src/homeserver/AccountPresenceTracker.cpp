@@ -70,7 +70,9 @@ auto AccountPresenceTracker::close_ended_windows(std::int64_t now_ms) -> void
 {
     while (!m_open_windows.empty() && m_open_windows.begin()->first <= now_ms)
     {
-        // Refiling erases this front entry, so the loop always moves on.
+        // Refiling erases this front entry, so the loop always moves on. Each visit counts, so a prune that closed
+        // windows not yet ended would show in `accounts_examined`.
+        ++m_accounts_examined;
         auto const ended = m_accounts.find(m_open_windows.begin()->second);
         if (ended == m_accounts.end())
         {

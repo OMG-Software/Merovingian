@@ -22362,7 +22362,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "set_presence must be online, offline or unavailable");
         }
         // ADR-0872: applied on the request's first run only. A rerun of a parked poll is the same request, and a
-        // change the window dropped stays dropped, never kept once the window has ended.
+        // change the window dropped stays dropped, never kept once the window has ended. Every refusal of a /sync is
+        // above this line: `sync_json` serves any `since` (one it cannot use as no `since`, ADR-0315) and filter it is
+        // given, so a refused request never changes presence. Keep any new refusal above it.
         if (auto const changed = dispatch_options.sync_rerun
                                      ? std::nullopt
                                      : apply_sync_presence(rt.homeserver, *user, device_id, *presence_mode);

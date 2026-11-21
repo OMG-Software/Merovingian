@@ -1174,6 +1174,39 @@ SCENARIO("A sync that leaves the presence as it is opens no change window", "[in
     }
 }
 
+// A /sync refused with a 400 changes no presence, as a refused sliding sync does not (ADR-0872): the refusal would
+// otherwise store a change, send it to every server in the user's rooms and open the window against the user's next
+// real change. Every refusal of a /sync comes before its `set_presence` is applied.
+SCENARIO("A /sync refused for its filter changes no presence", "[integration][presence][sync]")
+{
+    GIVEN("alice shares a room with bob on another server and has never set her presence")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+
+        WHEN("she syncs online with an inline filter that is not JSON and with a filter ID she never stored")
+        {
+            auto const not_json = call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&filter=%7Bnot", token);
+            auto const unknown = call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&filter=unknown", token);
+            auto const put = put_alice_presence(runtime, token, R"({"presence":"unavailable"})");
+
+            THEN("both are refused, nothing was stored or sent, and no window stops her next change")
+            {
+                REQUIRE(not_json.status == 400U);
+                REQUIRE(unknown.status == 400U);
+                REQUIRE(put.status == 200U);
+                REQUIRE(alice_presence_state(runtime) == "unavailable");
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+    }
+}
+
 // ADR-0872: a change dropped in a window is dropped, never kept for later. A long-polling sync whose change was
 // dropped is run again after a wake-up or its timeout (`rerun_waiting_sync`); that rerun is the same request and does
 // not apply its `set_presence` again, even once the window has ended.
