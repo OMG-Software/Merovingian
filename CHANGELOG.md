@@ -184,6 +184,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A classic `/sync` whose only news is the caller's own presence keeps waiting instead of answering nothing (ADR-0873).
 * A classic `/sync` with `full_state=true` is answered at once, whatever its `timeout`, as the spec says; it waited
   like any other long poll (ADR-0873).
+* A sliding sync refused with `M_UNKNOWN_POS` no longer changes the caller's presence: `set_presence` is applied
+  only once the `pos` is accepted (ADR-0872).
 * `docs/observability-audit.md` named the wrong logger for `presence.sync.set`; it is `client_server`.
 
 ## Release notes

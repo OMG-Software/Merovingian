@@ -22418,19 +22418,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        // ADR-0872: on the request's first run only, as for /sync.
-        if (auto const changed = dispatch_options.sync_rerun ? std::nullopt
-                                                             : apply_sync_presence(rt.homeserver, *user, device_id_4186,
-                                                                                   *sliding_presence_mode);
-            changed.has_value())
-        {
-            log_diagnostic("presence.sync.set", {
-                                                    {"actor",    *user,             false},
-                                                    {"presence", changed->presence, false}
-            });
-            broadcast_presence_edu(rt.homeserver, *changed);
-            std::ignore = ensure_sync_notifier(rt);
-        }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields. MSC4186: "Servers MUST reject a
         // `pos` that was not issued to the requesting user and device, responding with `M_UNKNOWN_POS`": a pos with no
         // valid binding to this user and device, or one that does not read as a position, is refused whole, never
@@ -22456,6 +22443,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_POS", "unknown sliding sync position");
             }
+        }
+        // ADR-0872: on the request's first run only, as for /sync, and only once `pos` is accepted, so a refused
+        // request changes no presence and opens no window.
+        if (auto const changed = dispatch_options.sync_rerun ? std::nullopt
+                                                             : apply_sync_presence(rt.homeserver, *user, device_id_4186,
+                                                                                   *sliding_presence_mode);
+            changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            std::ignore = ensure_sync_notifier(rt);
         }
         // MSC4186 `timeout`: "Ignored when no `pos` is set": a request without one is answered at once (ADR-0865).
         auto const timeout =

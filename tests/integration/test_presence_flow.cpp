@@ -1224,6 +1224,37 @@ SCENARIO("A parked sliding sync run again does not apply its set_presence a seco
     }
 }
 
+// MSC4186: "Servers MUST reject a `pos` that was not issued to the requesting user and device". A refused request does
+// nothing else, so its set_presence opens no ADR-0872 window that would make a later PUT /presence 429.
+SCENARIO("A sliding sync refused for an unknown pos changes no presence", "[integration][presence][sliding-sync]")
+{
+    GIVEN("a registered user with no presence row")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_alice(runtime);
+
+        WHEN("she sliding-syncs with a pos this server never issued, asking for unavailable")
+        {
+            auto const refused = call(runtime, "POST", std::string{sliding_sync_target} + "?pos=not-issued", token,
+                                      R"({"set_presence":"unavailable"})");
+
+            THEN("it is 400 M_UNKNOWN_POS, nothing is stored, and her presence may be set at once")
+            {
+                REQUIRE(refused.status == 400U);
+                auto const body = parse_object(refused.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_POS");
+                REQUIRE(alice_presence_state(runtime) == "none");
+                REQUIRE(put_alice_presence(runtime, token, R"({"presence":"online"})").status == 200U);
+            }
+        }
+    }
+}
+
 // ADR-0871: a device is one device whichever sync API it uses, so the hold one transport takes is released by the
 // other's set_presence=offline.
 SCENARIO("A device's hold taken through sliding sync is released by its classic sync",
