@@ -39,11 +39,13 @@ Chosen option: 1, because it matches the spec's "any of the user's clients" and 
   sweep would leave it online after that client's last sync; a `static_assert` in `PresenceService.cpp` keeps the
   two equal.
 * At most `max_devices_per_account` (64) devices per account, the least recently seen replaced; at most `max_accounts`
-  (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. Each account is filed under the
-  time it stops mattering (its latest online device stale and its window ended; a device that last asked for
-  `unavailable` holds no place), so a prune visits only expired accounts, never the table: a flood of overflow requests
-  under `runtime.mutex` costs no scan. With the table full after a prune, a sync of an account it does not hold asks
-  for itself alone, as before this decision.
+  (65,536) accounts, pruned by the idle sweep every 30 s and when the table is full. An account with an open window
+  (ADR-0872) is filed under its end, any other under the time its latest online device goes stale (a device that last
+  asked for `unavailable` holds no place), so a prune visits only expired accounts, never the table: a flood of
+  overflow requests under `runtime.mutex` costs no scan. With the table still full, the account with no open window
+  whose devices go stale soonest is evicted to make room: it loses its devices' holds until it syncs again, never a
+  window. Only when every account has an open window does a sync of an account the table does not hold have its device
+  ignored and its change refused (ADR-0872), at most until the soonest window ends.
 * The asks are in memory only: after a restart each device's next sync puts its ask back.
 * The clock is the steady clock (`presence_limit_clock_ms`), which never goes back.
 

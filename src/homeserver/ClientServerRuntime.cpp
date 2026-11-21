@@ -22351,7 +22351,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, device_id, *presence_mode);
+        // ADR-0872: applied on the request's first run only. A rerun of a parked poll is the same request, and a
+        // change the window dropped stays dropped, never kept once the window has ended.
+        if (auto const changed = dispatch_options.sync_rerun
+                                     ? std::nullopt
+                                     : apply_sync_presence(rt.homeserver, *user, device_id, *presence_mode);
             changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
@@ -22414,7 +22418,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                 "set_presence must be online, offline or unavailable");
         }
-        if (auto const changed = apply_sync_presence(rt.homeserver, *user, device_id_4186, *sliding_presence_mode);
+        // ADR-0872: on the request's first run only, as for /sync.
+        if (auto const changed = dispatch_options.sync_rerun ? std::nullopt
+                                                             : apply_sync_presence(rt.homeserver, *user, device_id_4186,
+                                                                                   *sliding_presence_mode);
             changed.has_value())
         {
             log_diagnostic("presence.sync.set", {
@@ -25404,10 +25411,8 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
     // ADR-0872: judged and noted under the same lock as the write, so two requests at once cannot both be first.
     if (auto const blocked = tracker.change_blocked_for_ms(state.user_id, clock_ms); blocked.has_value())
     {
-        // A full table waits for an account to expire, at most the freshness time; a window, at most the window.
-        auto const longest_ms =
-            std::max(AccountPresenceTracker::change_window_ms, AccountPresenceTracker::device_fresh_ms);
-        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, longest_ms);
+        // The account's own window, or a full table's soonest one: never longer than the window.
+        auto const retry_after_ms = std::clamp<std::int64_t>(*blocked, 1, AccountPresenceTracker::change_window_ms);
         return PresenceWrite{PresenceWriteStatus::limited, static_cast<std::uint32_t>(retry_after_ms),
                              tracker.is_full_for(state.user_id, clock_ms)};
     }

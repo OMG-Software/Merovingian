@@ -29,12 +29,14 @@ namespace merovingian::homeserver
 // the one kept, never the last.
 //
 // Bounded: at most `max_accounts` accounts of `max_devices_per_account` devices each. A new device past the device cap
-// replaces the account's least recently seen one. Each account is filed under the time it stops mattering (its last
-// online device stale and its window ended), so a prune visits only the accounts that have expired, never the table: an
-// overflow request does as much work as there are accounts to remove. An account the table has no room for, once the
-// expired ones are gone, has its devices ignored (its sync asks for itself alone, as without this table) and every
-// change refused until there is room, so a flood of accounts cannot lift the limit for itself. Not thread-safe:
-// `runtime.mutex` serialises every use (`HomeserverRuntime::presence_tracker`).
+// replaces the account's least recently seen one. An account with an open window is filed under the window's end; any
+// other under the time its last online device goes stale, and an account moves from the first to the second when its
+// window ends. A prune removes only the accounts whose time has passed, never visiting the table. When the table is
+// full after a prune, the account with no open window whose devices go stale soonest makes room: it loses only its
+// devices' holds, never a window, so the limit holds. Only when every account has an open window is there no room: a
+// newcomer's devices are ignored and its change refused until the soonest window ends (at most `change_window_ms`), so
+// a flood of accounts cannot lift the limit for itself. Every operation does O(log n) work per account it moves or
+// removes. Not thread-safe: `runtime.mutex` serialises every use (`HomeserverRuntime::presence_tracker`).
 class AccountPresenceTracker final
 {
 public:
@@ -52,27 +54,28 @@ public:
     [[nodiscard]] auto note_sync(std::string_view user, std::string_view device, bool online, std::int64_t now_ms)
         -> bool;
 
-    // A sync with `set_presence=offline`: the device no longer holds the account online.
-    auto forget_device(std::string_view user, std::string_view device) -> void;
+    // A sync with `set_presence=offline` at `now_ms`: the device no longer holds the account online.
+    auto forget_device(std::string_view user, std::string_view device, std::int64_t now_ms) -> void;
 
     // How long `user` must wait before a change of presence is kept, or nullopt when one may be kept now: the rest of
-    // the account's window, or, when `is_full_for`, the time until the table's soonest account expires.
+    // the account's window, or, when `is_full_for`, the rest of the table's soonest window. Never over the window.
     [[nodiscard]] auto change_blocked_for_ms(std::string_view user, std::int64_t now_ms) const
         -> std::optional<std::int64_t>;
 
-    // True when a change of `user` is refused because the table has no room for the account, not because of a window.
+    // True when a change of `user` is refused because the table has no room for the account (every account in it has an
+    // open window), not because of the account's own window.
     [[nodiscard]] auto is_full_for(std::string_view user, std::int64_t now_ms) const -> bool;
 
     // Starts the window of `user` at `now_ms`: a change was just kept.
     auto note_change(std::string_view user, std::int64_t now_ms) -> void;
 
-    // Removes every account whose devices are all stale and whose window ended by `now_ms`.
+    // Removes every account whose online devices are all stale and whose window ended by `now_ms`.
     auto prune(std::int64_t now_ms) -> void;
 
     // Accounts held, ones a prune would remove included.
     [[nodiscard]] auto account_count() const noexcept -> std::size_t;
 
-    // Accounts a prune has looked at since the table was made, for tests that prove its cost.
+    // Accounts a prune removed or a full table evicted since the table was made, for tests that prove the cost.
     [[nodiscard]] auto accounts_examined() const noexcept -> std::uint64_t;
 
 private:
@@ -86,9 +89,10 @@ private:
     {
         std::vector<Device> devices{};
         std::optional<std::int64_t> changed_at_ms{};
-        // When the account stops mattering: its latest online device stale and its window ended. Its key in
-        // `m_by_expiry`.
-        std::int64_t expires_at_ms{0};
+        // Its key: the end of its open window (in `m_open_windows`), or else the time its last online device goes stale
+        // or its window ended, whichever is later (in `m_closed`).
+        std::int64_t filed_at_ms{0};
+        bool window_open{false};
     };
     // Looks a user ID up as a string_view without making a string.
     struct UserHash final
@@ -100,21 +104,27 @@ private:
         }
     };
     using Accounts = std::unordered_map<std::string, Account, UserHash, std::equal_to<>>;
-    using ExpiryKey = std::pair<std::int64_t, std::string>;
+    using FiledKey = std::pair<std::int64_t, std::string>;
 
-    // The account of `user`, made when there is room (after removing the expired accounts when the table is full);
+    // The account of `user`, made when there is room (after a prune, and an eviction when the table is still full);
     // `m_accounts.end()` when there is none.
     [[nodiscard]] auto account_for(std::string_view user, std::int64_t now_ms) -> Accounts::iterator;
 
-    // Files `entry` under its expiry again, after its devices or window changed.
+    // Files `entry` again, after its devices or window changed or its window ended.
     auto refile(Accounts::iterator entry, std::int64_t now_ms) -> void;
 
-    // True when an account has expired by `now_ms`, so a prune would make room.
-    [[nodiscard]] auto has_expired_account(std::int64_t now_ms) const noexcept -> bool;
+    // Moves every account whose window ended by `now_ms` from `m_open_windows` to `m_closed`.
+    auto close_ended_windows(std::int64_t now_ms) -> void;
+
+    // True when the table can hold another account at `now_ms`: it is not full, or an account in it has no open window.
+    [[nodiscard]] auto has_room(std::int64_t now_ms) const noexcept -> bool;
 
     Accounts m_accounts{};
-    // (expires_at_ms, user) of every account, soonest first.
-    std::set<ExpiryKey> m_by_expiry{};
+    // (window end, user) of every account whose window was open when it was filed, soonest first.
+    std::set<FiledKey> m_open_windows{};
+    // (stale-or-ended time, user) of every other account, soonest first: the ones a prune removes, and the one a full
+    // table evicts.
+    std::set<FiledKey> m_closed{};
     std::uint64_t m_accounts_examined{0U};
 };
 

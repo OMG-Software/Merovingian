@@ -1123,12 +1123,56 @@ SCENARIO("Only the first presence change in a window is kept", "[integration][pr
     }
 }
 
-// ADR-0872: at its cap, with no account expired, the presence tracker refuses a change of an account it does not hold
-// (fails closed), so a flood of accounts cannot lift the limit for itself. The refusal says so and waits for an account
-// to expire, not for a window the account never opened.
+// ADR-0872: a change dropped in a window is dropped, never kept for later. A long-polling sync whose change was
+// dropped is run again after a wake-up or its timeout (`rerun_waiting_sync`); that rerun is the same request and does
+// not apply its `set_presence` again, even once the window has ended.
+SCENARIO("A parked sync run again does not apply its set_presence a second time", "[integration][presence][long_poll]")
+{
+    GIVEN("alice shares a room with bob on another server, set herself online, and holds a next_batch")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        REQUIRE(put_alice_presence(runtime, token, R"({"presence":"online"})").status == 200U);
+        auto const initial = call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&set_presence=offline", token);
+        REQUIRE(initial.status == 200U);
+        auto const initial_body = parse_object(initial.body);
+        auto const* since = string_member(initial_body, "next_batch");
+        REQUIRE(since != nullptr);
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+
+        WHEN("she long-polls asking for unavailable inside the window, and the poll is run again once it has ended")
+        {
+            auto const long_poll = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/v3/sync?timeout=30000&set_presence=unavailable&since=" + *since, token, {}};
+            auto const first = merovingian::homeserver::handle_client_server_request(runtime, long_poll);
+            REQUIRE(first.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            let_presence_window_end(runtime);
+            auto const rerun = merovingian::homeserver::handle_client_server_request(
+                runtime, long_poll,
+                merovingian::homeserver::ClientServerDispatchOptions{
+                    .can_wait = false, .rate_limit_admitted = true, .sync_rerun = true});
+
+            THEN("the dropped change stays dropped: she is still online and bob's server is told nothing more")
+            {
+                REQUIRE(rerun.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(alice_presence_state(runtime) == "online");
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0872: at its cap, with every account in its window, the presence tracker refuses a change of an account it does
+// not hold (fails closed), so a flood of accounts cannot lift the limit for itself. The refusal says so and waits for
+// the soonest window to end.
 SCENARIO("A presence change is refused while the presence tracker is full", "[integration][presence][rate_limit]")
 {
-    GIVEN("alice shares a room with bob on another server, and the tracker is full of other accounts held online")
+    GIVEN("alice shares a room with bob on another server, and the tracker is full of accounts that just changed")
     {
         REQUIRE(sodium_init() >= 0);
         auto started = merovingian::homeserver::start_client_server(presence_config());
@@ -1142,7 +1186,7 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
         auto const now_ms = merovingian::homeserver::presence_limit_clock_ms(runtime.homeserver);
         for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
         {
-            std::ignore = tracker.note_sync("@user" + std::to_string(index) + ":other.example", "D", true, now_ms);
+            tracker.note_change("@user" + std::to_string(index) + ":other.example", now_ms);
         }
         auto const& store = runtime.homeserver.database.persistent_store;
         auto const watermark = store.next_sync_stream_id;
@@ -1151,7 +1195,7 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
         {
             auto const put = put_alice_presence(runtime, token, R"({"presence":"online"})");
 
-            THEN("it is 429 naming the full tracker, told to wait for an account to expire, and nothing is kept")
+            THEN("it is 429 naming the full tracker, told to wait for the soonest window, and nothing is kept")
             {
                 REQUIRE(put.status == 429U);
                 auto const body = parse_object(put.body);
@@ -1160,8 +1204,8 @@ SCENARIO("A presence change is refused while the presence tracker is full", "[in
                 REQUIRE(*error == "too many accounts are changing presence");
                 auto const* retry_after_ms = int_member(body, "retry_after_ms");
                 REQUIRE(retry_after_ms != nullptr);
-                REQUIRE(*retry_after_ms > AccountPresenceTracker::change_window_ms);
-                REQUIRE(*retry_after_ms <= AccountPresenceTracker::device_fresh_ms);
+                REQUIRE(*retry_after_ms > 0);
+                REQUIRE(*retry_after_ms <= AccountPresenceTracker::change_window_ms);
                 REQUIRE(alice_presence_state(runtime) == "none");
                 REQUIRE(store.next_sync_stream_id == watermark);
                 REQUIRE(queued_presence_edus(runtime).empty());

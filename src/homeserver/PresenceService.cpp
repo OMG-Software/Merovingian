@@ -345,7 +345,7 @@ auto apply_sync_presence(HomeserverRuntime& runtime, std::string_view user, std:
     if (mode == SyncPresenceMode::offline)
     {
         // "offline": the client is not to be marked online, so it no longer holds the account online either.
-        tracker.forget_device(user, device);
+        tracker.forget_device(user, device, clock_ms);
         return std::nullopt;
     }
     auto const asks_online = mode == SyncPresenceMode::online;

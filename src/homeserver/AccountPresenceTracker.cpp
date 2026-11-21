@@ -37,33 +37,49 @@ namespace
 auto AccountPresenceTracker::refile(Accounts::iterator entry, std::int64_t now_ms) -> void
 {
     auto& account = entry->second;
-    // The account matters until its latest online device is stale and its window has ended; with neither, it is done
-    // now. A device whose last ask was unavailable speaks for nothing (`note_sync` answers from online devices only),
-    // so it never keeps an account in a full table.
-    auto expires_at_ms = now_ms;
-    for (auto const& held : account.devices)
+    auto const lowest = std::numeric_limits<std::int64_t>::min();
+    auto const window_end_ms =
+        account.changed_at_ms.has_value() ? saturating_after(*account.changed_at_ms, change_window_ms) : lowest;
+    auto const window_open = window_end_ms > now_ms;
+    // A closed account matters until its latest online device is stale and its window has ended. A device whose last
+    // ask was unavailable speaks for nothing (`note_sync` answers from online devices only), so it never keeps an
+    // account.
+    auto filed_at_ms = window_end_ms;
+    if (!window_open)
     {
-        if (held.online)
+        for (auto const& held : account.devices)
         {
-            expires_at_ms = std::max(expires_at_ms, saturating_after(held.seen_at_ms, device_fresh_ms));
+            if (held.online)
+            {
+                filed_at_ms = std::max(filed_at_ms, saturating_after(held.seen_at_ms, device_fresh_ms));
+            }
         }
     }
-    if (account.changed_at_ms.has_value())
-    {
-        expires_at_ms = std::max(expires_at_ms, saturating_after(*account.changed_at_ms, change_window_ms));
-    }
-    if (expires_at_ms == account.expires_at_ms)
-    {
-        return;
-    }
-    m_by_expiry.erase(ExpiryKey{account.expires_at_ms, entry->first});
-    account.expires_at_ms = expires_at_ms;
-    m_by_expiry.emplace(expires_at_ms, entry->first);
+    (account.window_open ? m_open_windows : m_closed).erase(FiledKey{account.filed_at_ms, entry->first});
+    account.window_open = window_open;
+    account.filed_at_ms = filed_at_ms;
+    (window_open ? m_open_windows : m_closed).emplace(filed_at_ms, entry->first);
 }
 
-auto AccountPresenceTracker::has_expired_account(std::int64_t now_ms) const noexcept -> bool
+auto AccountPresenceTracker::close_ended_windows(std::int64_t now_ms) -> void
 {
-    return !m_by_expiry.empty() && m_by_expiry.begin()->first <= now_ms;
+    while (!m_open_windows.empty() && m_open_windows.begin()->first <= now_ms)
+    {
+        // Refiling erases this front entry, so the loop always moves on.
+        auto const ended = m_accounts.find(m_open_windows.begin()->second);
+        if (ended == m_accounts.end())
+        {
+            m_open_windows.erase(m_open_windows.begin());
+            continue;
+        }
+        refile(ended, now_ms);
+    }
+}
+
+auto AccountPresenceTracker::has_room(std::int64_t now_ms) const noexcept -> bool
+{
+    return m_accounts.size() < max_accounts || !m_closed.empty() ||
+           (!m_open_windows.empty() && m_open_windows.begin()->first <= now_ms);
 }
 
 auto AccountPresenceTracker::account_for(std::string_view user, std::int64_t now_ms) -> Accounts::iterator
@@ -75,14 +91,23 @@ auto AccountPresenceTracker::account_for(std::string_view user, std::int64_t now
     if (m_accounts.size() >= max_accounts)
     {
         prune(now_ms);
-        if (m_accounts.size() >= max_accounts)
+    }
+    if (m_accounts.size() >= max_accounts)
+    {
+        if (m_closed.empty())
         {
+            // Every account has an open window: evicting one would lift its limit.
             return m_accounts.end();
         }
+        // The account whose devices go stale soonest loses their holds; it has no window to lose.
+        auto const evicted = m_closed.begin();
+        ++m_accounts_examined;
+        m_accounts.erase(evicted->second);
+        m_closed.erase(evicted);
     }
     auto const made = m_accounts.try_emplace(std::string{user}).first;
-    made->second.expires_at_ms = now_ms;
-    m_by_expiry.emplace(now_ms, made->first);
+    made->second.filed_at_ms = std::numeric_limits<std::int64_t>::min();
+    m_closed.emplace(made->second.filed_at_ms, made->first);
     return made;
 }
 
@@ -122,7 +147,7 @@ auto AccountPresenceTracker::note_sync(std::string_view user, std::string_view d
     });
 }
 
-auto AccountPresenceTracker::forget_device(std::string_view user, std::string_view device) -> void
+auto AccountPresenceTracker::forget_device(std::string_view user, std::string_view device, std::int64_t now_ms) -> void
 {
     auto const found = m_accounts.find(user);
     if (found == m_accounts.end())
@@ -132,8 +157,7 @@ auto AccountPresenceTracker::forget_device(std::string_view user, std::string_vi
     std::erase_if(found->second.devices, [device](Device const& held) {
         return held.id == device;
     });
-    // The account may now expire sooner; it is never kept past its old time, and a prune judges it by the new one.
-    refile(found, std::numeric_limits<std::int64_t>::min());
+    refile(found, now_ms);
 }
 
 auto AccountPresenceTracker::change_blocked_for_ms(std::string_view user, std::int64_t now_ms) const
@@ -143,10 +167,10 @@ auto AccountPresenceTracker::change_blocked_for_ms(std::string_view user, std::i
     if (found == m_accounts.end())
     {
         // No window to wait for, unless there is no room to start one: then the change is refused (fails closed) until
-        // the soonest account expires, which is later than now since none has.
+        // the soonest window ends, which is later than now since every window is open.
         if (is_full_for(user, now_ms))
         {
-            return m_by_expiry.begin()->first - now_ms;
+            return m_open_windows.begin()->first - now_ms;
         }
         return std::nullopt;
     }
@@ -163,7 +187,7 @@ auto AccountPresenceTracker::change_blocked_for_ms(std::string_view user, std::i
 
 auto AccountPresenceTracker::is_full_for(std::string_view user, std::int64_t now_ms) const -> bool
 {
-    return m_accounts.size() >= max_accounts && !has_expired_account(now_ms) && !m_accounts.contains(user);
+    return !has_room(now_ms) && !m_accounts.contains(user);
 }
 
 auto AccountPresenceTracker::note_change(std::string_view user, std::int64_t now_ms) -> void
@@ -177,12 +201,13 @@ auto AccountPresenceTracker::note_change(std::string_view user, std::int64_t now
 
 auto AccountPresenceTracker::prune(std::int64_t now_ms) -> void
 {
-    while (has_expired_account(now_ms))
+    close_ended_windows(now_ms);
+    while (!m_closed.empty() && m_closed.begin()->first <= now_ms)
     {
-        auto const soonest = m_by_expiry.begin();
+        auto const soonest = m_closed.begin();
         ++m_accounts_examined;
         m_accounts.erase(soonest->second);
-        m_by_expiry.erase(soonest);
+        m_closed.erase(soonest);
     }
 }
 

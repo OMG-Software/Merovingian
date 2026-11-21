@@ -42,7 +42,7 @@ This is the largest and most complex module — read this file carefully before 
 | `OAuthClock.cpp` | `oauth_wall_clock_ms`: the wall-clock milliseconds every OAuth store and handler passes; `oauth_device_clock_ms`, the same plus `HomeserverRuntime::test_device_grant_clock_advance_ms`, which the device grant's stores are given |
 | `OAuthDeviceAuthorization.cpp` | `POST /_merovingian/oauth2/device` (`handle_oauth_device_authorization`): the device grant's codes (ADR-0804) |
 | `DeviceAuthorisationStore.cpp` | `DeviceAuthorisationStore` (`HomeserverRuntime::oauth_device_authorisations`): device authorisations, 10 minutes, under the hash of the device code with an index by the hash of the user code; 4096 in all and 8 per client address, never evicting a live entry; one browser attached at a time (ADR-0805, ADR-0806). Guarded by `runtime.mutex` |
-| `AccountPresenceTracker.cpp` | `AccountPresenceTracker` (`HomeserverRuntime::presence_tracker`): each local account's devices' last `set_presence` ask (an `online` one holds the account online for 5 minutes, ADR-0871) and the 5 s window after a presence change (ADR-0872); 64 devices per account, 65,536 accounts, each filed under its expiry so a prune visits only expired accounts (`accounts_examined()` counts them), failing closed at the cap while none has expired. Guarded by `runtime.mutex` |
+| `AccountPresenceTracker.cpp` | `AccountPresenceTracker` (`HomeserverRuntime::presence_tracker`): each local account's devices' last `set_presence` ask (an `online` one holds the account online for 5 minutes, ADR-0871) and the 5 s window after a presence change (ADR-0872); 64 devices per account, 65,536 accounts, an account with an open window filed under its end and any other under its devices' staleness, so a prune visits only expired accounts and a full table evicts the closed account that goes stale soonest (`accounts_examined()` counts both); it fails closed only while every account has an open window, and never evicts one. Guarded by `runtime.mutex` |
 | `UserCodeAttemptThrottle.cpp` | `UserCodeAttemptThrottle` (`HomeserverRuntime::oauth_user_code_attempts`): five wrong user codes per client address key in ten minutes, 8192 windows, failing closed at the cap (ADR-0805). Guarded by `runtime.mutex` |
 | `AccountPage.cpp` | `GET` and `POST /_merovingian/account` (`handle_account_page`): the account pages' sign-in, overview, devices, device sign-out, password change, deactivation and cross-signing reset approval (ADR-0796 to ADR-0798) |
 | `AccountSessionStore.cpp` | `AccountSessionStore` (`HomeserverRuntime::account_sessions`): account-page sessions, 15 minutes fixed, hashed secret, 4096 in all and 4 per user (the user's oldest goes), and the session's form token (ADR-0796). Guarded by `runtime.mutex` |
@@ -1386,8 +1386,9 @@ without that check ignores `presence.enabled=false`. Rules:
 - A change of an account's presence starts a 5 s window in which no other change is kept (ADR-0872): a sync's is
   dropped, a `PUT /presence` is 429 (`set_presence` returns `PresenceWrite`). Judge and note it under `runtime.mutex`
   with the write, and keep the first change, never the last. The idle sweep and the profile propagation are not
-  limited. A new path that changes a local user's presence state is limited the same way. Tests move the clock with
-  `test_presence_clock_advance_ms`, never with a sleep.
+  limited. A new path that changes a local user's presence state is limited the same way. A parked poll's rerun
+  (`ClientServerDispatchOptions::sync_rerun`) never applies `set_presence` again, or a dropped change would be kept
+  once the window ends. Tests move the clock with `test_presence_clock_advance_ms`, never with a sleep.
 - A classic `/sync` whose only news is the caller's own presence row waits on (`only_own_presence_since`, ADR-0873):
   never wake a poll for what its response does not send.
 - `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps

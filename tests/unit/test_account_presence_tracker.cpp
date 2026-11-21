@@ -69,7 +69,7 @@ SCENARIO("A device syncing online holds its account online against a device sync
 
         WHEN("the desktop syncs with set_presence=offline and the phone asks for unavailable")
         {
-            tracker.forget_device(alice, desktop);
+            tracker.forget_device(alice, desktop, start_ms + 100);
             auto const any_online = tracker.note_sync(alice, phone, false, start_ms + 100);
 
             THEN("the desktop no longer holds the account online")
@@ -238,23 +238,28 @@ SCENARIO("The tracker is bounded per account and in all", "[unit][presence][acco
         }
     }
 
-    GIVEN("a table holding as many accounts as the cap, each held online by a device")
+    GIVEN("a table holding as many accounts as the cap, each held online by a device and none with a window open")
     {
         auto tracker = AccountPresenceTracker{};
-        for (auto index = std::size_t{0U}; index < AccountPresenceTracker::max_accounts; ++index)
+        std::ignore = tracker.note_sync("@user0:example.org", desktop, true, start_ms);
+        for (auto index = std::size_t{1U}; index < AccountPresenceTracker::max_accounts; ++index)
         {
-            std::ignore = tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms);
+            std::ignore =
+                tracker.note_sync("@user" + std::to_string(index) + ":example.org", desktop, true, start_ms + 1);
         }
 
-        WHEN("an account with no entry asks to change its presence")
+        WHEN("an account with no entry asks to change its presence, however recently the others synced")
         {
-            auto const blocked = tracker.change_blocked_for_ms(alice, start_ms + 1);
+            auto const blocked = tracker.change_blocked_for_ms(alice, start_ms + 2);
+            tracker.note_change(alice, start_ms + 2);
 
-            THEN("it waits for an account to expire, not for a window it never opened, and the table is the cause")
+            THEN("it is allowed, and the account whose device goes stale soonest gives up its place")
             {
-                REQUIRE(blocked == std::optional<std::int64_t>{AccountPresenceTracker::device_fresh_ms - 1});
-                REQUIRE(tracker.is_full_for(alice, start_ms + 1));
-                REQUIRE_FALSE(tracker.is_full_for("@user0:example.org", start_ms + 1));
+                REQUIRE_FALSE(blocked.has_value());
+                REQUIRE(tracker.account_count() == AccountPresenceTracker::max_accounts);
+                REQUIRE(tracker.accounts_examined() == 1U);
+                REQUIRE(tracker.change_blocked_for_ms(alice, start_ms + 3).has_value());
+                REQUIRE_FALSE(tracker.note_sync("@user0:example.org", phone, false, start_ms + 3));
             }
         }
     }

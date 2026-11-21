@@ -40,10 +40,15 @@ Chosen option: 1.
   marked online at once), the profile propagation that resends an unchanged presence with a new display name or avatar
   (it stores the row for local syncs and appservices and sends no `m.presence` EDU), and inbound presence from other
   servers (their own server's to limit).
-* With `AccountPresenceTracker` full and no account in it expired, a change of an account it does not hold is refused
-  (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself; once an
-  account has expired, the change is allowed and takes its place. The refusal's `retry_after_ms` is the time until the
-  soonest account expires (at most `device_fresh_ms`), and its log line's `cause` is `tracker_full`, not `window`.
+* An account with an open window is never removed from `AccountPresenceTracker`, or removing it would lift its limit.
+  A full table makes room by evicting an account with no open window (ADR-0871), so accounts that keep syncing never
+  shut others out. Only when every account in it has an open window is a change of an account it does not hold refused
+  (fails closed, as `UserCodeAttemptThrottle` does), so a flood of accounts cannot lift the limit for itself. The
+  refusal's `retry_after_ms` is the rest of the soonest window (at most `change_window_ms`), and its log line's `cause`
+  is `tracker_full`, not `window`.
+* A dropped change is never kept later: a parked `/sync` or sliding sync is run again after a wake-up or its timeout
+  (`rerun_waiting_sync`, `ClientServerDispatchOptions::sync_rerun`), and that rerun does not apply its `set_presence`
+  again, so a change dropped in the window is not stored once the window has ended.
 * Tests move the clock with `HomeserverRuntime::test_presence_clock_advance_ms`.
 
 ### Positive Consequences
