@@ -270,7 +270,9 @@ LEVEL_LOG_CALL = re.compile(
 # It is told apart by its shape, never by what the database is called (`runtime.database`, or an
 # alias such as `db`): any call not qualified with `observability::` whose first argument is a name
 # or member expression, not a literal. A file-local wrapper takes the event first, as a literal, so it
-# never has that shape; the qualified `observability::` form is QUALIFIED_LOG_CALL's.
+# never has that shape; the qualified `observability::` form is QUALIFIED_LOG_CALL's. A first
+# argument the shape cannot parse, such as `(db)` or a call (`database_of(rt)`), is skipped, not
+# reported: pass the database as a name, a member or `*pointer` (ADR-0872).
 DATABASE_AUDIT_CALL = re.compile(
     r'(?<!observability::)\blog_diagnostic_audit\s*\(\s*'
     r'\*?\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.|->)\s*[A-Za-z_][A-Za-z0-9_]*)*\s*,\s*'
