@@ -133,6 +133,16 @@ The `persistent_store` module logs `sync_stream.watermark_persist_failed` (error
 the sync stream high-water mark could not be written. The id is still issued (ADR-0540), and the next
 write that succeeds covers it; only a restart before any write succeeds can reissue it.
 
+## TURN credential diagnostics (1.1.3)
+
+`GET /_matrix/client/v3/voip/turnServer` logs under the `turn` module, never `client_server` (ADR-0871), so
+`log_modules.turn` sets its level alone. `turn.credentials_issued` is an info line (`user_id`, `credential`, which is
+`shared_secret` or `static`, `ttl_seconds` and `uri_count`) and needs no `--debug`; `turn.credentials_unavailable` is an
+error line (`user_id` and a fixed `reason`) when the shared secret file cannot be read. `turn.not_configured` (`user_id`)
+is a debug line for a request answered `{}`: it is written only with `log_modules.turn=debug`, and reaches the console
+only with `--debug` as well. No line carries the username, the password or the shared secret. A request refused for its
+access token never reaches the handler and is logged under `client_server` as `request.auth.rejected`.
+
 ## Per-module level overrides (0.5.0)
 
 `--debug` lowers the **console sink** threshold to `debug`. It does not change
