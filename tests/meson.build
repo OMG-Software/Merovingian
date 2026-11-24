@@ -34,6 +34,12 @@ shell = find_program('sh')
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_check_unit_test_isolation.py'],
   )
 
+  test(
+    'catch2-failure-report-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_catch2_failure_report.py'],
+  )
+
   logger_filter_fixture = executable(
     'logger-filter-fixture',
     'tooling/logger_filter_fixture.cpp',

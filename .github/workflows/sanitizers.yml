@@ -71,10 +71,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh build/meson-logs/testlog.txt
 
   tsan:
     runs-on: ubuntu-latest
@@ -133,6 +130,11 @@ jobs:
         # bash runs with pipefail, so a failed build or test fails the step and not only tee's status.
         shell: bash
         run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread --skip-job tsan 2>&1 | tee tsan-ci-log.txt
+
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          sh scripts/catch2-failure-report.sh build-tsan/meson-logs/testlog.txt
 
       - name: Upload TSan logs
         if: always()

@@ -750,3 +750,4 @@
 * [0874 - A braced log-field list may mark GCC's cleanup branches excluded from coverage](0874-a-braced-log-field-list-may-mark-gcc-s-cleanup-branches-excluded-from-coverage.md)
 * [0875 - A device syncing online holds its account online against another device syncing unavailable](0875-a-device-syncing-online-holds-its-account-online.md)
 * [0876 - The first presence change in a five-second window is kept, and every other one in it is dropped](0876-the-first-presence-change-in-a-five-second-window-is-kept.md)
+* [0877 - CI failure reports print each failed test's section of the Meson log, not a tail of the whole log](0877-ci-failure-reports-print-each-failed-test-not-a-tail-of-the-log.md)

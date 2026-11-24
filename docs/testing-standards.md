@@ -408,7 +408,10 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
   the `asan-ubsan` job (`-Db_sanitize=address,undefined`) catches memory and
   undefined-behaviour defects, and the `tsan` job (`-Db_sanitize=thread`)
   catches data races. ThreadSanitizer is the only sanitizer that detects data
-  races; ASan and UBSan are blind to them.
+  races; ASan and UBSan are blind to them. When the suite fails, each job's
+  "Catch2 failure report" step prints every failed test's Catch2 output from
+  `testlog.txt` (`scripts/catch2-failure-report.sh`, ADR-0877); read it there,
+  not in the tail of the build step.
 - Any type shared across threads at runtime must have a test that exercises
   `perform`/`run`/dispatch concurrently from multiple threads so TSan can check
   the exercised accesses for data races. A thread-safety claim in a header comment is
