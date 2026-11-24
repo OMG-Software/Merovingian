@@ -213,6 +213,30 @@ class TheFailureReport(unittest.TestCase):
         self.assertEqual(self.run_report("--exclude").returncode, 2)
         self.assertEqual(self.run_report("--bogus", str(self.testlog)).returncode, 2)
 
+    def test_given_a_cap_it_cannot_keep_then_it_refuses_before_reading_the_log(self) -> None:
+        # GIVEN a log with a failed test
+        self.testlog.write_text(section(1, 1, "unit-tests", "exit status 1", "FAILED:\n"), encoding="utf-8")
+
+        # WHEN a total below the summary and one cut test, or a cap that is not a whole number, is asked for
+        for variable, value in (
+            ("CATCH2_REPORT_TOTAL_LINES", "1"),
+            ("CATCH2_REPORT_TOTAL_LINES", "19"),
+            ("CATCH2_REPORT_TOTAL_LINES", "-5"),
+            ("CATCH2_REPORT_HEAD_LINES", "abc"),
+            ("CATCH2_REPORT_TAIL_LINES", "1.5"),
+        ):
+            with self.subTest(variable=variable, value=value):
+                completed = self.run_report(str(self.testlog), env={variable: value})
+                # THEN it refuses, printing no report
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stdout, "")
+
+        # AND the smallest total it accepts holds, summary included
+        completed = self.run_report(str(self.testlog), env={"CATCH2_REPORT_TOTAL_LINES": "20"})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("FAILED unit-tests", completed.stdout)
+        self.assertLessEqual(len(completed.stdout.splitlines()), 20)
+
 
 class TheWorkflows(unittest.TestCase):
     def test_every_catch2_failure_report_uses_the_script_and_none_tails_the_whole_log(self) -> None:

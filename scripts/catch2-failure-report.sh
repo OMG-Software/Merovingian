@@ -54,6 +54,24 @@ if [ $# -ne 1 ]; then
 fi
 testlog=$1
 
+head_lines=${CATCH2_REPORT_HEAD_LINES:-400}
+tail_lines=${CATCH2_REPORT_TAIL_LINES:-100}
+total_lines=${CATCH2_REPORT_TOTAL_LINES:-4000}
+for cap in "$head_lines" "$tail_lines" "$total_lines"; do
+    case "$cap" in
+        '' | *[!0-9]*)
+            echo "catch2-failure-report.sh: a line cap must be a whole number, not '$cap'" >&2
+            exit 2
+            ;;
+    esac
+done
+# The smallest total that holds the closing summary (3 lines) and one test cut to
+# its fewest lines (10, its 4 markers and the omission note), so no cap is broken.
+if [ "$total_lines" -lt 20 ]; then
+    echo "catch2-failure-report.sh: CATCH2_REPORT_TOTAL_LINES must be at least 20, not $total_lines" >&2
+    exit 2
+fi
+
 if [ ! -f "$testlog" ]; then
     printf 'No test log at %s: the build failed before any test ran.\n' "$testlog"
     exit 0
@@ -61,9 +79,9 @@ fi
 
 REPORT_TESTLOG=$testlog \
 EXCLUDE_ERE=$exclude \
-HEAD_LINES=${CATCH2_REPORT_HEAD_LINES:-400} \
-TAIL_LINES=${CATCH2_REPORT_TAIL_LINES:-100} \
-TOTAL_LINES=${CATCH2_REPORT_TOTAL_LINES:-4000} \
+HEAD_LINES=$head_lines \
+TAIL_LINES=$tail_lines \
+TOTAL_LINES=$total_lines \
     awk '
 function is_rule(line, ch) {
     if (length(line) != 78) return 0
