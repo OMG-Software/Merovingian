@@ -73,7 +73,7 @@ if [ "$total_lines" -lt 20 ]; then
 fi
 
 if [ ! -f "$testlog" ]; then
-    printf 'No test log at %s: the build failed before any test ran.\n' "$testlog"
+    printf 'No test log at %s: meson test did not run, so read the failed step above.\n' "$testlog"
     exit 0
 fi
 

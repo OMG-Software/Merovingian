@@ -252,6 +252,19 @@ class TheWorkflows(unittest.TestCase):
                 self.assertNotIn("tail -n", match.group(1), workflow.name)
         self.assertGreaterEqual(reports, 12)
 
+    def test_a_job_that_runs_no_meson_test_has_no_failure_report(self) -> None:
+        # GIVEN every job of every workflow
+        for workflow in sorted(WORKFLOWS.glob("*.yml")):
+            text = workflow.read_text(encoding="utf-8")
+            jobs = re.split(r"\n  (?=[\w-]+:\n)", text.split("\njobs:\n", 1)[-1])
+            for job in jobs:
+                # WHEN the job builds with --no-tests, so meson test never writes its testlog.txt
+                if "--no-tests" not in job:
+                    continue
+                # THEN it has no Catch2 failure report, which would only say there is no log
+                with self.subTest(workflow=workflow.name, job=job.split(":", 1)[0]):
+                    self.assertNotIn("catch2-failure-report.sh", job)
+
     def test_both_sanitizer_jobs_report_their_failures(self) -> None:
         workflow = (WORKFLOWS / "sanitizers.yml").read_text(encoding="utf-8")
         self.assertIn("sh scripts/catch2-failure-report.sh build/meson-logs/testlog.txt", workflow)

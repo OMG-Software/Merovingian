@@ -316,11 +316,6 @@ jobs:
           ./build-hardened/tests/merovingian-integration-tests \
             "[startup][binary]" --success
 
-      - name: Catch2 failure report (runtime logs filtered out)
-        if: failure()
-        run: |
-          sh scripts/catch2-failure-report.sh build-hardened/meson-logs/testlog.txt
-
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-suite:
     needs: queue-after-analyses

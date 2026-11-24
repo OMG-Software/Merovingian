@@ -35,7 +35,9 @@ which were runtime logging. How should a failure report find the failed assertio
 ## Decision Outcome
 
 Chosen option: 1, run by every report step: `ci.yml`'s Linux and BSD jobs, `coverage.yml`, and both jobs of
-`sanitizers.yml` (`tsan` had no report step). NetBSD passes `--exclude '^\[netbsd-diag\]'`.
+`sanitizers.yml` (`tsan` had no report step). NetBSD passes `--exclude '^\[netbsd-diag\]'`. A job that builds with
+`--no-tests` (`ubuntu-hardened-listener-coverage`) runs its Catch2 binary in its own step, whose log shows any failure,
+and has no report step: it writes no `testlog.txt`.
 
 * A tail of any length can lose a failure: the number of lines after it depends on what finished later, which changes
   with the platform, the sanitizer and the scheduling.

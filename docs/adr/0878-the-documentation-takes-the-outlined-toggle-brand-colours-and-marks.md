@@ -39,9 +39,9 @@ Chosen option: 1.
 * The README shows no mark. It is shipped on its own, in the CI artifacts, the RPM, BSD and static packages, where an
   image path into `docs/assets/` would show as a broken image, and staging the SVG beside every copy is packaging
   churn for a decoration. Its opening lines link to the site.
-* The files are byte-for-byte the package's, line endings aside; a new version of the package replaces them, and none
-  is edited by hand. `tests/tooling/test_docs_site.py` checks their outlines and colours and that none can run or
-  fetch anything.
+* The files are byte-for-byte the package's, except that the package's CRLF line endings are LF here, as
+  `.gitattributes` requires; a new version of the package replaces them, and none is edited by hand.
+  `tests/tooling/test_docs_site.py` checks their outlines and colours and that none can run or fetch anything.
 * `--omg-orange` is `#ff761f` and `--omg-ink` `#151515`; the dark scheme's page, header, footer, links and accent use
   them. The greys between them are neutral (`#1f1f1f` panels, `#333333` rules), as charcoal is, where the earlier
   theme's were tinted.
