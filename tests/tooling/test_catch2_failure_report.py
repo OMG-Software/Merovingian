@@ -252,18 +252,21 @@ class TheWorkflows(unittest.TestCase):
                 self.assertNotIn("tail -n", match.group(1), workflow.name)
         self.assertGreaterEqual(reports, 12)
 
-    def test_a_job_that_runs_no_meson_test_has_no_failure_report(self) -> None:
+    def test_every_job_with_a_failure_report_runs_meson_test(self) -> None:
+        # A build script runs meson test unless it is given --no-tests; any step may also run it itself.
+        runs_tests = re.compile(r"scripts/build-(?:linux|bsd)\.sh(?![^\n]*--no-tests)|\bmeson test\b")
         # GIVEN every job of every workflow
         for workflow in sorted(WORKFLOWS.glob("*.yml")):
             text = workflow.read_text(encoding="utf-8")
             jobs = re.split(r"\n  (?=[\w-]+:\n)", text.split("\njobs:\n", 1)[-1])
             for job in jobs:
-                # WHEN the job builds with --no-tests, so meson test never writes its testlog.txt
-                if "--no-tests" not in job:
+                # WHEN the job has a Catch2 failure report
+                if "catch2-failure-report.sh" not in job:
                     continue
-                # THEN it has no Catch2 failure report, which would only say there is no log
+                # THEN some step of it runs meson test, which writes the testlog.txt the report reads; without
+                # one, the report could only say there is no log
                 with self.subTest(workflow=workflow.name, job=job.split(":", 1)[0]):
-                    self.assertNotIn("catch2-failure-report.sh", job)
+                    self.assertRegex(job, runs_tests)
 
     def test_both_sanitizer_jobs_report_their_failures(self) -> None:
         workflow = (WORKFLOWS / "sanitizers.yml").read_text(encoding="utf-8")
