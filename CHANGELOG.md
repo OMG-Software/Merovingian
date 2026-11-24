@@ -197,8 +197,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   gone), and a tooling test fails when that list and the modules the sources name differ (ADR-0872).
 * The TURN log calls mark GCC's cleanup of their braced field lists excluded from coverage, a compiler path no test
   can reach; the testing standards say when such a marker is allowed (ADR-0874).
-* A CI failure report shows every failed test's Catch2 output, however early it ran; a tail of the log lost it behind
-  later tests. The `tsan` job gets a report too (ADR-0877).
+* A CI failure report shows each failed test's Catch2 output, however early it ran, within a 4000-line cap that it
+  reports; a tail of the log lost it behind later tests. The `tsan` job gets a report too (ADR-0877).
 
 ## Release notes
 

@@ -17,8 +17,10 @@
 # of exactly 78 "=" (78 "-" in older Meson; Catch2's own rules are 79 wide, so
 # neither is mistaken for the other). A test failed unless its
 # "result:" is "exit status 0", or "exit status 77", which Meson reads as a
-# skip. Each failed test prints at most HEAD_LINES of its filtered output and
-# its last TAIL_LINES; the report stops adding tests after TOTAL_LINES lines.
+# skip. Each failed test prints at most the first HEAD_LINES of its filtered
+# output and its last TAIL_LINES, and the whole report at most TOTAL_LINES: a
+# test that does not fit is cut further, or counted as not shown. Lines left out
+# can hold an assertion, so the report says how many and where the full log is.
 # --exclude drops more lines (an extended regular expression), as the NetBSD
 # job does for its [netbsd-diag] markers. POSIX sh and awk only, with no
 # interval expressions, so it runs as is on the BSD VMs and in every container.
@@ -75,24 +77,35 @@ function out(line) {
     print line
     printed++
 }
-function finish_test(    i, first_tail) {
+function finish_test(    i, first_tail, per_test, room, body, head, tail) {
     if (!inside) return
     inside = 0
     if (result == "exit status 0" || result == "exit status 77") return
     failed++
-    if (printed >= total_cap) {
-        unshown++
-        return
+    # The lines left for the output of this test once its own markers (a blank line, FAILED, the command and the
+    # end line) and the closing summary are counted, so the report never passes TOTAL_LINES.
+    room = total_cap - SUMMARY_LINES - printed - 3 - (command != "" ? 1 : 0)
+    per_test = head_cap + tail_cap
+    if (n <= per_test && n <= room) {
+        head = n
+        tail = 0
+    } else {
+        # Cut: one line goes to the note that counts what was left out.
+        body = per_test < room - 1 ? per_test : room - 1
+        if (body < MIN_CUT_LINES && body < per_test) {
+            unshown++
+            return
+        }
+        head = per_test > 0 ? int(body * head_cap / per_test) : 0
+        tail = body - head
     }
     out("")
     out("########## FAILED " name "  (" result ", " duration ")")
     if (command != "") out("command: " command)
-    if (n <= head_cap + tail_cap) {
-        for (i = 1; i <= n; i++) out(buf[i])
-    } else {
-        for (i = 1; i <= head_cap; i++) out(buf[i])
-        first_tail = n - tail_cap + 1
-        out("[... " (first_tail - head_cap - 1) " lines omitted; the full output is in " testlog " ...]")
+    for (i = 1; i <= head; i++) out(buf[i])
+    if (head + tail < n) {
+        first_tail = n - tail + 1
+        out("[... " (first_tail - head - 1) " lines omitted; the full output is in " testlog " ...]")
         for (i = first_tail; i <= n; i++) out(buf[i])
     }
     out("########## end of " name)
@@ -105,6 +118,10 @@ BEGIN {
     tail_cap = ENVIRON["TAIL_LINES"] + 0
     total_cap = ENVIRON["TOTAL_LINES"] + 0
     inside = 0; failed = 0; printed = 0; unshown = 0
+    # The closing summary: a blank line, the count, and the not-shown count.
+    SUMMARY_LINES = 3
+    # A test cut to fewer lines than this by the total cap is counted as not shown instead.
+    MIN_CUT_LINES = 10
 }
 { sub(/\r$/, "") }
 length($0) == 78 && /^=+ [0-9]+\/[0-9]+ =+$/ {

@@ -137,31 +137,51 @@ class TheFailureReport(unittest.TestCase):
         self.assertNotIn("postgresql-flow", report)
 
     def test_given_a_long_failed_output_then_its_head_and_tail_are_kept_within_the_caps(self) -> None:
-        # GIVEN a failed test with 1000 lines of its own output, and a second failed test after it
+        # GIVEN a failed test with 1000 lines of its own output, and a second with 100 after it
         output = "".join(f"catch2 line {i}\n" for i in range(1000))
+        second = "".join(f"second line {i}\n" for i in range(100))
         self.testlog.write_text(
-            section(1, 2, "first", "exit status 1", output) + section(2, 2, "second", "exit status 1", "x\n"),
+            section(1, 2, "first", "exit status 1", output) + section(2, 2, "second", "exit status 1", second),
             encoding="utf-8",
         )
 
-        # WHEN the report runs with 10 head lines, 5 tail lines and a 20-line total
+        # WHEN the report runs with 10 head lines, 5 tail lines and a 30-line total
         report = self.run_report(
             str(self.testlog),
             env={
                 "CATCH2_REPORT_HEAD_LINES": "10",
                 "CATCH2_REPORT_TAIL_LINES": "5",
-                "CATCH2_REPORT_TOTAL_LINES": "20",
+                "CATCH2_REPORT_TOTAL_LINES": "30",
             },
         ).stdout
 
-        # THEN the first test shows its first and last lines with the gap counted, and the second is counted
-        # but not shown, because the report had reached its cap
+        # THEN the first test shows its first and last lines with the gap counted, the second, which would
+        # take the report past its total, is counted but not shown, and the report stays within 30 lines
         self.assertIn("catch2 line 8\n", report)
         self.assertIn("catch2 line 999\n", report)
         self.assertNotIn("catch2 line 500\n", report)
         self.assertIn("lines omitted", report)
         self.assertNotIn("FAILED second", report)
         self.assertIn("2 failed test(s)", report)
+        self.assertIn("1 of them not shown", report)
+        self.assertLessEqual(len(report.splitlines()), 30)
+
+    def test_given_many_long_failed_tests_then_the_whole_report_stays_within_its_default_total(self) -> None:
+        # GIVEN nine failed tests of 1000 lines each, each of which alone fills its 505-line share
+        output = "".join(f"catch2 line {i}\n" for i in range(1000))
+        self.testlog.write_text(
+            "".join(section(n, 9, f"shard-{n}", "exit status 1", output) for n in range(1, 10)), encoding="utf-8"
+        )
+
+        # WHEN the report runs with its default caps
+        report = self.run_report(str(self.testlog)).stdout
+
+        # THEN the eighth test is cut to fit, the ninth is counted but not shown, and the whole report,
+        # summary included, is at most 4000 lines
+        self.assertLessEqual(len(report.splitlines()), 4000)
+        self.assertIn("FAILED shard-8 ", report)
+        self.assertNotIn("FAILED shard-9 ", report)
+        self.assertIn("9 failed test(s)", report)
         self.assertIn("1 of them not shown", report)
 
     def test_given_an_exclude_pattern_then_matching_lines_are_dropped(self) -> None:

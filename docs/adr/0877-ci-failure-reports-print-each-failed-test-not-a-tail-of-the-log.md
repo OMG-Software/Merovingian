@@ -16,8 +16,8 @@ which were runtime logging. How should a failure report find the failed assertio
 
 ## Decision Drivers
 
-* The report must show every failed Catch2 case (scenario, file and line, `FAILED:`, expansion, exception message),
-  however early the test ran and however much passed after it.
+* Where a failed Catch2 case (scenario, file and line, `FAILED:`, expansion, exception message) appears in the report
+  must not depend on how early its test ran or how much passed after it.
 * It must run unchanged on the Ubuntu, Debian, Fedora and AlmaLinux jobs and inside the FreeBSD, OpenBSD and NetBSD
   VMs, none of which is sure to have a `python3` on `PATH`.
 * A broken run must not print an unbounded log.
@@ -26,7 +26,8 @@ which were runtime logging. How should a failure report find the failed assertio
 
 1. `scripts/catch2-failure-report.sh`: one POSIX `awk` pass over `testlog.txt` that keeps the section of each test
    whose `result:` is neither `exit status 0` nor `exit status 77` (Meson's skip), drops runtime log lines, and caps
-   each test (first 400 and last 100 lines) and the whole report (4000 lines).
+   each test (first 400 and last 100 lines) and the whole report (4000 lines, summary included: a test that does
+   not fit is cut further, or counted as not shown).
 2. Raise the tail (say to 3000 lines).
 3. Read `testlog.json` in Python, whose records carry a `result` of `FAIL`, `TIMEOUT` and so on.
 4. Fix the order instead (run the integration shards last), or rely on `--print-errorlogs`.
@@ -44,13 +45,14 @@ Chosen option: 1, run by every report step: `ci.yml`'s Linux and BSD jobs, `cove
   and `result:` holds Meson's `returncode_to_status` text.
 * The order of tests is not the report's to fix, and `--print-errorlogs` cannot be told to skip runtime log lines.
 * The script uses no `awk` interval expressions (`{4}`), which older releases of `mawk` and the BSDs' `awk` did not
-  accept, and
-  reads its patterns from the environment, since `awk -v` would process their backslashes.
+  accept, and reads its patterns from the environment, since `awk -v` would process their backslashes.
 
 ### Negative Consequences
 
-* A failed test with more than 500 lines of its own output shows its first 400 and last 100; the gap is counted and
-  the full log stays in `testlog.txt` (uploaded by `tsan`).
+* The caps can leave out failure output, assertions included: a failed test with more than 500 lines of its own
+  output shows its first 400 and last 100, and once the report nears 4000 lines a test is cut further or not shown.
+  The report counts every gap and every test left out, and names `testlog.txt`, which holds the whole output: the
+  `tsan` job uploads it, and elsewhere the failed test is run again locally.
 * A change to Meson's text log format would make the report find no failed test. It then says so, rather than
   printing nothing, and `tests/tooling/test_catch2_failure_report.py` pins the format it reads.
 
