@@ -1,12 +1,13 @@
-/* The OMG Software theme (ADR-0223): the colours, type and shapes of the
-   organisation's site, laid over Material for MkDocs. Both schemes keep the
-   dark OMG header; the dark scheme is the one a first visit opens in. */
+/* The OMG Software theme: the outlined-toggle brand's switch orange (#FF761F)
+   and charcoal (#151515), with neutral greys between them (ADR-0878), laid
+   over Material for MkDocs (ADR-0223). Both schemes keep the charcoal header;
+   the dark scheme is the one a first visit opens in. */
 
 :root {
-  --omg-orange: #ff8954;
-  --omg-orange-hover: #ffa170;
-  --omg-ink: #151616;
-  --omg-paper: #efeee8;
+  --omg-orange: #ff761f;
+  --omg-orange-hover: #ff9149;
+  --omg-ink: #151515;
+  --omg-paper: #ffffff;
   --omg-mono: Consolas, "Courier New", monospace;
   --omg-sans: Arial, Helvetica, sans-serif;
   --md-text-font: "Arial";
@@ -14,64 +15,64 @@
 }
 
 [data-md-color-scheme="slate"] {
-  --omg-panel: #1b1c1b;
-  --omg-line: #343632;
-  --md-hue: 80;
-  --md-default-bg-color: #151616;
-  --md-default-bg-color--light: #151616b3;
-  --md-default-bg-color--lighter: #1516164d;
-  --md-default-bg-color--lightest: #1516161f;
-  --md-default-fg-color: #efeee8;
-  --md-default-fg-color--light: #a6a8a0;
-  --md-default-fg-color--lighter: #777c73;
-  --md-default-fg-color--lightest: #343632;
-  --md-primary-fg-color: #151616;
-  --md-primary-fg-color--light: #1b1c1b;
-  --md-primary-fg-color--dark: #101111;
-  --md-primary-bg-color: #efeee8;
-  --md-primary-bg-color--light: #a6a8a0;
-  --md-accent-fg-color: #ff8954;
-  --md-accent-fg-color--transparent: #ff89541a;
-  --md-accent-bg-color: #191a17;
-  --md-typeset-a-color: #ff8954;
-  --md-typeset-color: #efeee8;
-  --md-typeset-table-color: #343632;
-  --md-typeset-table-color--light: #1b1c1b;
-  --md-code-bg-color: #1b1c1b;
-  --md-code-fg-color: #e0e0d6;
-  --md-footer-bg-color: #151616;
-  --md-footer-bg-color--dark: #101111;
-  --md-footer-fg-color: #efeee8;
-  --md-footer-fg-color--light: #a6a8a0;
-  --md-footer-fg-color--lighter: #777c73;
+  --omg-panel: #1f1f1f;
+  --omg-line: #333333;
+  --md-hue: 23;
+  --md-default-bg-color: #151515;
+  --md-default-bg-color--light: #151515b3;
+  --md-default-bg-color--lighter: #1515154d;
+  --md-default-bg-color--lightest: #1515151f;
+  --md-default-fg-color: #ededed;
+  --md-default-fg-color--light: #a8a8a8;
+  --md-default-fg-color--lighter: #7a7a7a;
+  --md-default-fg-color--lightest: #333333;
+  --md-primary-fg-color: #151515;
+  --md-primary-fg-color--light: #1f1f1f;
+  --md-primary-fg-color--dark: #0f0f0f;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #a8a8a8;
+  --md-accent-fg-color: #ff761f;
+  --md-accent-fg-color--transparent: #ff761f1a;
+  --md-accent-bg-color: #151515;
+  --md-typeset-a-color: #ff761f;
+  --md-typeset-color: #ededed;
+  --md-typeset-table-color: #333333;
+  --md-typeset-table-color--light: #1f1f1f;
+  --md-code-bg-color: #1f1f1f;
+  --md-code-fg-color: #e0e0e0;
+  --md-footer-bg-color: #151515;
+  --md-footer-bg-color--dark: #0f0f0f;
+  --md-footer-fg-color: #ffffff;
+  --md-footer-fg-color--light: #a8a8a8;
+  --md-footer-fg-color--lighter: #7a7a7a;
 }
 
 [data-md-color-scheme="default"] {
   --omg-panel: #e9e8e1;
   --omg-line: #d6d5cc;
   --md-default-bg-color: #f4f3ee;
-  --md-default-fg-color: #151616;
+  --md-default-fg-color: #151515;
   --md-default-fg-color--light: #55574f;
   --md-default-fg-color--lighter: #8a8c83;
   --md-default-fg-color--lightest: #d6d5cc;
-  --md-primary-fg-color: #151616;
-  --md-primary-fg-color--light: #1b1c1b;
-  --md-primary-fg-color--dark: #101111;
-  --md-primary-bg-color: #efeee8;
-  --md-primary-bg-color--light: #a6a8a0;
+  --md-primary-fg-color: #151515;
+  --md-primary-fg-color--light: #1f1f1f;
+  --md-primary-fg-color--dark: #0f0f0f;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #a8a8a8;
   --md-accent-fg-color: #8f3a15;
   --md-accent-fg-color--transparent: #8f3a151a;
   --md-accent-bg-color: #f4f3ee;
   --md-typeset-a-color: #a8461c;
-  --md-typeset-color: #151616;
+  --md-typeset-color: #151515;
   --md-typeset-table-color: #d6d5cc;
   --md-code-bg-color: #e9e8e1;
   --md-code-fg-color: #2a2b28;
-  --md-footer-bg-color: #151616;
-  --md-footer-bg-color--dark: #101111;
-  --md-footer-fg-color: #efeee8;
-  --md-footer-fg-color--light: #a6a8a0;
-  --md-footer-fg-color--lighter: #777c73;
+  --md-footer-bg-color: #151515;
+  --md-footer-bg-color--dark: #0f0f0f;
+  --md-footer-fg-color: #ffffff;
+  --md-footer-fg-color--light: #a8a8a8;
+  --md-footer-fg-color--lighter: #7a7a7a;
 }
 
 ::selection {
@@ -84,7 +85,7 @@
   outline-offset: 3px;
 }
 
-/* Header and tabs: the OMG site's dark bar with a hairline rule. */
+/* Header and tabs: the charcoal bar with a hairline rule. */
 
 .md-header,
 .md-tabs {
@@ -94,11 +95,11 @@
 
 .md-header {
   box-shadow: none;
-  border-bottom: 1px solid #343632;
+  border-bottom: 1px solid #333333;
 }
 
 .md-tabs {
-  border-bottom: 1px solid #343632;
+  border-bottom: 1px solid #333333;
 }
 
 .md-header__topic:first-child {
@@ -119,7 +120,7 @@
 }
 
 .md-footer {
-  border-top: 1px solid #343632;
+  border-top: 1px solid #333333;
 }
 
 /* Type: tight, light headings as on the OMG site. */
@@ -166,14 +167,14 @@
 .md-typeset .md-button--primary {
   background-color: var(--omg-orange);
   border-color: var(--omg-orange);
-  color: #191a17;
+  color: var(--omg-ink);
 }
 
 .md-typeset .md-button--primary:focus,
 .md-typeset .md-button--primary:hover {
   background-color: var(--omg-orange-hover);
   border-color: var(--omg-orange-hover);
-  color: #191a17;
+  color: var(--omg-ink);
 }
 
 /* Home page hero: the OMG eyebrow label above the strapline. */
@@ -186,10 +187,14 @@
   margin-bottom: .25rem;
 }
 
+/* Merovingian's full toggle. Its square file has wide empty bands above and
+   below the toggle; the crop keeps about one border-width of clear space round
+   it, as the brand guide asks. */
 .md-typeset .merovingian-mark {
   display: block;
-  width: 4.8rem;
-  height: 4.8rem;
+  width: 9.6rem;
+  height: 5.6rem;
+  object-fit: cover;
   margin-bottom: 1.2rem;
 }
 

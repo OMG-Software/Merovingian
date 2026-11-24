@@ -1,6 +1,6 @@
 # The documentation site wears the OMG Software theme, dark first, with system fonts
 
-* Status: accepted
+* Status: accepted; colours and marks superseded by [ADR-0878](0878-the-documentation-takes-the-outlined-toggle-brand-colours-and-marks.md) (2026-11-24)
 * Date: 2026-10-25
 
 Technical Story: match the published documentation site to the OMG Software organisation site (0.12.46).

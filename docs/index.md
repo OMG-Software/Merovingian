@@ -2,7 +2,7 @@
 
 <div class="hero" markdown>
 
-<img class="merovingian-mark" src="assets/merovingian-logo.svg" alt="" width="96" height="96">
+<img class="merovingian-mark" src="assets/merovingian-toggle-mark.svg" alt="" width="192" height="112">
 
 <p class="omg-eyebrow">OMG SOFTWARE / MEROVINGIAN</p>
 

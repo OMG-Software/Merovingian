@@ -54,6 +54,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   unavailable (error) and no TURN configured (debug), with the user ID and never a credential (ADR-0871).
 * Tests set a log module's level through one shared helper, `tests/support/ModuleLogLevel.hpp`, instead of a copy per
   file; the security coding rules state the TURN logging rule and why the username is withheld.
+* The documentation site and README use OMG Software's outlined-toggle brand: switch orange and charcoal, the G knob,
+  and Merovingian's project icon, copied unchanged from the brand package (ADR-0878).
 
 ## Security Fixes
 
