@@ -549,8 +549,8 @@ What the site expects of each branch:
   standalone G knob (`omg-g-knob-orange.svg`), since the guide uses the knob
   below about 120 px wide; the favicon is Merovingian's compact knob
   (`merovingian-compact.svg`); the home page shows Merovingian's full toggle
-  (`merovingian-toggle-mark.svg`) and the README its charcoal tile
-  (`merovingian-icon.svg`). Replace a file with the package's new version
+  (`merovingian-toggle-mark.svg`). The README shows no mark, since it is
+  packaged without `docs/assets/`. Replace a file with the package's new version
   rather than editing it. They are local, so readers make no request elsewhere.
 
 ## Complement

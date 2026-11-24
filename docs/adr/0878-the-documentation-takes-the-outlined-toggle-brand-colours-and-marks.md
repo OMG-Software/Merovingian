@@ -11,8 +11,7 @@ mark and the `#ff8954` orange the documentation site took from the organisation 
 The brand package sets two colours, switch orange `#FF761F` and charcoal `#151515`, a full toggle mark, a standalone G
 knob for small sizes, and a project icon for each repository: Merovingian's is the toggle with a server stack cut out of
 its knob. Its guide keeps about one border-width of clear space round the toggle and uses the knob below about 120 px
-wide; the project icons use their compact knob at 32 px and below. How should the documentation site and the README
-take them on?
+wide; the project icons use their compact knob at 32 px and below. How should the documentation site take them on?
 
 ## Decision Drivers
 
@@ -36,8 +35,10 @@ Chosen option: 1.
 * The header logo, about 24 px high, is the standalone G knob (`omg-g-knob-orange.svg`): the full toggle there would be
   about 50 px wide, well under the guide's 120 px. The favicon is Merovingian's compact knob
   (`merovingian-compact.svg`), the project icon's design for 32 px and below. The home page shows Merovingian's full
-  toggle (`merovingian-toggle-mark.svg`), cropped to keep about one border-width of clear space, and the README the
-  same toggle on its charcoal tile (`merovingian-icon.svg`), which reads on GitHub's light and dark themes alike.
+  toggle (`merovingian-toggle-mark.svg`), cropped to keep about one border-width of clear space.
+* The README shows no mark. It is shipped on its own, in the CI artifacts, the RPM, BSD and static packages, where an
+  image path into `docs/assets/` would show as a broken image, and staging the SVG beside every copy is packaging
+  churn for a decoration. Its first line links to the site.
 * The files are byte-for-byte the package's, line endings aside; a new version of the package replaces them, and none
   is edited by hand. `tests/tooling/test_docs_site.py` checks their outlines and colours and that none can run or
   fetch anything.

@@ -1,5 +1,3 @@
-<img src="docs/assets/merovingian-icon.svg" alt="Merovingian icon" width="128" height="128">
-
 # Merovingian
 
 **Latest release: [latest](https://github.com/OMG-Software/Merovingian/releases/tag/latest)** · **Documentation: [omg-software.github.io/Merovingian](https://omg-software.github.io/Merovingian/)**

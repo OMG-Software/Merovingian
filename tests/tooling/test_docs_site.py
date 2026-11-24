@@ -307,8 +307,6 @@ class SiteThemeTests(unittest.TestCase):
             "merovingian-compact.svg": (1, "M64 32A32 32 0 1 1 0 32", "#151515"),
             # The project's full toggle, transparent, for the home page.
             "merovingian-toggle-mark.svg": (2, "M39 35H89A29 29 0 0 1 89 93H39", None),
-            # The project's full toggle on a charcoal tile, for the README.
-            "merovingian-icon.svg": (2, "M39 35H89A29 29 0 0 1 89 93H39", "#151515"),
         }
         for filename, (count, outline, tile) in marks.items():
             with self.subTest(asset=filename):
@@ -326,13 +324,15 @@ class SiteThemeTests(unittest.TestCase):
                 self.assertEqual([rect.get("fill") for rect in tiles], [tile] if tile else [])
                 self.assertNotRegex(text, r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject")
 
-        # THEN the theme names the knobs, and the home page and README show the project's full toggle.
+        # THEN the theme names the knobs and the home page shows the project's full toggle; the README, which is
+        # packaged without docs/assets/, shows no image by a relative path that would break there.
         self.assertIn("\n  logo: assets/omg-g-knob-orange.svg\n", self.config)
         self.assertIn("\n  favicon: assets/merovingian-compact.svg\n", self.config)
         home = (DOCS_DIR / "index.md").read_text(encoding="utf-8")
         self.assertIn('src="assets/merovingian-toggle-mark.svg"', home)
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('src="docs/assets/merovingian-icon.svg"', readme)
+        self.assertNotRegex(readme, r"<img[^>]*\ssrc=\"(?!https://)")
+        self.assertNotRegex(readme, r"!\[[^\]]*\]\((?!https://)")
 
     def test_the_theme_uses_the_brand_orange_and_charcoal(self) -> None:
         # GIVEN the brand palette: switch orange #FF761F and charcoal #151515 (ADR-0878).
