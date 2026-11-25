@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Merovingian icon</title>
+  <rect fill="#151515" x="3" y="3" width="122" height="122" rx="26"/>
+  <path fill="#FF761F" fill-rule="evenodd" transform="translate(15.000000 15.000000) scale(1.531250000)" d="M64 32A32 32 0 1 1 0 32A32 32 0 1 1 64 32Z M15 17H49Q53 17 53 21V25Q53 29 49 29H15Q11 29 11 25V21Q11 17 15 17Z M15 35H49Q53 35 53 39V43Q53 47 49 47H15Q11 47 11 43V39Q11 35 15 35Z M46.65 23A2.65 2.65 0 1 1 41.35 23A2.65 2.65 0 1 1 46.65 23Z M46.65 41A2.65 2.65 0 1 1 41.35 41A2.65 2.65 0 1 1 46.65 41Z"/>
+</svg>

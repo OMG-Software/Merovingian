@@ -539,13 +539,19 @@ What the site expects of each branch:
 - **The theme is OMG Software's.** Colours live in `docs/stylesheets/extra.css`,
   not in Material palette names; the site opens dark, uses system fonts and
   loads nothing from another origin
-  ([ADR-0223](adr/0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)).
+  ([ADR-0223](adr/0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md),
+  colours from ADR-0878).
   `docs-site-tooling` checks text and link contrast in both schemes.
-- **Use the published brand marks.** `docs/assets/omg-logo.svg` and
-  `omg-favicon.svg` reproduce the angular OMG mark and favicon from
-  [OMG Software](https://omg-software.org/projects/merovingian/index.html).
-  The home page uses its separate `merovingian-logo.svg` project mark.
-  These SVG files are local, so readers make no request to the organisation site.
+- **Use the brand package's marks, unchanged.** OMG Software's outlined-toggle
+  brand sets switch orange `#FF761F` and charcoal `#151515`
+  ([ADR-0878](adr/0878-the-documentation-takes-the-outlined-toggle-brand-colours-and-marks.md)).
+  `docs/assets/` holds verbatim copies of its marks: the header logo is the
+  standalone G knob (`omg-g-knob-orange.svg`), since the guide uses the knob
+  below about 120 px wide; the favicon is Merovingian's compact knob
+  (`merovingian-compact.svg`); the home page shows Merovingian's full toggle
+  (`merovingian-toggle-mark.svg`). The README shows no mark, since it is
+  packaged without `docs/assets/`. Replace a file with the package's new version
+  rather than editing it. They are local, so readers make no request elsewhere.
 
 ## Complement
 

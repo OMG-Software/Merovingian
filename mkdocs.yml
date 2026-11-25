@@ -52,7 +52,7 @@ theme:
     - content.action.edit
   # The OMG Software theme: the site opens dark, as the organisation's site
   # does, whatever the system preference; the toggle offers a light scheme.
-  # Both take their colours from stylesheets/extra.css (ADR-0223).
+  # Both take their colours from stylesheets/extra.css (ADR-0223, ADR-0878).
   palette:
     - scheme: slate
       primary: custom
@@ -68,8 +68,11 @@ theme:
         name: Switch to dark mode
   # System fonts only, so no page view is reported to a font host.
   font: false
-  logo: assets/omg-logo.svg
-  favicon: assets/omg-favicon.svg
+  # The OMG Software outlined-toggle brand (ADR-0878): the header shows the
+  # standalone G knob, which the guide uses below about 120 px wide, and the
+  # browser tab Merovingian's compact knob, its project icon's small size.
+  logo: assets/omg-g-knob-orange.svg
+  favicon: assets/merovingian-compact.svg
   icon:
     repo: fontawesome/brands/github
 

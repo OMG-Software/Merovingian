@@ -102,16 +102,10 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          # The unit test binary emits thousands of structured runtime log
-          # lines (timestamp + <LEVEL> + module:) that bury Catch2's own
-          # failure report. Drop those so what remains is Catch2 section
-          # headers, FAILED assertions, and the test-case summary — i.e. the
-          # failing test name + file:line. Mirrors the NetBSD job's inline
-          # equivalent below.
-          if [ -f build/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          # Prints each failed test's Catch2 output (scenario, file:line,
+          # FAILED:, expansion) with the runtime log lines that bury it
+          # removed. Every job's report runs the same script (ADR-0877).
+          sh scripts/catch2-failure-report.sh build/meson-logs/testlog.txt
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build
@@ -213,10 +207,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-ubuntu-interim/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-ubuntu-interim/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh build-ubuntu-interim/meson-logs/testlog.txt
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-ubuntu-interim
@@ -325,14 +316,6 @@ jobs:
           ./build-hardened/tests/merovingian-integration-tests \
             "[startup][binary]" --success
 
-      - name: Catch2 failure report (runtime logs filtered out)
-        if: failure()
-        run: |
-          if [ -f build-hardened/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-hardened/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
-
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-suite:
     needs: queue-after-analyses
@@ -397,10 +380,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-fedora/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-fedora/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh build-fedora/meson-logs/testlog.txt
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-fedora
@@ -485,10 +465,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-debian/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-debian/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh build-debian/meson-logs/testlog.txt
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-debian
@@ -576,10 +553,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-rhel/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-rhel/meson-logs/testlog.txt \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh build-rhel/meson-logs/testlog.txt
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-rhel
@@ -697,10 +671,7 @@ jobs:
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f "${BUILDDIR}/meson-logs/testlog.txt" ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' "${BUILDDIR}/meson-logs/testlog.txt" \
-              | tail -n 300
-          fi
+          sh scripts/catch2-failure-report.sh "${BUILDDIR}/meson-logs/testlog.txt"
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh "${BUILDDIR}"
@@ -750,10 +721,7 @@ jobs:
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
             if ! sh scripts/build-bsd.sh --builddir build --skip-job freebsd; then
                 echo "::group::FreeBSD Catch2 failure report (runtime logs filtered out)"
-                if [ -f build/meson-logs/testlog.txt ]; then
-                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
-                        | tail -n 300
-                fi
+                sh scripts/catch2-failure-report.sh build/meson-logs/testlog.txt
                 echo "::endgroup::"
                 # The report above drops runtime log lines to keep Catch2's output
                 # readable, which also hides why a runtime refused to start. List
@@ -812,10 +780,7 @@ jobs:
           run: |
             if ! sh scripts/build-bsd.sh --builddir build --skip-job openbsd; then
                 echo "::group::OpenBSD Catch2 failure report (runtime logs filtered out)"
-                if [ -f build/meson-logs/testlog.txt ]; then
-                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
-                        | tail -n 300
-                fi
+                sh scripts/catch2-failure-report.sh build/meson-logs/testlog.txt
                 echo "::endgroup::"
                 # The report above drops runtime log lines to keep Catch2's output
                 # readable, which also hides why a runtime refused to start. List
@@ -983,16 +948,7 @@ jobs:
             rm -rf netbsd-packages
             if ! sh scripts/build-bsd.sh --builddir build --skip-job netbsd; then
                 echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
-                if [ -f build/meson-logs/testlog.txt ]; then
-                    # The unit test binary emits thousands of structured runtime
-                    # log lines (timestamp + <LEVEL> + module:) that bury Catch2's
-                    # own failure report. Drop those and the [netbsd-diag] markers
-                    # so what remains is Catch2 section headers, FAILED assertions,
-                    # and the test-case summary — i.e. the failing test name + file:line.
-                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
-                        | grep -vE '^\[netbsd-diag\]' \
-                        | tail -n 150
-                fi
+                sh scripts/catch2-failure-report.sh --exclude '^\[netbsd-diag\]' build/meson-logs/testlog.txt
                 echo "::endgroup::"
                 echo "::group::NetBSD core backtraces"
                 for core in $(find build -name '*.core' 2>/dev/null); do

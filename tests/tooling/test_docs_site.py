@@ -296,31 +296,57 @@ class SiteThemeTests(unittest.TestCase):
                 self.assertTrue(svg.startswith("<svg"))
                 self.assertNotRegex(svg, r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject")
 
-    def test_site_uses_the_published_organisation_and_project_marks(self) -> None:
-        # GIVEN the marks published on omg-software.org on 25 October 2026.
+    def test_site_uses_the_outlined_toggle_brand_marks(self) -> None:
+        # GIVEN the OMG Software outlined-toggle brand package and its Merovingian project icon (ADR-0878):
+        # each file's switch-orange shapes, how many there are, and the start of the first outline.
+        svg = "{http://www.w3.org/2000/svg}"
         marks = {
-            "omg-logo.svg": "M32 11 20 4 6 12v16l14 8 14-8v-8H21",
-            "omg-favicon.svg": "M36 15 24 8 10 16v16l14 8 14-8v-8H25",
-            "merovingian-logo.svg": "M6 28V12l14 11 14-11v16l-14 8-14-8Z",
+            # The standalone G knob, for the header logo.
+            "omg-g-knob-orange.svg": (1, "M1059 369C1140 369 1205 432", None),
+            # The project's compact knob on a charcoal tile, for the browser tab.
+            "merovingian-compact.svg": (1, "M64 32A32 32 0 1 1 0 32", "#151515"),
+            # The project's full toggle, transparent, for the home page.
+            "merovingian-toggle-mark.svg": (2, "M39 35H89A29 29 0 0 1 89 93H39", None),
         }
-        for filename, outline in marks.items():
+        for filename, (count, outline, tile) in marks.items():
             with self.subTest(asset=filename):
                 # WHEN the local image is loaded.
-                root = ET.parse(DOCS_DIR / "assets" / filename).getroot()
-                paths = root.findall("{http://www.w3.org/2000/svg}path")
+                text = (DOCS_DIR / "assets" / filename).read_text(encoding="utf-8")
+                root = ET.fromstring(text)
+                paths = root.findall(f"{svg}path")
+                tiles = root.findall(f"{svg}rect")
 
-                # THEN it carries the published outline and orange stroke.
-                self.assertEqual(len(paths), 1)
-                self.assertEqual(paths[0].get("d"), outline)
-                self.assertEqual(paths[0].get("stroke"), "#ff8954")
-                self.assertNotRegex(
-                    (DOCS_DIR / "assets" / filename).read_text(encoding="utf-8"),
-                    r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject",
-                )
+                # THEN it carries the brand's outlines in switch orange, on a charcoal tile where the file has one,
+                # and nothing that could run or fetch.
+                self.assertEqual(len(paths), count)
+                self.assertTrue(paths[0].get("d", "").startswith(outline))
+                self.assertEqual({path.get("fill") for path in paths}, {"#FF761F"})
+                self.assertEqual([rect.get("fill") for rect in tiles], [tile] if tile else [])
+                self.assertNotRegex(text, r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject")
 
-        # THEN the home page also displays the project's own mark.
+        # THEN the theme names the knobs and the home page shows the project's full toggle; the README, which is
+        # packaged without docs/assets/, shows no image by a relative path that would break there.
+        self.assertIn("\n  logo: assets/omg-g-knob-orange.svg\n", self.config)
+        self.assertIn("\n  favicon: assets/merovingian-compact.svg\n", self.config)
         home = (DOCS_DIR / "index.md").read_text(encoding="utf-8")
-        self.assertIn('src="assets/merovingian-logo.svg"', home)
+        self.assertIn('src="assets/merovingian-toggle-mark.svg"', home)
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertNotRegex(readme, r"<img[^>]*\ssrc=\"(?!https://)")
+        self.assertNotRegex(readme, r"!\[[^\]]*\]\((?!https://)")
+
+    def test_the_theme_uses_the_brand_orange_and_charcoal(self) -> None:
+        # GIVEN the brand palette: switch orange #FF761F and charcoal #151515 (ADR-0878).
+        # WHEN the stylesheet's own tokens and the dark scheme are read.
+        dark = scheme_colours(self.stylesheet, "slate")
+
+        # THEN the theme's orange and ink are the brand's, the dark scheme's page, header and links use them,
+        # and no colour of the earlier OMG theme is left.
+        self.assertRegex(self.stylesheet, r"--omg-orange:\s*#ff761f;")
+        self.assertRegex(self.stylesheet, r"--omg-ink:\s*#151515;")
+        self.assertEqual(dark["--md-default-bg-color"], "#151515")
+        self.assertEqual(dark["--md-primary-fg-color"], "#151515")
+        self.assertEqual(dark["--md-typeset-a-color"], "#ff761f")
+        self.assertNotRegex(self.stylesheet.lower(), r"#ff8954|#151616")
 
     def test_text_and_links_are_readable_in_both_schemes(self) -> None:
         for scheme in ("slate", "default"):
